@@ -14,6 +14,8 @@ export interface PositionRow {
   units: string;
   buyable: boolean;
   archived: boolean;
+  /** Last indexed accrual (ISO), for projecting the norm to now. */
+  lastAccrual: string;
   /** Totals from the trade history, USDG. */
   boughtUsdg: string;
   soldUsdg: string;
@@ -24,6 +26,7 @@ export async function accountPositions(deps: QueryDeps, account: string): Promis
   const rows = (await deps.sql`
     SELECT s.id AS series_id, s.name, s.is_call, s.speed, s.strike, s.token, b.balance, s.norm,
            (b.balance * s.norm)::numeric(78, 18) AS units, s.buyable, s.archived,
+           extract(epoch from s.last_accrual)::float8 AS last_accrual_s,
            COALESCE((SELECT SUM(usdg) FROM trades t WHERE t.series_id = s.id AND t.recipient = ${account.toLowerCase()} AND t.side = 'buy'), 0) AS bought_usdg,
            COALESCE((SELECT SUM(usdg) FROM trades t WHERE t.series_id = s.id AND t.account = ${account.toLowerCase()} AND t.side = 'sell'), 0) AS sold_usdg
     FROM balances b
@@ -32,7 +35,7 @@ export async function accountPositions(deps: QueryDeps, account: string): Promis
     ORDER BY s.name, s.speed, s.strike, s.is_call DESC
   `) as unknown as {
     series_id: string; name: string | null; is_call: boolean; speed: "DAILY" | "WEEKLY"; strike: string; token: string;
-    balance: string; norm: string; units: string; buyable: boolean; archived: boolean; bought_usdg: string; sold_usdg: string;
+    balance: string; norm: string; units: string; buyable: boolean; archived: boolean; last_accrual_s: number; bought_usdg: string; sold_usdg: string;
   }[];
   return rows.map((row) => ({
     seriesId: row.series_id,
@@ -46,6 +49,7 @@ export async function accountPositions(deps: QueryDeps, account: string): Promis
     units: row.units,
     buyable: row.buyable,
     archived: row.archived,
+    lastAccrual: new Date(Number(row.last_accrual_s) * 1000).toISOString(),
     boughtUsdg: row.bought_usdg,
     soldUsdg: row.sold_usdg,
   }));

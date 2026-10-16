@@ -3,7 +3,7 @@ import type { ApiDependencies } from "../types";
 import { apiNow } from "../clock";
 import { accountParams, positionsResponseSchema } from "../option-schemas";
 import { loadNameContext, marketInputs, type NameContext } from "../quote/context";
-import { displayCost, looseWad, quoteUnits, usdgMicro, usdgText } from "../quote/model";
+import { displayCost, looseWad, normDecimal, projectedNorm, quoteUnits, usdgMicro, usdgText } from "../quote/model";
 import { trimDecimal } from "../quote/rows";
 import { accountPositions } from "../../db/queries/positions";
 import { openQueuedSells } from "../../db/queries/pool";
@@ -32,12 +32,13 @@ export function registerAccountRoutes(app: OpenAPIHono, deps: ApiDependencies): 
       const cost = usdgMicro(row.boughtUsdg);
       const proceeds = usdgMicro(row.soldUsdg);
       const ctx = row.name ? contexts.get(row.name) ?? null : null;
-      const unitsWad = looseWad(row.units);
-      const quote = ctx && unitsWad > 0n
-        ? quoteUnits(
-          { isCall: row.isCall, speed: row.speed, strike: Number(row.strike), buyable: row.buyable, archived: row.archived },
-          marketInputs(ctx, { id: row.seriesId, speed: row.speed }), unitsWad, false)
-        : null;
+      const input = { isCall: row.isCall, speed: row.speed, strike: Number(row.strike), buyable: row.buyable, archived: row.archived };
+      const market = ctx ? marketInputs(ctx, { id: row.seriesId, speed: row.speed }) : null;
+      // Units after funding up to now (the indexed norm can be an hour old; the engine accrues before every trade).
+      const norm = market ? normDecimal(projectedNorm(input, market, Number(row.norm), Date.parse(row.lastAccrual))) : row.norm;
+      const unitsWad = (looseWad(row.balance) * looseWad(norm)) / 10n ** 18n;
+      const units = trimDecimal(normDecimalWad(unitsWad));
+      const quote = market && unitsWad > 0n ? quoteUnits(input, market, unitsWad, false) : null;
       totalCost += cost;
       if (quote) {
         totalValue += quote.usdg;
@@ -46,7 +47,7 @@ export function registerAccountRoutes(app: OpenAPIHono, deps: ApiDependencies): 
       }
       return {
         seriesId: row.seriesId, name: row.name, isCall: row.isCall, speed: row.speed, strike: trimDecimal(row.strike), token: row.token,
-        balance: trimDecimal(row.balance), norm: trimDecimal(row.norm), units: trimDecimal(row.units),
+        balance: trimDecimal(row.balance), norm: trimDecimal(norm), units,
         valueAtBidUsdg: quote ? usdgText(quote.usdg) : null,
         dailyCostUsdg: quote ? usdgText(quote.dailyCostUsdg) : null,
         displayCost: quote ? displayCost(quote.dailyCostUsdg) : null,
@@ -68,4 +69,9 @@ export function registerAccountRoutes(app: OpenAPIHono, deps: ApiDependencies): 
       queuedSells: queued.map((item) => ({ ticket: item.ticket, seriesId: item.seriesId, tokens: trimDecimal(item.tokens), queuedAt: item.queuedAt })),
     }, 200);
   });
+}
+
+/** A WAD amount as an 18-decimal string. */
+function normDecimalWad(wad: bigint): string {
+  return `${wad / 10n ** 18n}.${(wad % 10n ** 18n).toString().padStart(18, "0")}`;
 }

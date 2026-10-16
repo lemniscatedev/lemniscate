@@ -8,7 +8,7 @@ import {
 } from "../option-schemas";
 import { loadNameContext, marketInputs, seriesInputs, type NameContext } from "../quote/context";
 import {
-  displayCost, parseWad, quoteUnits, usdgText, wadText, type BuyBlock, type EngineQuote, type SessionName,
+  displayCost, parseWad, quoteUnits, usdgText, wadText, type BuyBlock, type EngineQuote, type SessionName, normDecimal, projectedNorm,
 } from "../quote/model";
 import { OptionEngineAbi } from "../../abi";
 import { inviteGate } from "./invites";
@@ -155,9 +155,12 @@ export function registerQuoteRoutes(app: OpenAPIHono, deps: ApiDependencies): vo
     const prepared = await prepare(deps, await getSeries(deps, body.series));
     if (failed(prepared)) return context.json(prepared.body, prepared.status);
     const { series, ctx, now } = prepared;
-    const quote = quoteUnits(seriesInputs(series), marketInputs(ctx, series), unitsWad, false);
+    const market = marketInputs(ctx, series);
+    const quote = quoteUnits(seriesInputs(series), market, unitsWad, false);
     if (!quote) return context.json({ error: "NO_VOL", message: "No volatility inputs are indexed for this series yet." }, 503);
-    const tokens = tokensForUnits(unitsWad, series.norm);
+    // The engine accrues before the sell: burn the tokens that hold `units` at the norm projected to now.
+    const norm = normDecimal(projectedNorm(seriesInputs(series), market, Number(series.norm), Date.parse(series.lastAccrual)));
+    const tokens = tokensForUnits(unitsWad, norm);
     if (tokens === null || tokens > UINT128_MAX) return context.json({ error: "BAD_REQUEST", message: "Amount out of range." }, 422);
     const queued = quote.sellQueued;
     const minProceeds = queued ? 0n : (quote.usdg * BigInt(10_000 - body.slippageBps)) / 10_000n;

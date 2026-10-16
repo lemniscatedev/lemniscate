@@ -9,7 +9,7 @@
 // which snapshots on every trade and at least every 10 minutes, so the term can be a few minutes stale; a quote taken
 // between snapshots can differ from the chain by (0.15 x change in n) x V. Without that state `n` is 0 and the quote
 // says so (`inventoryApplied: false`). The engine decides the final numbers on chain; slippage bounds absorb the gap.
-import { TAU, YEAR_S, callGreeks, callValue, fundingRate, putGreeks, putValue, type Greeks } from "../../pricing";
+import { TAU, YEAR_S, callGreeks, callValue, fundingRate, fundingStep, putGreeks, putValue, type Greeks } from "../../pricing";
 
 export type SessionName = "REGULAR" | "EXTENDED" | "CLOSED" | "UNKNOWN" | "HALTED";
 export type Speed = "DAILY" | "WEEKLY";
@@ -332,4 +332,24 @@ export function looseWad(text: string): bigint {
   const match = /^(\d+)(?:\.(\d*))?$/.exec(text);
   if (!match) return 0n;
   return BigInt(match[1]!) * WAD + BigInt((match[2] ?? "").padEnd(18, "0").slice(0, 18));
+}
+
+/** The series' norm with funding applied from its last indexed accrual up to `market.nowMs`. The engine accrues a series
+ * before every trade and the keeper only re-marks it hourly, so the indexed norm can be up to an hour old: a sell intent
+ * priced with it burned too few tokens for the units asked and reverted on Slippage (todo 23 fork run), and positions
+ * showed units the holder no longer had. Uses the liability mark V and payoff at the current price, as the engine's
+ * accrual does at the start of a step. */
+export function projectedNorm(series: SeriesInputs, market: MarketInputs, norm: number, lastAccrualMs: number): number {
+  const dt = (market.nowMs - lastAccrualMs) / 1000;
+  if (!(dt > 0) || !(norm > 0)) return norm;
+  const unit = unitQuote(series, market, false);
+  if (!unit || !(unit.v > 0)) return norm;
+  return fundingStep(norm, unit.v, unit.payoff, dt, TAU_SECONDS[series.speed]);
+}
+
+/** A norm as an 18-decimal string, rounded down (a smaller norm burns at least the tokens the units need). */
+export function normDecimal(norm: number): string {
+  const wad = BigInt(Math.floor(norm * 1e18));
+  const whole = wad / WAD;
+  return `${whole}.${(wad % WAD).toString().padStart(18, "0")}`;
 }

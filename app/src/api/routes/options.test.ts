@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { fundingStep } from "../../pricing";
 import { decodeFunctionData } from "viem";
 import { join } from "node:path";
 import { pino } from "pino";
@@ -255,12 +256,19 @@ suite("option API over indexed data", () => {
     const body = await sell.json() as any;
     expect(body.approvals).toEqual([]);
     expect(body.queued).toBe(false);
-    // norm is 0.9, so 9 units are 10 tokens
-    expect(body.tokens).toBe((10n * 10n ** 18n).toString());
+    // todo 23 fork bug: the stored norm (0.9) is an hour old; the engine accrues before the sell, so the tokens must be
+    // priced with the norm projected to now, or the sale burns too few tokens and reverts on Slippage. Projected norm:
+    // fundingStep(0.9, V, payoff, 3600 s, Weekly tau) < 0.9, so 9 units burn more than 10 tokens.
+    const tokens = BigInt(body.tokens);
+    expect(tokens).toBeGreaterThan(10n * 10n ** 18n);
+    const projected = Number(9n * 10n ** 36n / tokens) / 1e18;
+    const V = Number(BigInt(body.quote.vMarkWad)) / 1e18;
+    const expected = fundingStep(0.9, V, 0, 3600, 604_800);
+    expect(Math.abs(projected - expected) / expected).toBeLessThan(1e-6);
     expect(BigInt(body.minProceedsUsdg)).toBe((BigInt(body.quote.usdg) * 9_950n) / 10_000n);
     const decoded = decodeFunctionData({ abi: OptionEngineAbi, data: body.data });
     expect(decoded.functionName).toBe("sell");
-    expect(lower(decoded.args)[1]).toBe(10n * 10n ** 18n);
+    expect(lower(decoded.args)[1]).toBe(tokens);
 
     await setTick("CLOSED");
     fresh();
@@ -361,10 +369,12 @@ suite("option API over indexed data", () => {
     const position = body.positions[0];
     expect(position.seriesId).toBe(id(2));
     expect(position.balance).toBe("40");
-    expect(position.units).toBe("36");
+    // units after funding up to now (the stored norm is an hour old): below 40 x 0.9 = 36
+    expect(Number(position.units)).toBeLessThan(36);
+    expect(Number(position.units)).toBeGreaterThan(35);
     expect(position.costBasisUsdg).toBe("600.000000");
     expect(position.proceedsUsdg).toBe("300.000000");
-    const sell = await (await post("/v1/quote", { series: id(2), units: "36", side: "sell" })).json() as any;
+    const sell = await (await post("/v1/quote", { series: id(2), units: position.units, side: "sell" })).json() as any;
     expect(position.valueAtBidUsdg).toBe(sell.display.usdg);
     expect(position.dailyCostUsdg).toBe(sell.display.dailyCostUsdg);
     expect(position.displayCost).toMatch(/^costs (about|less than)/);
