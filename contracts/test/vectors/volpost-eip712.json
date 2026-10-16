@@ -1,0 +1,49 @@
+{
+  "description": "One VolOracle post signed with the first well-known anvil dev account (the private key is not stored here). A signer implementation must reproduce typeHash, domainSeparator, structHash, digest and signature exactly (RFC 6979 deterministic ECDSA, low-s, v in {27,28}).",
+  "signer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+  "blockTimestamp": 1790000000,
+  "typedData": {
+    "types": {
+      "EIP712Domain": [
+        {"name": "name", "type": "string"},
+        {"name": "version", "type": "string"},
+        {"name": "chainId", "type": "uint256"},
+        {"name": "verifyingContract", "type": "address"}
+      ],
+      "Post": [
+        {"name": "stock", "type": "address"},
+        {"name": "speed", "type": "uint8"},
+        {"name": "sigmaBps", "type": "uint64"},
+        {"name": "skewK", "type": "uint64"},
+        {"name": "eventBumpBps", "type": "uint64"},
+        {"name": "buyBlockFrom", "type": "uint64"},
+        {"name": "buyBlockTo", "type": "uint64"},
+        {"name": "validUntil", "type": "uint64"},
+        {"name": "nonce", "type": "uint64"}
+      ]
+    },
+    "primaryType": "Post",
+    "domain": {
+      "name": "LemniscateVolOracle",
+      "version": "1",
+      "chainId": 31337,
+      "verifyingContract": "0x00000000000000000000000000000000000F0106"
+    },
+    "message": {
+      "stock": "0x1111111111111111111111111111111111111111",
+      "speed": 0,
+      "sigmaBps": 5200,
+      "skewK": 1250,
+      "eventBumpBps": 300,
+      "buyBlockFrom": 1790600000,
+      "buyBlockTo": 1790686400,
+      "validUntil": 1790007200,
+      "nonce": 7
+    }
+  },
+  "typeHash": "0x57fa32efe66fe7059b0a22e8c16eeffdc3911b7315a876ecedff47923206ed27", "typeHashNote": "// not-a-key",
+  "domainSeparator": "0x931e37fbd36786b8192eb3ccb9b51c73dbb494de61ddd87730a3fea014a95d99", "domainSeparatorNote": "// not-a-key",
+  "structHash": "0xfe652a04e362ed95cff49ffbf456419d3161613c715b78a00d7229af20011b3e", "structHashNote": "// not-a-key",
+  "digest": "0xca4ee714a9001820dc6e8b1079e0d142e94ba739977487a88bbbb4dd053d1e8c", "digestNote": "// not-a-key",
+  "signature": "0x026a042f350cde1b981ac3992b8ea3f1f66b1dacdfb5c05fa11d8a707da6e5232f8daa7a31bad07a4e89ff62e82c9b2397248f184e47cb974542e1d87733771e1c", "signatureNote": "// not-a-key: r || s || v"
+}

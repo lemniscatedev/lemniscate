@@ -7,9 +7,14 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/U
 import {IMarketHours} from "./interfaces/IMarketHours.sol";
 import {Roles} from "./libs/Roles.sol";
 import {Session} from "./libs/LemniscateTypes.sol";
+import {SessionKind} from "./libs/OptionTypes.sol";
+import {Holiday, NyseCalendar} from "./libs/NyseCalendar.sol";
 
 /// @title MarketHours
 /// @notice Keeper-pushed market sessions used by the engine to select its pricing regime.
+/// @dev Each pushed session carries a kind (REGULAR or EXTENDED). When the pushed calendar covers a timestamp
+/// ([first open, last close)) it is authoritative: inside a session -> its kind, in a gap -> CLOSED. Outside that
+/// range the admin-enabled NyseCalendar fallback answers, else UNKNOWN.
 contract MarketHours is Initializable, AccessControlUpgradeable, UUPSUpgradeable, IMarketHours {
     uint256 public constant MAX_SESSIONS = 32;
     uint256 public constant MAX_SESSION_LENGTH = 5 days + 1 hours;
@@ -18,6 +23,10 @@ contract MarketHours is Initializable, AccessControlUpgradeable, UUPSUpgradeable
     bytes32 public constant override KEEPER_ROLE = Roles.KEEPER_ROLE;
 
     Session[] private _sessions;
+    /// @dev Parallel to `_sessions`. Appended storage (upgrade-safe: taken from the gap below).
+    SessionKind[] private _kinds;
+    Holiday[] private _holidays;
+    bool private _fallbackEnabled;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -37,6 +46,24 @@ contract MarketHours is Initializable, AccessControlUpgradeable, UUPSUpgradeable
 
     /// @notice Replaces the pushed calendar with a validated list of sessions.
     function setSessions(Session[] calldata newSessions) external override onlyRole(KEEPER_ROLE) {
+        SessionKind[] memory kinds = new SessionKind[](newSessions.length); // all REGULAR (enum value 0)
+        _storeSessions(newSessions, kinds);
+    }
+
+    /// @notice Replaces the pushed calendar with sessions that each carry a kind (REGULAR or EXTENDED).
+    function setSessionsWithKinds(Session[] calldata newSessions, SessionKind[] calldata kinds)
+        external
+        override
+        onlyRole(KEEPER_ROLE)
+    {
+        if (kinds.length != newSessions.length) revert SessionKindsLength(newSessions.length, kinds.length);
+        for (uint256 i; i < kinds.length; ++i) {
+            if (kinds[i] != SessionKind.REGULAR && kinds[i] != SessionKind.EXTENDED) revert InvalidSessionKind(i);
+        }
+        _storeSessions(newSessions, kinds);
+    }
+
+    function _storeSessions(Session[] calldata newSessions, SessionKind[] memory kinds) private {
         uint256 count = newSessions.length;
         if (count > MAX_SESSIONS) revert TooManySessions(count);
 
@@ -56,8 +83,10 @@ contract MarketHours is Initializable, AccessControlUpgradeable, UUPSUpgradeable
         }
 
         delete _sessions;
+        delete _kinds;
         for (uint256 i; i < count; ++i) {
             _sessions.push(newSessions[i]);
+            _kinds.push(kinds[i]);
         }
 
         uint64 firstOpen = count == 0 ? 0 : newSessions[0].open;
@@ -104,7 +133,63 @@ contract MarketHours is Initializable, AccessControlUpgradeable, UUPSUpgradeable
         return (false, 0, 0, 0);
     }
 
+    /// @notice Admin-set holiday and early-close list for the fallback calendar. Strictly ascending by Eastern day,
+    /// at most 64 entries, early-close minute (if any) strictly between the regular open and the regular close.
+    function setHolidays(Holiday[] calldata newHolidays) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+        uint256 count = newHolidays.length;
+        if (count > NyseCalendar.MAX_HOLIDAYS) revert TooManyHolidays(count);
+        for (uint256 i; i < count; ++i) {
+            uint256 close = newHolidays[i].closeMinute;
+            if (close != 0 && (close <= NyseCalendar.REGULAR_OPEN || close >= NyseCalendar.REGULAR_CLOSE)) {
+                revert InvalidHoliday(i);
+            }
+            if (i != 0 && newHolidays[i].day <= newHolidays[i - 1].day) revert HolidaysUnsorted(i);
+        }
+        delete _holidays;
+        for (uint256 i; i < count; ++i) {
+            _holidays.push(newHolidays[i]);
+        }
+        emit HolidaysUpdated(count);
+    }
+
+    /// @notice Turns the on-chain NYSE fallback calendar on or off (off by default: set holidays first).
+    function setFallbackEnabled(bool enabled) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+        _fallbackEnabled = enabled;
+        emit FallbackEnabledSet(enabled);
+    }
+
+    /// @inheritdoc IMarketHours
+    function kindAt(uint256 ts) external view override returns (SessionKind) {
+        uint256 count = _sessions.length;
+        if (count != 0 && ts >= _sessions[0].open && ts < _sessions[count - 1].close) {
+            uint256 low;
+            uint256 high = count;
+            while (low < high) {
+                uint256 mid = (low + high) / 2;
+                if (_sessions[mid].open <= ts) low = mid + 1;
+                else high = mid;
+            }
+            // low >= 1 because ts >= _sessions[0].open.
+            if (ts < _sessions[low - 1].close) return _kinds[low - 1];
+            return SessionKind.CLOSED;
+        }
+        if (_fallbackEnabled) return NyseCalendar.kindAt(ts, _holidays);
+        return SessionKind.UNKNOWN;
+    }
+
+    function sessionKinds() external view override returns (SessionKind[] memory) {
+        return _kinds;
+    }
+
+    function holidays() external view override returns (Holiday[] memory) {
+        return _holidays;
+    }
+
+    function fallbackEnabled() external view override returns (bool) {
+        return _fallbackEnabled;
+    }
+
     function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
-    uint256[45] private __gap;
+    uint256[42] private __gap;
 }
