@@ -225,14 +225,20 @@ contract AgentRouter is IAgentRouter, ReentrancyGuardTransient {
         uint256 maxPerTrade = p.maxPerTradeUsdg;
         if (spent >= budget) revert BudgetExceeded(spent, 0, budget);
         uint256 limit = Math.min(Math.min(maxCostUsdg, maxPerTrade), budget - spent);
+        // Pull exactly what this buy costs: the engine's quote equals the execution to the wei (the trade's own accrual
+        // is simulated). Pulling the whole limit and refunding the rest used up the owner's ERC-20 allowance much faster
+        // than the budget, so a budget-sized approval ran out early (todo 23). A cost above the limit is reported as the
+        // policy error it is, exactly as the engine's Slippage would have been.
+        uint256 need = ENGINE.quote(id, units, true).usdg;
+        if (need > limit) _explainBuyRevert(abi.encodeWithSelector(IOptionEngine.Slippage.selector, need, limit), spent, budget, maxPerTrade);
 
-        // Same authorisation as sellFor (policy checked by the caller); USDG only pays the owner's own buy, rest refunded.
+        // Same authorisation as sellFor (policy checked by the caller); USDG only pays the owner's own buy.
         // slither-disable-next-line arbitrary-send-erc20
-        USDG.safeTransferFrom(owner, address(this), limit);
-        USDG.forceApprove(address(ENGINE), limit);
+        USDG.safeTransferFrom(owner, address(this), need);
+        USDG.forceApprove(address(ENGINE), need);
         uint256 before = USDG.balanceOf(address(this));
         (bool ok, bytes memory ret) = address(ENGINE).call(
-            abi.encodeCall(IOptionEngine.buy, (id, units, uint128(limit), deadline, owner))
+            abi.encodeCall(IOptionEngine.buy, (id, units, uint128(need), deadline, owner))
         );
         if (!ok) _explainBuyRevert(ret, spent, budget, maxPerTrade);
         (, tokens) = abi.decode(ret, (uint256, uint256));
@@ -240,7 +246,7 @@ contract AgentRouter is IAgentRouter, ReentrancyGuardTransient {
         if (cost > maxPerTrade) revert MaxPerTradeExceeded(cost, maxPerTrade);
         if (spent + cost > budget) revert BudgetExceeded(spent, cost, budget);
         USDG.forceApprove(address(ENGINE), 0);
-        if (limit > cost) USDG.safeTransfer(owner, limit - cost);
+        if (need > cost) USDG.safeTransfer(owner, need - cost);
         p.spentUsdg = uint128(spent + cost);
     }
 

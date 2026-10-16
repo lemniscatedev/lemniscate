@@ -32,6 +32,11 @@ contract ReentrantEngine {
         router.buyFor(owner, id, units, maxCost, deadline);
         return (0, 0);
     }
+
+    /// @dev The router prices a buy with the engine's quote before pulling USDG.
+    function quote(bytes32, uint256, bool) external pure returns (IOptionEngine.Quote memory q) {
+        q.usdg = 1;
+    }
 }
 
 /// @notice Todo 09: AgentRouter R1 to R10 against the real engine, registry and option tokens.
@@ -301,9 +306,26 @@ contract AgentRouterTest is EngineBase {
         vm.prank(owner);
         usdg.approve(address(router), PER_TRADE);
         (uint256 cost,) = _agentBuy(callN, 10e18);
-        assertEq(usdg.allowance(owner, address(router)), PER_TRADE - PER_TRADE, "pulled the limit");
+        assertEq(usdg.allowance(owner, address(router)), PER_TRADE - cost, "pulled exactly the cost");
         assertGt(PER_TRADE, cost);
-        assertEq(_spent(), cost, "net spend is the actual cost (rest refunded)");
+        assertEq(_spent(), cost, "net spend is the actual cost");
+    }
+
+    /// todo 23 (fork run): the website approves exactly the budget. The router used to pull each trade's whole limit
+    /// (min of maxCost, per-trade and remaining budget) and refund the rest, which does not give the allowance back,
+    /// so a budget-sized approval ran out long before the budget (InsufficientAllowance on the 3rd small buy). It now
+    /// pulls exactly the engine's quote, which equals the execution cost to the wei.
+    function test_R5_budgetSizedApprovalLastsTheWholeBudget() public {
+        vm.prank(owner);
+        usdg.approve(address(router), BUDGET);
+        uint256 total;
+        for (uint256 i; i < 6; ++i) {
+            (uint256 cost,) = _agentBuy(callN, 5e18); // ~12 USDG each, agent passes no max cost of its own
+            total += cost;
+            assertEq(usdg.allowance(owner, address(router)), BUDGET - total, "allowance follows the spend");
+        }
+        assertEq(_spent(), total);
+        assertGt(total, BUDGET / 2, "more than half the budget used on one budget-sized approval");
     }
 
     function test_R5_canSellFalseBlocksSells() public {
