@@ -120,8 +120,6 @@ export function renderModule(target: AbiTarget, resolved: ResolvedAbi): string {
   ].join("\n");
 }
 
-const NO_EVENT_DECL = "event";
-
 /** The frozen interfaces plus the extra entries services need. Edit here when an interface grows. */
 export const ABI_TARGETS: readonly AbiTarget[] = [
   {
@@ -159,18 +157,6 @@ export const ABI_TARGETS: readonly AbiTarget[] = [
     exportName: "AgentRouterAbi",
     implementations: ["AgentRouter"],
     iface: "IAgentRouter",
-    // IAgentRouter lands with todo 09; until then the entries fixed by the spec text of that todo.
-    fallback: [
-      "function setPolicy(address agent, uint128 budgetUsdg, uint128 maxPerTradeUsdg, uint64 expiresAt, bool canSell, bool canShield, address[] stocks)",
-      "function revoke(address agent)",
-      "function buyFor(address owner, bytes32 seriesId, uint128 units, uint128 maxCostUsdg, uint64 deadline) returns (uint256 cost, uint256 tokens)",
-      "function sellFor(address owner, bytes32 seriesId, uint128 tokens, uint128 minProceedsUsdg, uint64 deadline) returns (uint256 proceeds)",
-      "function shieldFor(address owner, address stock, uint128 tokenUnits, uint16 pctBelowBps, uint128 maxCostUsdg, uint64 deadline) returns (bytes32 id, uint256 cost)",
-      `${NO_EVENT_DECL} AgentTrade(address indexed owner, address indexed agent, bytes32 indexed seriesId, bool isBuy, uint256 usdg)`,
-      // Policy lifecycle events, as the API reads them (todo 15b). Replaced by the real artifact once IAgentRouter lands.
-      `${NO_EVENT_DECL} PolicySet(address indexed owner, address indexed agent, uint128 budgetUsdg, uint128 maxPerTradeUsdg, uint64 expiresAt, bool canSell, bool canShield)`,
-      `${NO_EVENT_DECL} PolicyRevoked(address indexed owner, address indexed agent)`,
-    ],
   },
   { file: "OptionToken", exportName: "OptionTokenAbi", implementations: ["OptionToken"], iface: "IOptionToken" },
   // Keeper-pushed sessions with a kind per session (setSessionsWithKinds, kindAt), todo 04.
