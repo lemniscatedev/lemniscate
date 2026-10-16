@@ -9,6 +9,8 @@ optimizer = true
 optimizer_runs = 200
 via_ir = true
 evm_version = "cancun"
+# The system gas tests build 1,000 live series in one test (more than the 2^30 default test gas limit).
+gas_limit = 9223372036854775807
 # Pinned build-of-record settings (these are the defaults the mainnet build used).
 bytecode_hash = "ipfs"
 cbor_metadata = true

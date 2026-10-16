@@ -12,6 +12,8 @@ How to run:
 | Everything (fast defaults: fuzz 256 runs, invariants 50 x 20) | `forge test` |
 | Deep stateful run (500 runs x 200 calls, fuzz 5,000) | `FOUNDRY_PROFILE=deep forge test --match-contract EngineInvariantTest` |
 | Gas record (buy, sell, accrueMany(50), totalLiability(200)) | `forge test --match-contract EngineGasTest -vv` |
+| System gas table, real engine + pool, isolated calls (todo 07b R5) | `forge test --match-contract SystemGasTest -vv` |
+| Deep system run (real engine + pool, 500 runs x 200 calls) | `FOUNDRY_PROFILE=deep forge test --match-contract SystemInvariantTest` |
 | Mutation testing | `python3 script/mutation/mutate.py` (see `script/mutation/README.md`) |
 
 ## 1. Engine invariants (stateful)
@@ -37,6 +39,7 @@ Expected reverts are swallowed; a Panic is recorded and fails `invariant_noPanic
 | E13 | no Panic | `invariant_noPanic` |
 | E14 | same-block round trips never profit | `invariant_noRoundTripProfit` |
 | E15 | `netGreeks` is the name book (holders' long side) | `invariant_netGreeksAreTheBook` |
+| E16 | the live list of each stock is exactly its series with tokens outstanding (todo 07b R2) | `invariant_liveSetIsNonZeroSupply` |
 
 ## 2. Engine rules (engine todo R1-R21)
 
@@ -87,7 +90,7 @@ over the real `WriterPool` (ERC1967 proxy), `Reserve`, `FeeRouter` and `UniswapV
 | R5 | Perp equity: HEDGER only, asOf not in the future and increasing, <= 10%/h move without a fill ref, stale after 2h (excluded from NAV) | `test/pool/WriterPool.t.sol::test_R5_hedgeEquityPosts` |
 | R6 | Reserve takes 15% of spread up to 5% of NAV; losses below the high-water mark are covered by the reserve before LP NAV; exits and payouts draw only the reserve share | `test/pool/WriterPool.t.sol::test_R6_reserveAbsorbsFirst`, `::test_R6_payDrawsReserveOnlyUpToItsShare`, `test/pool/FeeRouter.t.sol::test_R6_reserveCoverIsPoolOnly` |
 | R7 | Protocol fee 10% of spread and funding; owed when cash is short; weekly 80/10/5/5 split (workers: pool/keepers/hedger), unset buckets held, dust stays | `test/pool/WriterPool.t.sol::test_R7_protocolFeeOnSpreadAndFunding`, `::test_R7_feeOwedWhenCashIsShort`, `test/pool/FeeRouter.t.sol::test_R7_feeRouterSplit`, `::test_R7_roundingDustStaysInRouter`, `::test_R7_splitsAreAdminOnlyAndSumToOne` |
-| R8 | Caps 3500 / 800 bps exposed (`capsFor`), admin only | `test/pool/WriterPool.t.sol::test_R8_capsExposedToEngine` |
+| R8 | Caps 3500 / 800 bps exposed (`capsFor`), mirrored from the engine's `capBps()` (one source of truth, todo 07b) | `test/pool/WriterPool.t.sol::test_R8_capsExposedToEngine` |
 | R9 | onSale / onFunding / pay engine only; pay raises cash from hedges, then the reserve share, else reverts Insolvent | `test/pool/WriterPool.t.sol::test_R9_engineOnly`, `::test_R9_payRaisesCashThenRevertsInsolvent` |
 | R10 | Deposit then request + claim at an unchanged mark never returns more than deposited | `test/pool/PoolFuzz.t.sol::testFuzz_R10_navRoundTripNeverProfits`, `test/pool/WriterPool.t.sol::test_R10_navRoundTripNeverProfits` |
 | R11 | Guardian can pause deposits only (not unpause, not params); claims and pay-outs keep working | `test/pool/WriterPool.t.sol::test_R11_guardianPausesDepositsOnly` |
@@ -102,3 +105,30 @@ over the real `WriterPool` (ERC1967 proxy), `Reserve`, `FeeRouter` and `UniswapV
   revaluation at the series' last touch, not a delta-gamma approximation: for Daily options a delta-gamma estimate of a
   25% gap overstates the loss about four times. The book is exact at the prices it was refreshed at and within 5% after
   a 0.5% move (`testFuzz_R4_stressWithin5PctAfterHalfPctMoves`); the keeper's hourly `accrueMany` refreshes it.
+
+## 6. Engine + pool integration (todo 07b)
+
+`test/system/` runs the REAL `LemniscateEngine` and REAL `WriterPool` (with `Reserve`, `FeeRouter`, `PoolHedging`,
+`UniswapV3HedgeAdapter`), the real `SeriesRegistry`, `PriceGuard` and `VolOracle` (signed posts) over mock feeds
+(`SystemFixture`). Handler `SystemHandler`: buys, sells, LP deposits / requests / claims, hedger rebalances, keeper
+accruals, moves of up to 3%, 25% gaps (others up to 10%), session changes, time.
+
+| Rule | Property | Test (`test/system/`) |
+|------|----------|------|
+| R1 | Pool NAV, deposits, claims, payouts use `engine.bookValue()` (O(1)); sell < 1.2M gas with 200 listed series; `nav()` < 2M gas with 1,000 series | `SystemGas.t.sol::test_R1_sellGasWith200ListedSeries`, `::test_R1_navGasWith1000Series` |
+| R1 | `bookValue == totalLiability` right after accrueMany of every live series | `SystemGas.t.sol::test_R1_bookValueEqualsTotalLiabilityAfterAccrueAll`, `SystemInvariant.t.sol::invariant_bookValueMatchesAfterAccrual` |
+| R1 | One source for the 35% / 8% caps: the engine's parameters; the pool mirrors `engine.capBps()` | `test/pool/WriterPool.t.sol::test_R8_capsExposedToEngine` |
+| R2 | 1,000 archived zero-supply series change buy, sell, accrueMany(live), totalLiability and shield gas by < 5%; accrueMany skips an empty series for < 5k gas | `SystemGas.t.sol::test_R2_onlyLiveSeriesCost` |
+| R3 | Epoch ids, relist below norm 0.001 or when archived, old epoch archived and sellable, `.N` symbols | `test/SeriesRegistry.t.sol::test_R3_seriesEpochs`, `::test_R3_relistThresholdAdminOnlyAndBounded`, `SystemGas.t.sol::test_R3_seriesEpochsEndToEnd` |
+| R4 | USDG conserved; engine and adapter hold none | `SystemInvariant.t.sol::invariant_usdgConserved` |
+| R4 | NAV > 0 through moves and 25% gaps; a gap never loses more than the stress loss measured on the book; no buy leaves the book over the budget | `SystemInvariant.t.sol::invariant_poolSolventUnderGaps`, `::test_R4_fullBookGapWithinStressBudget` |
+| R4 | A trader's USDG only leaves as a buy's returned cost (loss bounded by premium) | `SystemInvariant.t.sol::invariant_buyerLossBoundedByPremium` |
+| R4 | Norm monotone; pool shares supply == holders; no Panic | `SystemInvariant.t.sol::invariant_normMonotone`, `::invariant_sharesSupplyEqualsHolders`, `::invariant_noPanic` |
+| R5 | Gas table: buy, sell, accrueMany(50), deposit, claim, rebalance, nav, totalLiability | `SystemGas.t.sol::test_R5_gasTable` |
+
+Notes:
+- `bookValue` staleness bound: each series is valued at its last touch; the keeper accrues every live series
+  (`engine.liveSeries(stock)`) at least hourly, so NAV lags the exact liability by at most about one hour of price and
+  vol moves; the NAV guard band (entries at the high edge, exits at the low edge) covers the first part of it.
+- The stress test counts the pool's spot hedge only on names the engine has a book for (priced at the name's last
+  refresh). The hedger hedges names with live options and unwinds the rest; the handler does the same.
