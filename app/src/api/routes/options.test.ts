@@ -289,7 +289,15 @@ suite("option API over indexed data", () => {
     expect(body.series).toBe(id(4));
     const decoded = decodeFunctionData({ abi: OptionEngineAbi, data: body.data });
     expect(decoded.functionName).toBe("shield");
-    expect(lower(decoded.args)).toEqual([NVDA, 5n * 10n ** 18n, 1000, BigInt(body.maxCostUsdg), BigInt(body.deadline)]);
+    const pct = Number(decoded.args[2]);
+    expect(lower(decoded.args)).toEqual([NVDA, 5n * 10n ** 18n, pct, BigInt(body.maxCostUsdg), BigInt(body.deadline)]);
+    // todo 23 fork bug: the engine buys the LARGEST buyable Weekly put <= S x (1 - pct) (EngineTradeLib.pickShield).
+    // The calldata must make that rule land on the strike the API quoted (200), not on nothing (pct 1000 -> 198).
+    const engineTarget = 220 * (10_000 - pct) / 10_000;
+    const enginePick = [200, 220].filter((k) => k <= engineTarget).at(-1);
+    expect(enginePick).toBe(200);
+    // and it still lands there if the price moves 0.5% either way before the transaction is mined
+    for (const s of [220 * 0.995, 220 * 1.005]) expect([200, 220].filter((k) => k <= s * (10_000 - pct) / 10_000).at(-1)).toBe(200);
     expect(body.approvals[0].token).toBe(ADDR.usdg);
     expect((await post("/v1/intent/shield", { name: "ZZZZ", tokenUnits: "5", account: ALICE })).status).toBe(404);
     await setTick("CLOSED");

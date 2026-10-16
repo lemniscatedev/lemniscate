@@ -193,12 +193,13 @@ export function registerQuoteRoutes(app: OpenAPIHono, deps: ApiDependencies): vo
     if (!ctx) return context.json({ error: "NO_PRICE", message: BLOCK_MESSAGES.NO_PRICE }, 503);
     const spot = Number(ctx.tick.spot);
     const target = spot * (10_000 - body.strikePctBelowBps) / 10_000;
-    // Shield is a Weekly Down option: the listed, buyable Weekly put whose strike is nearest the target.
-    const candidates = (await listSeries(deps, { name: body.name, speed: "WEEKLY" }))
-      .filter((entry) => !entry.isCall && entry.buyable)
+    // Shield is a Weekly Down option: the listed, buyable Weekly put below the price whose strike is nearest the target.
+    const puts = (await listSeries(deps, { name: body.name, speed: "WEEKLY" })).filter((entry) => !entry.isCall && entry.buyable);
+    const candidates = puts.filter((entry) => Number(entry.strike) < spot)
       .sort((a, b) => Math.abs(Number(a.strike) - target) - Math.abs(Number(b.strike) - target));
     const series = candidates[0];
     if (!series) return context.json({ error: "NO_SHIELD_SERIES", message: "No Weekly Down option is open for purchase on this name." }, 409);
+    const strikePctBelowBps = shieldPctFor(Number(series.strike), spot, puts.map((entry) => Number(entry.strike)));
     const quote = quoteUnits(seriesInputs(series), marketInputs(ctx, series), tokenUnits, true);
     if (!quote) return context.json({ error: "NO_VOL", message: BLOCK_MESSAGES.NO_VOL, reason: "NO_VOL" as const }, 409);
     if (quote.buyBlock) return context.json({ error: "BUY_BLOCKED", message: BLOCK_MESSAGES[quote.buyBlock], reason: quote.buyBlock }, 409);
@@ -207,7 +208,7 @@ export function registerQuoteRoutes(app: OpenAPIHono, deps: ApiDependencies): vo
     const deadline = Math.floor(now.getTime() / 1_000) + body.deadlineSeconds;
     const data = encodeFunctionData({
       abi: OptionEngineAbi, functionName: "shield",
-      args: [stockEntry.stock as Address, tokenUnits, body.strikePctBelowBps, maxCost, BigInt(deadline)],
+      args: [stockEntry.stock as Address, tokenUnits, strikePctBelowBps, maxCost, BigInt(deadline)],
     });
     return context.json({
       kind: "shield" as const, to: engine, data, value: "0" as const,
@@ -218,4 +219,16 @@ export function registerQuoteRoutes(app: OpenAPIHono, deps: ApiDependencies): vo
       note: "The engine picks the listed Weekly Down series nearest your protection level when the transaction runs.",
     }, 200);
   });
+}
+
+/** The engine's shield() buys the LARGEST buyable Weekly put with strike <= S x (1 - pct) (EngineTradeLib.pickShield).
+ * The level the user asked for is only used to choose the strike above; this returns the pct that makes the engine land
+ * on that same strike: it aims half way to the next listed strike up, so a price move of up to about half a strike step
+ * between the quote and the transaction still selects it (the engine never sees the requested level). todo 23: the raw
+ * requested pct was passed before, so the default 10% level targeted below the lowest listed strike and reverted. */
+export function shieldPctFor(strike: number, spot: number, listedStrikes: readonly number[]): number {
+  const above = listedStrikes.filter((k) => k > strike).sort((a, b) => a - b)[0];
+  const aim = above !== undefined ? (strike + above) / 2 : strike * 1.005;
+  const pct = Math.floor((1 - aim / spot) * 10_000);
+  return Math.min(9_999, Math.max(0, pct));
 }
