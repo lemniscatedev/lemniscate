@@ -53,3 +53,6 @@ lcov.info
 
 # Local mainnet stack working directory (env files, logs, keystore copies).
 .mainnet/
+
+# Local anvil mainnet-fork stack (state, rpc cache, logs, env files with anvil dev keys, database cluster).
+.fork/

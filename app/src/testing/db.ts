@@ -23,7 +23,7 @@ export interface TestDatabase {
 /** A tiny stand-in for the TimescaleDB functions the migrations call, for servers without the extension. It only has
  * to make the real migration SQL run; it does not partition anything. Production and CI-with-Timescale use the real
  * extension, where the `timescaledb.continuous` option and the policies are honoured. */
-const TIMESCALE_SHIM = `
+export const TIMESCALE_SHIM = `
 CREATE OR REPLACE FUNCTION create_hypertable(rel text, time_col text, chunk_time_interval interval DEFAULT NULL, if_not_exists boolean DEFAULT false)
   RETURNS void LANGUAGE sql AS 'SELECT';
 CREATE OR REPLACE FUNCTION add_continuous_aggregate_policy(rel text, start_offset interval DEFAULT NULL, end_offset interval DEFAULT NULL, schedule_interval interval DEFAULT NULL)

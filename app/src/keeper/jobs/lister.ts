@@ -95,7 +95,7 @@ export function createListerJob(context: KeeperContext) {
         { address: priceGuard, abi: PriceGuardAbi, functionName: "read", args: [stock] },
         { address: registry, abi: SeriesRegistryAbi, functionName: "allowedStock", args: [stock] },
       ]) as never,
-    }) as { status: "success" | "failure"; result?: unknown }[];
+    }) as { status: "success" | "failure"; result?: unknown; error?: { shortMessage?: string; message?: string } }[];
     const prices = new Map<string, PriceRead | undefined>();
     const allowed = new Map<string, boolean>();
     stocks.forEach(({ stock }, index) => {
@@ -106,6 +106,7 @@ export function createListerJob(context: KeeperContext) {
         prices.set(stock, { s: BigInt(value.s), session: Number(value.session), fresh: Boolean(value.fresh), buysPaused: Boolean(value.buysPaused) });
       }
       if (allow?.status === "success") allowed.set(stock, Boolean(allow.result));
+      if (price?.status !== "success") context.logger.warn({ stock, err: price?.error?.shortMessage ?? price?.error?.message }, "Lister: PriceGuard.read failed");
     });
 
     const existing = await reader.readAll();
