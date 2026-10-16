@@ -190,10 +190,13 @@ class PgStore:
     def write_intent(self, i: Intent) -> None:
         self._writer.execute(
             "INSERT INTO vol_post_intents (stock_token, name, speed, sigma_bps, skew_k, event_bump_bps, buy_block_from, buy_block_to, "
-            "valid_until, nonce, digest, sig, status, flags) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb) "
+            "valid_until, nonce, digest, sig, status, flags, created_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,COALESCE(%s, now())) "
             "ON CONFLICT (stock_token, speed, nonce) DO NOTHING",
+            # created_at is the time the pass planned with (wall, or the chain's with VOL_CLOCK=chain): recent_sent() and
+            # the rate-limit mirror compare it with that same clock.
             (i.stock, i.name, i.speed, i.sigma_bps, i.skew_k, i.event_bump_bps, _dt(i.buy_block_from), _dt(i.buy_block_to),
-             _dt(i.valid_until), i.nonce, i.digest, i.sig, i.status, json.dumps(i.flags)),
+             _dt(i.valid_until), i.nonce, i.digest, i.sig, i.status, json.dumps(i.flags), _dt(i.created_at)),
         )
 
     def mark_intent(self, stock: str, speed: str, nonce: int, status: str, tx_hash: str | None) -> None:

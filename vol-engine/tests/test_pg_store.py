@@ -128,3 +128,19 @@ def test_full_cycle_against_postgres(dsn):
         assert len(rows) == 1 and rows[0][1] == 4321 and abs(rows[0][0] - now.timestamp()) < 120
     finally:
         store.close()
+
+
+def test_intents_keep_the_planning_clock_for_the_rate_limit_mirror(dsn):
+    """todo 23: with VOL_CLOCK=chain the engine plans with the fork's block time, but intents were stamped with the
+    database's now(), so recent_sent() mixed two clocks and the 5-minute rate-limit mirror let posts through that the
+    contract then rejected (RateLimited). An intent keeps the time it was planned at."""
+    store = PgStore(dsn)
+    try:
+        chain_now = 1_900_000_000.0  # far ahead of wall time, like a warped fork
+        stock = STOCKS["NVDA"]
+        store.write_intent(Intent(stock, "NVDA", "DAILY", 3000, 1, 0, 0, 0, int(chain_now) + 3600, 7, "0x", "0x", "pending",
+                                  created_at=chain_now))
+        store.mark_intent(stock, "DAILY", 7, "sent", "0xabc")
+        assert store.recent_sent(stock, "DAILY", chain_now + 60) == [(chain_now, 3000)]
+    finally:
+        store.close()
