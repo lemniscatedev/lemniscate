@@ -15,7 +15,7 @@ export interface EquityDeps {
 
 export type EquityOutcome =
   | { posted: true; equityUsdg: bigint; ref: Hex; hash?: string | undefined }
-  | { posted: false; reason: "interval" | "dry_run" | "venue_unhealthy"; equityUsdg?: bigint; ref?: Hex; unhealthy?: string[] };
+  | { posted: false; reason: "interval" | "dry_run" | "venue_unhealthy" | "no_perp_venue"; equityUsdg?: bigint; ref?: Hex; unhealthy?: string[] };
 
 /** The venue snapshot that is hashed into `ref`. Order and shape are fixed so the hash is reproducible. */
 export async function venueSnapshot(venues: readonly IHedgeVenue[], stocks: readonly Address[], asOf: number) {
@@ -34,7 +34,11 @@ export const snapshotRef = (snapshot: unknown): Hex => keccak256(stringToHex(JSO
 
 /** R5. Hedge equity = sum of venue equity (spot: wallet USDG + stock at TWAP; perp: account equity). Posted once per
  * interval. Fails closed: any unhealthy venue, or any error reading one, means nothing is posted. */
-export async function postHedgeEquityOnce(deps: EquityDeps): Promise<EquityOutcome> {
+export async function postHedgeEquityOnce(input: EquityDeps): Promise<EquityOutcome> {
+  // Only off-chain (perp) venues are posted (decision 19): the pool's spot hedge is valued on chain inside NAV. With no
+  // perp venue there is nothing to post, and posting a zero would arm pool.hedgeStale() for no reason.
+  const deps = { ...input, venues: input.venues.filter((v) => v.postsEquity !== false) };
+  if (!deps.venues.length) return { posted: false, reason: "no_perp_venue" };
   if (deps.nowSeconds - deps.lastPostedAsOf < deps.intervalSeconds) return { posted: false, reason: "interval" };
   const health = await Promise.all(deps.venues.map(async (v) => ({ name: v.name, ok: await v.healthy().catch(() => false) })));
   const unhealthy = health.filter((h) => !h.ok).map((h) => h.name);

@@ -23,6 +23,8 @@ export interface IHedgeVenue {
   equityUsdg(): Promise<bigint>;
   trade(stock: Address, deltaUnits: bigint, maxSlippageBps: number): Promise<HedgeFill>;
   healthy(): Promise<boolean>;
+  /** false for a venue whose holdings are valued on chain (the pool's spot hedge): never part of the posted equity. */
+  readonly postsEquity?: boolean;
   /** Largest absolute trade (stock wei) the venue takes right now in that direction; used to cap and to report unhedged delta. */
   maxTrade?(stock: Address, buy: boolean): Promise<bigint>;
 }

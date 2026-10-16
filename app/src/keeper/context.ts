@@ -19,18 +19,13 @@ export interface IndexerMetadata {
   lastIndexedBlock?: string;
   indexerLastOk?: string;
   indexerLastError?: string | null;
-  /** @deprecated Retired power-payoff vault settings; only the legacy hedge job still reads them (todo 14 replaces it). */
-  vaultConfig?: {
-    minHedgeTradeUsdg: string;
-    rebalanceThresholdBps: number;
-  };
 }
 
 export interface KeeperContext {
   sql: LemniscateDbClient["sql"];
   clients: ServiceClients;
-  /** The option-system deployment. The `vault` member exists only for the legacy hedge job (todo 14 removes it). */
-  deployment: OptionDeployment & { contracts: { vault: Address } };
+  /** The option-system deployment. */
+  deployment: OptionDeployment;
   config: RuntimeConfig;
   logger: Logger;
   tx: ReturnType<typeof createTransactionQueue>;

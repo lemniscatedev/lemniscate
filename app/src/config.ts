@@ -54,6 +54,7 @@ const envSchema = z.object({
   HEDGER_MAX_LIQUIDITY_BPS: z.coerce.number().int().min(1).max(10_000).default(2500),
   HEDGER_EQUITY_INTERVAL_SECONDS: z.coerce.number().int().min(60).default(3600),
   HEDGER_CYCLE_SECONDS: z.coerce.number().int().min(10).default(60),
+  // Unused since todo 14b/23 (the hedger calls pool.rebalance; the pool holds its own adapter). Kept so old env files parse.
   HEDGER_ADAPTER_ADDRESS: z.string().regex(/^(0x[0-9a-fA-F]{40})?$/).default(""),
   HEDGER_PERP_ENABLED: z.enum(["0", "1"]).default("0").transform((value) => value === "1"),
   ARCUS_API_URL: z.string().url().default("https://api.arcus.xyz"),

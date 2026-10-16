@@ -4,6 +4,7 @@ export * from "./policy";
 export * from "./service";
 export * from "./equity";
 export * from "./uniswap-spot";
+export * from "./pool-spot";
 export * from "./mock-perp";
 export * from "./api-perp";
 export * from "./settings";

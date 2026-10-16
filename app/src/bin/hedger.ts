@@ -6,8 +6,8 @@ import { createRpcPool } from "../chain/rpc-pool";
 import { loadConfig, optionalEnv, stripKeeperSecrets } from "../config";
 import { createDbClient } from "../db/client";
 import {
-  acquireHedgerLock, ApiPerpVenue, assertHedgerKeyDistinct, createChainSpotPort, hedgerSettings, loadBook, loadHedgerSigningKey,
-  newHedgerState, postHedgeEquityOnce, resolveRoutes, runHedgeCycle, UniswapV3SpotVenue, type IHedgeVenue,
+  acquireHedgerLock, ApiPerpVenue, assertHedgerKeyDistinct, createChainSpotPort, createPoolSpotPort, hedgerSettings, loadBook,
+  loadHedgerSigningKey, newHedgerState, PoolSpotVenue, postHedgeEquityOnce, resolveRoutes, runHedgeCycle, type IHedgeVenue,
 } from "../hedger";
 import { createScheduler } from "../keeper/scheduler";
 import { createTransactionQueue } from "../keeper/tx";
@@ -22,9 +22,8 @@ if (!hedgerKey) throw new Error("HEDGER_PRIVATE_KEY is required (a wallet that i
 const config = loadConfig();
 const settings = hedgerSettings(config);
 const logger = createLogger(config.LOG_LEVEL, "hedger");
-if (!/^0x[0-9a-fA-F]{40}$/.test(config.HEDGER_ADAPTER_ADDRESS)) throw new Error("HEDGER_ADAPTER_ADDRESS is required");
-const adapter = config.HEDGER_ADAPTER_ADDRESS as Address;
 const deployment = await loadOptionDeployment(config.DEPLOYMENT_FILE);
+const poolAddress = deployment.contracts.pool as Address;
 const clients = createClients(config, createRpcPool(config), hedgerKey);
 const hedger = clients.walletClient!.account!.address;
 const { sql } = createDbClient(config);
@@ -43,9 +42,14 @@ const tx = createTransactionQueue(clients, {
 const stocks = deployment.stocks.map((s) => ({ name: s.name, stock: s.stock as Address }));
 const routes = await resolveRoutes(clients, deployment.contracts.usdg as Address, stocks);
 logger.info({ hedger, dryRun: settings.dryRun, routed: [...routes.keys()].length, perp: config.HEDGER_PERP_ENABLED }, "Hedger starting");
-const spot = new UniswapV3SpotVenue(
-  createChainSpotPort({ clients, submit: (t) => tx.submit(t), hedger, adapter, usdg: deployment.contracts.usdg as Address, routes, twapSeconds: settings.twapSeconds }),
-  { usdg: deployment.contracts.usdg as Address, stocks: [...routes.keys()], maxLiquidityBps: settings.maxLiquidityBps },
+// Decision 19 (todo 14b): the spot hedge lives in the Writer Pool. The hedger reads Uniswap prices/TWAP/depth for its caps
+// and calls pool.rebalance (HEDGER role); its wallet holds gas only. The price reader needs no adapter or approvals.
+const uniswapPrices = createChainSpotPort({
+  clients, submit: (t) => tx.submit(t), hedger, adapter: poolAddress, usdg: deployment.contracts.usdg as Address, routes, twapSeconds: settings.twapSeconds,
+}).prices;
+const spot = new PoolSpotVenue(
+  createPoolSpotPort({ clients, submit: (t) => tx.submit(t), pool: poolAddress, usdg: deployment.contracts.usdg as Address, prices: uniswapPrices }),
+  { stocks: [...routes.keys()], maxLiquidityBps: settings.maxLiquidityBps },
 );
 const venues: IHedgeVenue[] = [];
 if (config.HEDGER_PERP_ENABLED) {

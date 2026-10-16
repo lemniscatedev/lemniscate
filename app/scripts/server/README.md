@@ -70,7 +70,7 @@ The owner wallet never goes on a server. Local development can still use `KEEPER
 
    `<server>` is the address, an `~/.ssh/config` alias, or `user@address` (root by default). Extra ssh options go in `SSH_OPTS`.
    Add `MCP_DOMAIN=mcp.<your-domain>` to publish the MCP server. This copies this folder to `/root/lemniscate-server` and runs `provision.sh` there.
-4. **Settings.** On the server, edit `/etc/lemniscate/lemniscate.env` and replace each `CHANGE_ME`: `CORS_ORIGINS` (the website origins), `HEDGER_ADAPTER_ADDRESS` and `VOL_ORACLE_ADDRESS` (from the deployment output), `ALPHAVANTAGE_API_KEY` (free key; empty keeps the earnings import off). `deploy.sh` compares `VOL_ORACLE_ADDRESS` with `4663.json`.
+4. **Settings.** On the server, edit `/etc/lemniscate/lemniscate.env` and replace each `CHANGE_ME`: `CORS_ORIGINS` (the website origins), `VOL_ORACLE_ADDRESS` (from the deployment output), `ALPHAVANTAGE_API_KEY` (free key; empty keeps the earnings import off). `deploy.sh` compares `VOL_ORACLE_ADDRESS` with `4663.json`.
 5. **Keys.** Copy the keystore and password file of each role into `/etc/lemniscate/keys/` with these names, then lock them down:
 
    ```
