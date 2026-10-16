@@ -1,0 +1,7 @@
+# Extends the default ruleset. Vendored third-party libraries hold upstream test strings, not secrets.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Vendored upstream libraries"
+paths = ['''^contracts/lib/''']

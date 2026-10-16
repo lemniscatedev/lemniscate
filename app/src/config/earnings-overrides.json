@@ -1,0 +1,42 @@
+[
+  {
+    "symbol": "TSLA",
+    "date": "2026-10-21",
+    "session": "post",
+    "confirmed": true,
+    "sourceUrl": "https://ir.tesla.com/press-release/tesla-third-quarter-2026-production-deliveries-and-deployments",
+    "note": "Tesla IR advisory: Q3 2026 results after market close on Oct 21; webcast at 5:30 p.m. ET. Checked 2026-10-08."
+  },
+  {
+    "symbol": "AAPL",
+    "date": "2026-11-02",
+    "session": "post",
+    "confirmed": true,
+    "sourceUrl": "https://investor.apple.com/investor-relations/default.aspx",
+    "note": "Apple IR FY26 Q4 event lists Nov 2 at 2 p.m. PT / 5 p.m. ET. Checked 2026-10-08."
+  },
+  {
+    "symbol": "PLTR",
+    "date": "2026-11-02",
+    "session": "post",
+    "confirmed": false,
+    "sourceUrl": "https://investors.palantir.com/events",
+    "note": "Unconfirmed calendar estimate; Palantir IR's latest event was Q2 2026 on 2026-10-08."
+  },
+  {
+    "symbol": "AMD",
+    "date": "2026-11-03",
+    "session": "post",
+    "confirmed": true,
+    "sourceUrl": "https://ir.amd.com/news-events/press-releases/detail/1300/amd-to-report-fiscal-third-quarter-2026-financial-results",
+    "note": "AMD IR confirms Nov 3 after market close; webcast at 5 p.m. ET. Checked 2026-10-08."
+  },
+  {
+    "symbol": "NVDA",
+    "date": "2026-11-17",
+    "session": "unknown",
+    "confirmed": true,
+    "sourceUrl": "https://investor.nvidia.com/files/content_files/TRANSCRIPT_-NVIDIA-Corp-NVDA-US-Q2-2027-Earnings-Call-26-August-2026-5_00-PM-ET.pdf",
+    "note": "NVIDIA IR's Q2 FY2027 transcript says its Q3 FY2027 earnings call is scheduled for Nov 17; release session is unstated. Checked 2026-10-08."
+  }
+]

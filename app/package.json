@@ -1,0 +1,32 @@
+{
+  "name": "lemniscate-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.2",
+  "scripts": {
+    "api": "bun run src/bin/api.ts",
+    "smoke": "bun run scripts/smoke.ts",
+    "fixtures": "bun run scripts/fixtures.ts",
+    "indexer": "bun run src/bin/indexer.ts",
+    "keeper": "bun run src/bin/keeper.ts",
+    "migrate": "bun run src/bin/migrate.ts",
+    "db:generate": "drizzle-kit generate",
+    "typecheck": "tsc --noEmit",
+    "rpc-pool:check": "bun run src/chain/rpc-pool.check.ts"
+  },
+  "dependencies": {
+    "@hono/zod-openapi": "^1.1.3",
+    "drizzle-orm": "^0.45.3",
+    "hono": "4.13.11",
+    "pino": "^9.7.0",
+    "postgres": "^3.4.7",
+    "viem": "2.57.1",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.18",
+    "drizzle-kit": "^0.31.4",
+    "typescript": "^5.9.3"
+  }
+}

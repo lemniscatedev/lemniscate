@@ -1,0 +1,31 @@
+# Hand-picked mutants: file | exact original text (must occur once) | replacement | what it breaks
+src/LemniscateEngine.sol | quote.fee = LemniscateMath.bpsUp(usdgIn, config.feeBps); | quote.fee = LemniscateMath.bps(usdgIn, config.feeBps); | buy fee rounds down
+src/LemniscateEngine.sol | return isSell ? fairPrice - adjustment : fairPrice + adjustment; | return isSell ? fairPrice + adjustment : fairPrice - adjustment; | spread sign flipped
+src/LemniscateEngine.sol | if (devBps > bandBps) devBps = bandBps; | if (false) devBps = bandBps; | band cap dropped
+src/LemniscateEngine.sol | if (newMarketLiability > Math.mulDiv(nav, config.maxMarketExposureBps, BPS)) revert MarketCapExceeded(); | if (false) revert MarketCapExceeded(); | market cap dropped
+src/LemniscateEngine.sol | if (total + addedLiability > Math.mulDiv(nav, maxGlobalExposureBps, BPS)) revert GlobalCapExceeded(); | if (false) revert GlobalCapExceeded(); | global cap dropped
+src/LemniscateEngine.sol | if (grossUsdg > cap || used > cap - grossUsdg) revert PausedSellCapExceeded(); | if (grossUsdg > cap) revert PausedSellCapExceeded(); | paused budget ignores usage
+src/LemniscateEngine.sol | : Math.mulDiv(state.pausedSellUsed, PAUSED_SELL_WINDOW - elapsed, PAUSED_SELL_WINDOW, Math.Rounding.Ceil); | : 0; | paused budget forgets usage
+src/LemniscateEngine.sol | if (elapsed > MAX_ACCRUAL) elapsed = MAX_ACCRUAL; | if (false) elapsed = MAX_ACCRUAL; | 7-day accrual cap dropped
+src/LemniscateEngine.sol | return projected < MIN_NORM_FACTOR ? MIN_NORM_FACTOR : projected; | return projected; | normFactor floor dropped
+src/LemniscateEngine.sol | || m.index * 4 <= goodIndex) { | || m.index * 2 <= goodIndex) { | transient guard at 30% instead of 50%
+src/LemniscateEngine.sol | if (!m.valid || m.updatedAt <= state.lastGoodAt || | if (!m.valid || m.updatedAt < state.lastGoodAt || | paused mark accepts same-age round
+src/LemniscateEngine.sol | if (maxAge != 0 && block.timestamp - m.updatedAt > maxAge) revert RegimePaused(); | if (false) revert RegimePaused(); | off-hours buy staleness guard dropped
+src/LemniscateEngine.sol | if (m.regime == Regime.PAUSED) _consumePausedSellCap(id, quote.grossUsdg); | if (false) _consumePausedSellCap(id, quote.grossUsdg); | paused sells uncapped
+src/LemniscateEngine.sol | if (carryWad < config.minCarryWad) carryWad = config.minCarryWad; | if (false) carryWad = config.minCarryWad; | min carry clamp dropped
+src/LemniscateEngine.sol | if (utilization > BPS) utilization = BPS; | if (false) utilization = BPS; | utilization clamp dropped
+src/LemniscateEngine.sol | usdgOut = vault.pay(recipient, quote.amountOut, id); | usdgOut = vault.pay(recipient, quote.grossUsdg, id); | seller paid the fee too
+src/LemniscateEngine.sol | if (treasuryFee != 0) vault.pay(treasury, treasuryFee, id);\n\n        config.token.mint | if (quote.fee != 0) vault.pay(treasury, quote.fee, id);\n\n        config.token.mint | treasury takes the whole buy fee
+src/WriterPool.sol | if (from != address(0) && to != address(0) && unlockTime(from) > block.timestamp) revert WithdrawalLocked(); | if (from != address(0) && to != address(0) && unlockTime(from) < block.timestamp) revert WithdrawalLocked(); | lock check inverted
+src/WriterPool.sol | shares = _toShares(assets, v.navHigh, Math.Rounding.Floor);\n        _deposit | shares = _toShares(assets, v.navLow, Math.Rounding.Floor);\n        _deposit | deposits priced at the exit edge
+src/WriterPool.sol | v, _msgSender(), receiver, owner, _toAssets(shares, v.navLow, Math.Rounding.Floor), shares, false | v, _msgSender(), receiver, owner, _toAssets(shares, v.nav, Math.Rounding.Floor), shares, false | redeems priced at mid NAV
+src/WriterPool.sol | if (chargeShares) burned += _toShares(shortfall, v.navLow, Math.Rounding.Ceil); | if (false) burned += _toShares(shortfall, v.navLow, Math.Rounding.Ceil); | withdraw shortfall not charged
+src/WriterPool.sol | paid = usdgAmount > shortfall ? usdgAmount - shortfall : 0; | paid = usdgAmount; | engine payout shortfall not charged
+src/WriterPool.sol | return assets > required ? assets - required : 0; | return assets; | liability reserve dropped
+src/WriterPool.sol | hedgeValue = Math.mulDiv(units, mark.spot, 1e18);\n                grossWad += hedgeValue; | hedgeValue = Math.mulDiv(units, mark.spot, 1e18); | hedge left out of NAV
+src/WriterPool.sol | _hedgeUnits[id] = units - sold; | _hedgeUnits[id] = units; | forced sale leaves phantom hedge
+src/WriterPool.sol | uint256 unitsAfter = current + received; | uint256 unitsAfter = current + received + 1; | hedge buy over-credits a unit
+src/WriterPool.sol | return twap > spot ? twap : spot; | return spot; | TWAP floor ignored
+src/WriterPool.sol | lastDeposit[receiver] = block.timestamp; | lastDeposit[receiver] = lastDeposit[receiver]; | deposit lock never starts
+src/WriterPool.sol | if (best > 0) up += best; | if (false) up += best; | entry guard band dropped
+src/MarketHours.sol | return low != 0 && timestamp < _sessions[low - 1].close; | return low != 0 && timestamp <= _sessions[low - 1].close; | session close inclusive

@@ -1,0 +1,37 @@
+{
+  "NVDA": {
+    "name": "NVIDIA",
+    "category": "Technology",
+    "color": "#42dec9"
+  },
+  "TSLA": {
+    "name": "Tesla",
+    "category": "Automotive",
+    "color": "#ff8874"
+  },
+  "SPY": {
+    "name": "S&P 500",
+    "category": "Index",
+    "color": "#458cff"
+  },
+  "AAPL": {
+    "name": "Apple",
+    "category": "Technology",
+    "color": "#c9d1d9"
+  },
+  "PLTR": {
+    "name": "Palantir",
+    "category": "Technology",
+    "color": "#80bfff"
+  },
+  "AMD": {
+    "name": "AMD",
+    "category": "Technology",
+    "color": "#ff6b9a"
+  },
+  "QQQ": {
+    "name": "Nasdaq-100",
+    "category": "Index",
+    "color": "#b48cff"
+  }
+}

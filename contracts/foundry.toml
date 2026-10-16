@@ -1,0 +1,36 @@
+[profile.default]
+src = "src"
+out = "out"
+cache_path = "cache"
+libs = ["lib"]
+test = "test"
+solc_version = "0.8.28"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+evm_version = "cancun"
+# Pinned build-of-record settings (these are the defaults the mainnet build used).
+bytecode_hash = "ipfs"
+cbor_metadata = true
+# Operational scripts read deployment files from the project and write batches under out/.
+fs_permissions = [{ access = "read", path = "./" }, { access = "read-write", path = "./out" }]
+# Vendored without git metadata using forge install --no-git:
+# OpenZeppelin contracts and contracts-upgradeable v5.4.0; forge-std v1.9.7.
+remappings = [
+  "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+  "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",
+  "lemniscate-contracts/=src/",
+  "forge-std/=lib/forge-std/src/",
+]
+
+[invariant]
+runs = 50
+depth = 20
+
+# Deep stateful run (>= 100k handler calls): FOUNDRY_PROFILE=deep forge test --match-path 'test/invariant/*'
+[profile.deep.invariant]
+runs = 500
+depth = 200
+
+[profile.deep.fuzz]
+runs = 5000

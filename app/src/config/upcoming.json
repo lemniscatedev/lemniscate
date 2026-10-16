@@ -1,0 +1,12 @@
+[
+  { "id": "spcx", "symbol": "SPCX", "underlying": "SPCX", "curve": "squared", "name": "SpaceX", "description": "The most traded new listing on Robinhood Chain, squared.", "tags": ["new listing"] },
+  { "id": "gld", "symbol": "GLD", "underlying": "GLD", "curve": "squared", "name": "Gold", "description": "Gold through the GLD Stock Token, squared.", "tags": ["real asset"] },
+  { "id": "gme", "symbol": "GME", "underlying": "GME", "curve": "squared", "name": "GameStop", "description": "Retail favourite, squared. Tight caps.", "tags": ["high volatility"] },
+  { "id": "eth", "symbol": "ETH", "underlying": "ETH", "curve": "squared", "name": "Ether", "description": "ETH squared, open 24/7, weekends included.", "tags": ["24/7"] },
+  { "id": "spyroot", "symbol": "SPYROOT", "underlying": "SPY", "curve": "root", "name": "SPY Root", "description": "Half the move, with carry running in your favour.", "tags": ["new curve"] },
+  { "id": "nvdaroot", "symbol": "NVDAROOT", "underlying": "NVDA", "curve": "root", "name": "NVIDIA Root", "description": "A gentler NVIDIA curve, with carry running in your favour.", "tags": ["new curve"] },
+  { "id": "ethroot", "symbol": "ETHROOT", "underlying": "ETH", "curve": "root", "name": "Ether Root", "description": "Ether's root curve, open 24/7.", "tags": ["new curve", "24/7"] },
+  { "id": "qqq3", "symbol": "QQQ3", "underlying": "QQQ", "curve": "cubed", "name": "QQQ Cubed", "description": "Maximum convexity on a calm index.", "tags": ["new curve"] },
+  { "id": "spyinv", "symbol": "SPYINV", "underlying": "SPY", "curve": "downside", "name": "SPY Downside", "description": "Rises when SPY falls. No liquidation for holders.", "tags": ["new curve"] },
+  { "id": "nvdainv", "symbol": "NVDAINV", "underlying": "NVDA", "curve": "downside", "name": "NVIDIA Downside", "description": "Rises when NVIDIA falls. No liquidation for holders.", "tags": ["new curve"] }
+]
