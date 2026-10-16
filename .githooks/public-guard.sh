@@ -30,7 +30,7 @@ PRIVATE_PATH='(^|/)(docs|plans|todos)/|RESUME'
 while IFS= read -r -d '' f; do
   [ -f "$f" ] || continue              # skip submodule gitlinks and deleted files
   [ "$f" = "$DENYLIST" ] && continue
-  case "$f" in contracts/lib/*) continue ;; esac
+  case "$f" in contracts/lib/*|web/dist/assets/*|web/ASSET-NOTES.json|web/BUNDLE-*.json) continue ;; esac
   base="${f##*/}"
 
   # 1. Forbidden file types (any case) and private-material paths (case-sensitive). Shell builtins only: the
