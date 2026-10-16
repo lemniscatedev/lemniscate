@@ -32,6 +32,8 @@ export class FakeChain {
   series = new Map<Hex, FakeSeries>();
   order: Hex[] = [];
   prices = new Map<Address, FakePrice>();
+  /** PriceGuard.lastGoodPrice per stock, written by poke(). */
+  lastGood = new Map<Address, { s: bigint; at: bigint }>();
   sent: SentTx[] = [];
   dryRun = false;
   /** Make a named call (or `${name}:${id}`) revert. */
@@ -73,6 +75,10 @@ export class FakeChain {
       return { ...s };
     }
     if (functionName === "allowedStock") return true;
+    if (functionName === "lastGoodPrice") {
+      const g = this.lastGood.get(args[0] as Address);
+      return [g?.s ?? 0n, g?.at ?? 0n];
+    }
     if (functionName === "read") {
       const price = this.prices.get(args[0] as Address);
       if (!price) throw new Error("unknown stock");
@@ -136,6 +142,10 @@ export class FakeChain {
         } else if (name === "setBuyable") this.series.get(args[0] as Hex)!.buyable = args[1] as boolean;
         else if (name === "archive") { const s = this.series.get(args[0] as Hex)!; s.archived = true; s.buyable = false; }
         else if (name === "accrueMany") for (const id of args[0] as Hex[]) this.series.get(id)!.lastAccrual = this.nowSeconds;
+        else if (name === "poke") {
+          const price = this.prices.get(args[0] as Address);
+          if (price && price.fresh && price.session <= 1) this.lastGood.set(args[0] as Address, { s: price.s, at: price.updatedAt });
+        }
         return { simulated: false, hash: keccak256(t.data), receipt: { status: "success", blockNumber: BigInt(this.sent.length) } };
       },
     };
