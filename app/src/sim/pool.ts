@@ -18,6 +18,8 @@ export interface NameCtx {
   hasVol: boolean;
   blockFromMs: number | null;
   blockToMs: number | null;
+  /** The modelled TWAP cross-check is pausing buys (Scenario.twap). */
+  twapPaused?: boolean;
 }
 
 export interface Series {
@@ -138,7 +140,7 @@ export class Pool {
   }
   private market(c: NameCtx, s: Series): MarketInputs {
     return {
-      spot: c.spot, session: c.session, fresh: c.fresh, priceBuysPaused: false, engineBuysPaused: this.buysPausedByDrawdown,
+      spot: c.spot, session: c.session, fresh: c.fresh, priceBuysPaused: c.twapPaused === true, engineBuysPaused: this.buysPausedByDrawdown,
       sigmaBps: c.hasVol ? this.sigmaFor(c, s, c.spot) * 10_000 : null, volStale: false,
       buyBlockFromMs: c.blockFromMs, buyBlockToMs: c.blockToMs, nowMs: this.nowSec * 1000,
     };

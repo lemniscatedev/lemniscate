@@ -4,10 +4,11 @@
 //   ... --sweep                    every 14-day window (stride 7 d) inside Jul to Sep 2026, worst window reported
 //   ... --sensitivity              also run the R5 scenarios on the chosen window
 //   ... --strict                   also gate the exit code on the adversary-only case
+//   ... --twap                     model PriceGuard's Uniswap TWAP cross-check (sim/config.ts TWAP_MODEL) in every run
 //   ... --json out.json            write the full results
 // Exits 1 when the base run is insolvent or its 30-day drawdown exceeds 15%.
 import { writeFile } from "node:fs/promises";
-import { makeConfig, SENSITIVITY } from "../../src/sim/config";
+import { makeConfig, SENSITIVITY, TWAP_MODEL } from "../../src/sim/config";
 import { DEFAULT_NAMES } from "../../src/sim/defaults";
 import { fixturePrices, loadCached } from "../../src/sim/prices";
 import { runSim } from "../../src/sim/run";
@@ -52,7 +53,8 @@ async function main(): Promise<number> {
   }
   // Each window runs the base flows (retail + adversary) and the adversary-only case, where the caps and the stress
   // budget are the only limit. The gate applies to both; the sensitivity table runs on the worst adversary-only window.
-  const gated = [BASE_SCENARIO, SENSITIVITY.find((x) => x.label === "adversary only (no retail)")!];
+  const withTwap = (sc: typeof BASE_SCENARIO) => (flag("twap") ? { ...sc, label: `${sc.label} + TWAP check`, twap: TWAP_MODEL } : sc);
+  const gated = [BASE_SCENARIO, SENSITIVITY.find((x) => x.label === "adversary only (no retail)")!].map(withTwap);
   const worstOf = new Map<string, RunResult>();
   for (const w of windows) {
     for (const sc of gated) {
@@ -63,11 +65,11 @@ async function main(): Promise<number> {
       if (!prev || r.maxDrawdown30dPct > prev.maxDrawdown30dPct || (r.insolvent && !prev.insolvent)) worstOf.set(sc.label, r);
     }
   }
-  const adv = worstOf.get("adversary only (no retail)")!;
+  const adv = worstOf.get(gated[1]!.label)!;
   if (flag("sweep")) for (const [label, r] of worstOf) console.log(`worst window (${label}): ${r.startIso.slice(0, 10)} maxDD30d=${r.maxDrawdown30dPct.toFixed(2)}%`);
   if (flag("sensitivity")) {
     const w = Date.parse(adv.startIso) / 1000;
-    for (const sc of SENSITIVITY.slice(1).filter((x) => x.label !== adv.scenario)) {
+    for (const sc of SENSITIVITY.slice(1).map(withTwap).filter((x) => x.label !== adv.scenario)) {
       const r = runSim(makeConfig(w, days, seed, sc), paths, notes);
       results.push(r);
       console.log(line(r));
@@ -77,7 +79,7 @@ async function main(): Promise<number> {
   if (jsonPath) await writeFile(jsonPath, JSON.stringify(results, null, 1));
   // Exit code: the base flows (R2: retail, LP flows, adversarial group sharing the pool) must pass. --strict also gates
   // the adversary-only case, which the report shows failing the 15% drawdown line on some windows.
-  const failed = [...worstOf.values()].filter((r) => !r.pass && (flag("strict") || r.scenario === BASE_SCENARIO.label));
+  const failed = [...worstOf.values()].filter((r) => !r.pass && (flag("strict") || r.scenario === gated[0]!.label));
   if (failed.length) {
     for (const r of failed) console.error(`FAIL (${r.scenario}, ${r.startIso.slice(0, 10)}): ${r.failReasons.join("; ")}`);
     return 1;

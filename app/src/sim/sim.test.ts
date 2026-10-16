@@ -174,3 +174,18 @@ describe("R3 engine comparison harness", () => {
     expect(bad.status).toBe("fail");
   });
 });
+
+describe("TWAP cross-check model (todo 23)", () => {
+  test("a feed jump beyond the band pauses buys until the TWAP of the leading pool price catches up", async () => {
+    const { modelTwap } = await import("./run");
+    const { PricePath } = await import("./prices");
+    // flat 100, then the feed prints 102 at t=10_000; the pool led it by 600 s
+    const path = new PricePath("X", [{ t: 0, p: 100 }, { t: 10_000, p: 102 }]);
+    const before = modelTwap(path, 9_000, 1800, 600)!;
+    expect(before).toBeCloseTo(100, 6);
+    const atPrint = modelTwap(path, 10_000, 1800, 600)!; // pool has been at 102 for 600 of the last 1800 s
+    expect(Math.abs(102 - atPrint) / atPrint).toBeGreaterThan(0.0075);
+    const later = modelTwap(path, 11_300, 1800, 600)!;
+    expect(later).toBeCloseTo(102, 6);
+  });
+});

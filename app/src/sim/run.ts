@@ -79,6 +79,19 @@ function buildJobs(cfg: SimConfig, paths: Map<string, PricePath>, endSec: number
   return jobs;
 }
 
+/** Modelled Uniswap TWAP over [t - windowS, t] of a pool price that leads the feed by leadS (one-minute samples). */
+export function modelTwap(path: PricePath, t: number, windowS: number, leadS: number): number | null {
+  let sum = 0;
+  let n = 0;
+  for (let u = t - windowS; u <= t; u += 60) {
+    const pt = path.at(u + leadS);
+    if (!pt) continue;
+    sum += pt.p;
+    n++;
+  }
+  return n ? sum / n : null;
+}
+
 export function runSim(cfg: SimConfig, rawPaths: Map<string, PricePath>, dataNotes: string[] = []): RunResult {
   const endSec = cfg.startSec + cfg.days * DAY;
   const paths = new Map<string, PricePath>();
@@ -113,6 +126,8 @@ export function runSim(cfg: SimConfig, rawPaths: Map<string, PricePath>, dataNot
   // warm-up: the vol-engine needs history before the first post
   for (let t = Math.floor((cfg.startSec - 14 * DAY) / HOUR) * HOUR; t < cfg.startSec; t += HOUR) postVols(t);
 
+  const twap = cfg.scenario.twap;
+  const poolPaths = new Map([...paths].map(([name, p]) => [name, new PricePath(name, p.prints)]));
   const updateCtx = (t: number): void => {
     for (const [name, c] of pool.ctx) {
       const pt = paths.get(name)!.at(t);
@@ -120,6 +135,11 @@ export function runSim(cfg: SimConfig, rawPaths: Map<string, PricePath>, dataNot
       c.spot = pt.p;
       c.session = sessionAt(t);
       c.fresh = t - pt.t <= FRESH_MAX_AGE;
+      if (twap && isBuyableSession(c.session)) {
+        const avg = modelTwap(poolPaths.get(name)!, t, twap.windowS, twap.leadS);
+        const band = (twap.bandBps[name] ?? twap.defaultBandBps) / 10_000;
+        c.twapPaused = avg === null || Math.abs(c.spot - avg) / avg > band;
+      } else c.twapPaused = false;
       const [from, to] = blockWindow(cfg.earnings, name, t);
       c.blockFromMs = from;
       c.blockToMs = to;

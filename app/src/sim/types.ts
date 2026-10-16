@@ -41,6 +41,10 @@ export interface Scenario {
   weekendGap: number;
   /** Multiplies the measured hedge-pool depth (concentrated liquidity is deeper near the price than reserves suggest). */
   depthMult: number;
+  /** PriceGuard's Uniswap TWAP cross-check (todo 04b, decisions 11 and 16), modelled: the pool price leads the feed by
+   * `leadS` (arbitrage moves the pool before the next 0.5% feed print), the TWAP is the mean pool price over `windowS`,
+   * and buys pause while |feed - TWAP| / TWAP exceeds the name's band. Omitted = not modelled (the todo 21 runs). */
+  twap?: { windowS: number; leadS: number; bandBps: Readonly<Record<string, number>>; defaultBandBps: number };
 }
 
 export const BASE_SCENARIO: Scenario = { label: "base", floorMult: 1, sigmaMult: 1, gapMult: 1, hedge: true, depthMult: 1, weekendGap: 0, retailScale: 1 };

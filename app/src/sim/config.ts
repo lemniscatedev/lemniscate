@@ -17,6 +17,17 @@ export const SENSITIVITY: Scenario[] = [
   { ...BASE_SCENARIO, label: "injected gap -15%, floors -20%, no hedge", weekendGap: -0.15, retailScale: 0.25, hedge: false, floorMult: 0.8 },
 ];
 
+/** Decision 16 bands (TSLA 125 bps on its 0.3% pool, 75 bps elsewhere), 30-minute window; the pool leads the feed by
+ * 10 minutes (an assumption: the time a 0.5% deviation print takes to land after the market moved). */
+export const TWAP_MODEL = { windowS: 1800, leadS: 600, bandBps: { TSLA: 125 }, defaultBandBps: 75 } as const;
+
+/** The gated pair and the sensitivity rows again with the TWAP cross-check modelled (todo 23). */
+export const TWAP_SCENARIOS: Scenario[] = [
+  { ...BASE_SCENARIO, label: "base + TWAP check", twap: TWAP_MODEL },
+  { ...BASE_SCENARIO, label: "adversary only + TWAP check", retailScale: 0, twap: TWAP_MODEL },
+  { ...BASE_SCENARIO, label: "injected weekend gap +15% + TWAP check", weekendGap: 0.15, retailScale: 0.25, twap: TWAP_MODEL },
+];
+
 export function makeConfig(startSec: number, days: number, seed: number, scenario: Scenario = BASE_SCENARIO): SimConfig {
   return {
     names: DEFAULT_NAMES, startSec, days, seed, scenario, stepSeconds: 900, initialNavUsd: 1_000_000,
