@@ -15,7 +15,7 @@ assertDeploymentNetwork(deployment, config);
 // Signed API actions write subscriptions and replay nonces through the shared DB client.
 const { sql } = createDbClient(config);
 // Pay-per-call data (todo 17). Off unless X402_ENABLED=1; the settler key is read here and nowhere else.
-const x402 = createX402FromEnv(deployment, config.RPC_URL_OVERRIDE.trim() || config.PUBLIC_RPC_URL);
+const x402 = createX402FromEnv(deployment, config.RPC_URL_OVERRIDE.trim() || config.PUBLIC_RPC_URL, process.env, { chainClock: config.NETWORK === "fork" });
 const app = createApiApp({ sql, config, deployment, logger, cache: new TtlCache(), ...(x402 ? { x402 } : {}) });
 
 const server = Bun.serve({

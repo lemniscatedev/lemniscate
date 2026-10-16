@@ -318,3 +318,17 @@ describe("wire format and the paying client", () => {
     await expect(signPayment({ accepts: [] }, payer, limits)).rejects.toThrow(PaymentRefused);
   });
 });
+
+describe("chain clock on the anvil fork (todo 23)", () => {
+  test("challenge deadlines follow the chain's block time, so Permit2 does not see them as expired on a warped fork", async () => {
+    const { chainAnchoredClock } = await import("./index");
+    const wall = 1_790_000_000_000;
+    const clock = chainAnchoredClock(async () => 1_800_000_000, () => wall);
+    expect(clock.now()).toBe(wall); // before the first read: wall time
+    await clock.refresh();
+    expect(clock.now()).toBe(1_800_000_000_000);
+    const failing = chainAnchoredClock(async () => { throw new Error("rpc down"); }, () => wall);
+    await failing.refresh();
+    expect(failing.now()).toBe(wall);
+  });
+});
