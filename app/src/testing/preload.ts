@@ -1,13 +1,13 @@
 import { afterAll } from "bun:test";
+import { optionalEnv, setTestDatabaseEnv } from "../config";
 import { startEphemeralPostgres } from "./pg";
 
 // `bun test` preload: give the database tests a throwaway Postgres unless the caller supplied one.
-if (!process.env.TEST_DATABASE_URL) {
+if (!optionalEnv("TEST_DATABASE_URL")) {
   try {
     const pg = await startEphemeralPostgres();
     if (pg) {
-      process.env.TEST_DATABASE_URL = pg.url;
-      process.env.TEST_DATABASE_EPHEMERAL = "1";
+      setTestDatabaseEnv(pg.url);
       // A preload hook runs once after every test file; the exit handler covers abnormal endings.
       afterAll(() => pg.stop());
       process.on("exit", () => pg.stop());

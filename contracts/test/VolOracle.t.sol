@@ -24,7 +24,7 @@ contract VolOracleTest is Test {
     function setUp() public {
         vm.warp(T0);
         signerAddr = vm.addr(SIGNER_PK);
-        oracle = new VolOracle(admin, signerAddr);
+        oracle = new VolOracle(admin, signerAddr, 2 hours, 5 minutes);
     }
 
     // ------------------------------------------------------------------ helpers
@@ -169,7 +169,7 @@ contract VolOracleTest is Test {
     function test_R3_otherDomainRejected() public {
         IVolOracle.Post memory p = _post(5000, 1);
         // Signed for a twin deployment (different verifyingContract).
-        VolOracle twin = new VolOracle(admin, signerAddr);
+        VolOracle twin = new VolOracle(admin, signerAddr, 2 hours, 5 minutes);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PK, twin.hashPost(p));
         vm.expectRevert(IVolOracle.BadSignature.selector);
         oracle.post(p, abi.encodePacked(r, s, v));
@@ -421,9 +421,9 @@ contract VolOracleTest is Test {
 
     function test_R8_constructorChecks() public {
         vm.expectRevert(VolOracle.InvalidAdmin.selector);
-        new VolOracle(address(0), signerAddr);
+        new VolOracle(address(0), signerAddr, 2 hours, 5 minutes);
         vm.expectRevert(VolOracle.InvalidSigner.selector);
-        new VolOracle(admin, address(0));
+        new VolOracle(admin, address(0), 2 hours, 5 minutes);
     }
 
     // ------------------------------------------------------------------ R9 buy-block window
@@ -487,7 +487,7 @@ contract VolOracleTest is Test {
         assertEq(expectedSigner, signerAddr, "vector signer is anvil account 0");
         assertEq(vm.parseJsonString(json, ".typedData.domain.name"), "LemniscateVolOracle");
         assertEq(vm.parseJsonString(json, ".typedData.domain.version"), "1");
-        deployCodeTo("VolOracle.sol:VolOracle", abi.encode(admin, expectedSigner), at);
+        deployCodeTo("VolOracle.sol:VolOracle", abi.encode(admin, expectedSigner, uint64(2 hours), uint64(5 minutes)), at);
         VolOracle o = VolOracle(at);
 
         IVolOracle.Post memory p = IVolOracle.Post({

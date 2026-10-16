@@ -13,6 +13,16 @@ export const VolOracleAbi = [
         "name": "signer_",
         "type": "address",
         "internalType": "address"
+      },
+      {
+        "name": "maxValidity_",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "minPostInterval_",
+        "type": "uint64",
+        "internalType": "uint64"
       }
     ],
     "stateMutability": "nonpayable"
@@ -33,6 +43,58 @@ export const VolOracleAbi = [
   {
     "type": "function",
     "name": "DEFAULT_FLOOR_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "HARD_MAX_POST_INTERVAL",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "HARD_MAX_VALIDITY",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "HARD_MIN_POST_INTERVAL",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "HARD_MIN_VALIDITY",
     "inputs": [],
     "outputs": [
       {
@@ -960,6 +1022,11 @@ export const VolOracleAbi = [
   {
     "type": "error",
     "name": "InvalidSigner",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidTimer",
     "inputs": []
   },
   {

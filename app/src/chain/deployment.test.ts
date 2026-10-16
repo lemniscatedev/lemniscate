@@ -21,6 +21,10 @@ describe("option deployment file", () => {
 
   test("rejects a wrong chain, missing contracts and duplicate stocks", () => {
     expect(() => parseOptionDeployment({ ...base, chainId: 1 })).toThrow(DeploymentFileError);
+    // The deploy script's profiles: fork on anvil 31337, testnet 46630, mainnet 4663.
+    expect(parseOptionDeployment({ ...base, chainId: 31337 }).chainId).toBe(31337);
+    expect(parseOptionDeployment({ ...base, chainId: 46630, network: "testnet" }).network).toBe("testnet");
+    expect(() => parseOptionDeployment({ ...base, network: "devnet" })).toThrow(DeploymentFileError);
     expect(() => parseOptionDeployment({ ...base, contracts: { engine: a(1) } })).toThrow(/contracts\.pool/);
     expect(() => parseOptionDeployment({ ...base, stocks: [] })).toThrow(DeploymentFileError);
     expect(() => parseOptionDeployment({ ...base, stocks: [base.stocks[1], base.stocks[1]] })).toThrow(/duplicate/);

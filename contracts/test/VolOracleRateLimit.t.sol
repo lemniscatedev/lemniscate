@@ -27,7 +27,7 @@ contract VolOracleRateLimitTest is Test {
 
     function setUp() public {
         vm.warp(T0);
-        oracle = new VolOracle(admin, vm.addr(SIGNER_PK));
+        oracle = new VolOracle(admin, vm.addr(SIGNER_PK), 2 hours, 5 minutes);
     }
 
     // ------------------------------------------------------------------ helpers

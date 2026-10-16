@@ -79,7 +79,12 @@ contract WriterPool is
     uint256 private constant MAX_NAV_GUARD_BPS = 2_000;
     uint256 private constant MAX_STOCKS = 16;
     uint256 private constant MIN_FIRST_DEPOSIT = 1e6;
-    uint256 public constant QUEUE_DELAY = 72 hours;
+    /// @notice Withdrawal queue delay, fixed per deployment (72h on mainnet and fork, minutes on testnet).
+    uint256 public immutable QUEUE_DELAY;
+    /// @notice Hard bounds of QUEUE_DELAY and of the deposit lock (`lockSeconds`).
+    uint256 public constant MIN_QUEUE_DELAY = 5 minutes;
+    uint256 public constant MAX_QUEUE_DELAY = 30 days;
+    uint256 public constant MIN_LOCK_SECONDS = 1 minutes;
     uint256 public constant HEDGE_STALE_AFTER = 2 hours;
     uint256 public constant HEDGE_MAX_MOVE_BPS_PER_HOUR = 1_000;
 
@@ -141,8 +146,12 @@ contract WriterPool is
 
     bool private transient _escrowing;
 
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
+    /// @param queueDelay_ withdrawal queue delay in seconds, inside [MIN_QUEUE_DELAY, MAX_QUEUE_DELAY]. Immutable in
+    /// the implementation: an upgrade must construct the new implementation with the same value.
+    /// @custom:oz-upgrades-unsafe-allow constructor state-variable-immutable
+    constructor(uint256 queueDelay_) {
+        if (queueDelay_ < MIN_QUEUE_DELAY || queueDelay_ > MAX_QUEUE_DELAY) revert InvalidParams();
+        QUEUE_DELAY = queueDelay_;
         _disableInitializers();
     }
 
@@ -392,7 +401,7 @@ contract WriterPool is
         external
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
-        if (lockSeconds_ > MAX_LOCK_SECONDS || cashBufferBps_ > 5_000 || maxHedgeSlippageBps_ > 500) {
+        if (lockSeconds_ < MIN_LOCK_SECONDS || lockSeconds_ > MAX_LOCK_SECONDS || cashBufferBps_ > 5_000 || maxHedgeSlippageBps_ > 500) {
             revert InvalidParams();
         }
         lockSeconds = lockSeconds_;

@@ -3,7 +3,7 @@ import { PoolAbi } from "../abi/Pool";
 import { createClients } from "../chain/clients";
 import { loadOptionDeployment } from "../chain/deployment";
 import { createRpcPool } from "../chain/rpc-pool";
-import { loadConfig, stripKeeperSecrets } from "../config";
+import { loadConfig, optionalEnv, stripKeeperSecrets } from "../config";
 import { createDbClient } from "../db/client";
 import {
   acquireHedgerLock, ApiPerpVenue, assertHedgerKeyDistinct, createChainSpotPort, hedgerSettings, loadBook, loadHedgerSigningKey,
@@ -49,7 +49,7 @@ const spot = new UniswapV3SpotVenue(
 );
 const venues: IHedgeVenue[] = [];
 if (config.HEDGER_PERP_ENABLED) {
-  const seed = process.env.ARCUS_ED25519_SEED?.trim();
+  const seed = optionalEnv("ARCUS_ED25519_SEED");
   if (!seed || !config.ARCUS_API_KEY_ID) throw new Error("HEDGER_PERP_ENABLED needs ARCUS_API_KEY_ID and ARCUS_ED25519_SEED");
   const markets = new Map(stocks.map((s) => [s.stock.toLowerCase(), `${s.name}-USD`] as const));
   venues.push(new ApiPerpVenue({ baseUrl: config.ARCUS_API_URL, apiKeyId: config.ARCUS_API_KEY_ID, seedHex: seed, markets }));

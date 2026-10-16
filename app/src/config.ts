@@ -177,3 +177,38 @@ export function safeConfigSummary(config: RuntimeConfig): Record<string, string 
     logLevel: config.LOG_LEVEL,
   };
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Optional variables read outside the service schemas above. Every environment read in app/src goes through this file
+// (house layout rule), so the full list of variables a process can see is here.
+// ---------------------------------------------------------------------------------------------------------------
+
+export type OptionalEnvName =
+  | "ARCUS_ED25519_SEED"
+  | "AA_KERNEL_IMPLEMENTATION"
+  | "TEST_DATABASE_URL"
+  | "PG_BIN"
+  | "PATH"
+  | "LOG_LEVEL"
+  | "ALCHEMY_API_KEYS"
+  | "DATABASE_URL"
+  | "KEEPER_PRIVATE_KEY"
+  | "FORK_RPC_URL"
+  | "RPC_URL_OVERRIDE";
+
+/** The trimmed value of an optional variable, or undefined when it is unset or blank. */
+export function optionalEnv(name: OptionalEnvName): string | undefined {
+  const value = process.env[name]?.trim();
+  return value ? value : undefined;
+}
+
+/** The exact (untrimmed) value, for log redaction that must match what a library echoes back. */
+export function rawEnv(name: OptionalEnvName): string | undefined {
+  return process.env[name];
+}
+
+/** Test preload only: points the database tests at a throwaway Postgres. */
+export function setTestDatabaseEnv(url: string): void {
+  process.env.TEST_DATABASE_URL = url;
+  process.env.TEST_DATABASE_EPHEMERAL = "1";
+}

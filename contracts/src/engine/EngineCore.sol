@@ -223,6 +223,8 @@ library EngineCore {
         EngineStorage.Layout storage $ = EngineStorage.layout();
         uint256 dust = $.fundingDustWad + fundingWad;
         uint256 amount = dust / 1e12 + $.fundingBacklogUsdg;
+        // Remainder of a unit conversion, not randomness (Slither weak-prng false positive).
+        // slither-disable-next-line weak-prng
         $.fundingDustWad = dust % 1e12;
         if (amount == 0) return;
         try $.pool.onFunding(id, amount) {
@@ -363,6 +365,8 @@ library EngineCore {
         uint256 nps = Math.mulDiv(uint256(nav), WAD, shares);
         if (nps > type(uint224).max) return;
         uint256 day = block.timestamp / 1 days;
+        // Ring-buffer index, not randomness (Slither weak-prng false positive).
+        // slither-disable-next-line weak-prng
         uint256 slot = day % RING;
         uint256 w = $.navPeaks[slot];
         if (w >> 224 != day || uint224(w) < nps) $.navPeaks[slot] = (day << 224) | nps;

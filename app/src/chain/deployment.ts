@@ -118,15 +118,16 @@ export function assertDeploymentNetwork(
 // ---------------------------------------------------------------------------------------------------------------
 
 const stockEntrySchema = z.object({
-  /** Ticker the product shows, upper case: NVDA, TSLA, SPY, QQQ, HOOD. */
+  /** Ticker the product shows, upper case: NVDA, TSLA, SPY, QQQ, AAPL. */
   name: z.string().regex(/^[A-Z0-9.]{1,12}$/, "expected an upper case ticker"),
   stock: addressSchema,
   feed: addressSchema.optional(),
 });
 
 const optionDeploymentSchema = z.object({
-  chainId: z.literal(4663),
-  network: z.enum(["mainnet", "fork"]),
+  /** 4663 mainnet; 31337 the anvil mainnet fork; 46630 testnet (contracts/script/DeploySystem.s.sol profiles). */
+  chainId: z.union([z.literal(4663), z.literal(31337), z.literal(46630)]),
+  network: z.enum(["mainnet", "fork", "testnet"]),
   /** First block the indexer reads (the engine deployment block). */
   deployBlock: blockSchema,
   deployer: addressSchema.optional(),

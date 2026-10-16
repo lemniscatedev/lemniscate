@@ -51,6 +51,20 @@ class DryRunSender:
 Transport = Callable[[str, list], object]
 
 
+TIMER_GETTERS = {"max_validity_s": "MAX_VALIDITY()", "min_post_interval_s": "MIN_POST_INTERVAL()",
+                 "rolling_window_s": "ROLLING_WINDOW()"}
+
+
+def read_oracle_timers(oracle: str, transport: Transport) -> dict[str, int]:
+    """The deployed VolOracle's own timers (deploy-time immutables: full on mainnet, minutes on testnet)."""
+    out: dict[str, int] = {}
+    for field, sig in TIMER_GETTERS.items():
+        data = "0x" + keccak(text=sig)[:4].hex()
+        raw = transport("eth_call", [{"to": to_checksum_address(oracle), "data": data}, "latest"])
+        out[field] = int(str(raw), 16)
+    return out
+
+
 def http_transport(url: str) -> Transport:
     def call(method: str, params: list) -> object:
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()

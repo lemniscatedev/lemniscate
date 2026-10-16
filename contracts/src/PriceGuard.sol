@@ -86,8 +86,13 @@ contract PriceGuard is AccessControl, IPriceGuard {
 
     /// @notice A pending multiplier change larger than this is split class (pauses buys around effectiveAt).
     uint256 public constant SPLIT_CLASS_BPS = 500;
-    uint256 public constant SPLIT_LEAD = 24 hours;
-    uint256 public constant SPLIT_TAIL = 1 hours;
+    /// @notice Buy pause window around a split-class multiplier change: from SPLIT_LEAD before effectiveAt to SPLIT_TAIL
+    /// after it (24h / 1h on mainnet; deploy-time, bounded below so the pause can never be configured away).
+    uint256 public immutable SPLIT_LEAD;
+    uint256 public immutable SPLIT_TAIL;
+    uint256 public constant HARD_MIN_SPLIT_LEAD = 10 minutes;
+    uint256 public constant HARD_MIN_SPLIT_TAIL = 5 minutes;
+    uint256 public constant HARD_MAX_SPLIT_WINDOW = 7 days;
     uint8 public constant CONFIRMATIONS_TO_CLEAR = 2;
     /// @notice Largest S accepted (1e15 USDG per token); larger answers are treated as malformed.
     uint256 public constant MAX_S = 1e33;
@@ -102,6 +107,7 @@ contract PriceGuard is AccessControl, IPriceGuard {
     error InvalidConfig();
     error InvalidGracePeriod();
     error InvalidTwapSource();
+    error InvalidTimer();
 
     event MarketHoursSet(address marketHours);
     event SequencerFeedSet(address feed, uint32 gracePeriod);
@@ -164,8 +170,14 @@ contract PriceGuard is AccessControl, IPriceGuard {
     mapping(address stock => StockState) private _states;
     mapping(address stock => TwapSource) private _twap;
 
-    constructor(address admin, address marketHours_) {
+    constructor(address admin, address marketHours_, uint256 splitLead_, uint256 splitTail_) {
         if (admin == address(0)) revert InvalidAdmin();
+        if (
+            splitLead_ < HARD_MIN_SPLIT_LEAD || splitLead_ > HARD_MAX_SPLIT_WINDOW || splitTail_ < HARD_MIN_SPLIT_TAIL
+                || splitTail_ > HARD_MAX_SPLIT_WINDOW
+        ) revert InvalidTimer();
+        SPLIT_LEAD = splitLead_;
+        SPLIT_TAIL = splitTail_;
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         marketHours = IMarketHours(marketHours_);
         emit MarketHoursSet(marketHours_);

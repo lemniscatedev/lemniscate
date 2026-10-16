@@ -609,7 +609,7 @@ contract WriterPoolTest is PoolFixture {
     // ------------------------------------------------------------------ upgrade and init
 
     function test_upgradeAdminOnlyAndInitLocked() public {
-        WriterPool next = new WriterPool();
+        WriterPool next = new WriterPool(72 hours);
         vm.prank(alice);
         vm.expectRevert();
         pool.upgradeToAndCall(address(next), "");

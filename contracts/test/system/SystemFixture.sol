@@ -71,14 +71,14 @@ abstract contract SystemFixture is Test {
         vm.warp(T0);
         usdg = new MockPausableUSDG();
         hours_ = new MockKindHours(); // REGULAR
-        guard = new PriceGuard(admin, address(hours_));
-        vol = new VolOracle(admin, vm.addr(SIGNER_PK));
+        guard = new PriceGuard(admin, address(hours_), 24 hours, 1 hours);
+        vol = new VolOracle(admin, vm.addr(SIGNER_PK), 2 hours, 5 minutes);
         registry = new SeriesRegistry(admin, IPriceGuard(address(guard)));
         router = new MockSwapRouter();
         adapter = new UniswapV3HedgeAdapter(ISwapRouter02(address(router)));
 
         // Pool first (engine set once later), then the engine with the pool's address.
-        WriterPool poolImpl = new WriterPool();
+        WriterPool poolImpl = new WriterPool(72 hours);
         pool = WriterPool(
             address(
                 new ERC1967Proxy(
@@ -110,7 +110,7 @@ abstract contract SystemFixture is Test {
             )
         );
         reserve = new Reserve(admin, IERC20(address(usdg)), address(pool));
-        fees = new FeeRouter(admin, IERC20(address(usdg)), address(pool), treasury);
+        fees = new FeeRouter(admin, IERC20(address(usdg)), address(pool), treasury, 7 days);
 
         vm.startPrank(admin);
         pool.setModules(

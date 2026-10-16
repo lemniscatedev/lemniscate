@@ -61,6 +61,11 @@ vol-engine post --once                         # one pass, signs and records int
 vol-engine post --loop --interval 300          # repeat; posts only on a real change or when the last post nears expiry
 ```
 
+**Timers come from the contract.** The oracle's rate limit, rolling window and maximum validity are deploy-time
+values (5 min / 1 h / 2 h on mainnet, shorter on testnet). With `VOL_RPC_URL` and `VOL_ORACLE_ADDRESS` set, the engine
+reads them from the deployed oracle at start; `VOL_MIN_POST_INTERVAL_S`, `VOL_ROLLING_WINDOW_S`, `VOL_MAX_VALIDITY_S`
+are only the fallback.
+
 **Sending is off.** Nothing is submitted unless `VOL_SEND=1` (exactly `1`) and `VOL_RPC_URL` plus a gas key
 (`VOL_SENDER_KEY`, defaulting to the signer key) are set. Without it every post is recorded with status `dry_run`.
 The reader connection is read-only at the server level. Logs pass through a scrubber that removes configured keys

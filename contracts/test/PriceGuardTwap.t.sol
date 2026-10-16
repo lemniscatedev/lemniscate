@@ -40,7 +40,7 @@ contract PriceGuardTwapTest is Test {
         stock = new MockStock18();
         feed = new MockGuardFeed(8, 100e8);
         usdg = new MockDecimalsToken(6);
-        guard = new PriceGuard(admin, address(hours_));
+        guard = new PriceGuard(admin, address(hours_), 24 hours, 1 hours);
         pool = new MockObservingPool(address(stock), address(usdg), TICK_100, 7200, 2 hours);
         vm.startPrank(admin);
         guard.setStock(address(stock), _cfg(address(feed)));

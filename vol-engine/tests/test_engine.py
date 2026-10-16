@@ -263,6 +263,11 @@ def test_window_bounds_mirror_the_contract():
     assert window_bounds([(8_000, 4000), (6_000, 9000), (1_000, 100)], 10_600, 3000) == (4500, 6000)
     assert window_bounds([(9_000, 6000), (1_000, 3000)], 13_599, 3000) == (3000, 9000)  # only the anchor counts
     assert next_allowed_at([(1_000, 4000)]) == 1_300 and next_allowed_at([]) == 0
+    # Testnet oracles are deployed with short timers (todo 10 R8): the guard takes the live values.
+    assert next_allowed_at([(1_000, 4000)], 30) == 1_030
+    sent = [(9_000, 6000), (8_700, 4000), (1_000, 3000)]
+    assert window_bounds(sent, 9_100, 3000, 360) == (3000, 6000)  # 6-minute window: 3000 is no longer in force
+    assert window_bounds(sent, 9_100, 3000) == (3000, 4500)  # one-hour window
 
 
 def test_window_clamp_stops_a_sequence_that_would_breach_the_hour_bound():

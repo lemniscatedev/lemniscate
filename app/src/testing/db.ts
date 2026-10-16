@@ -4,12 +4,13 @@ import { join, resolve } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres, { type Sql } from "postgres";
+import { optionalEnv } from "../config";
 
 export const MIGRATIONS_DIR = resolve(import.meta.dir, "../../drizzle");
 
 /** The URL of the throwaway (or caller supplied) server, or undefined when database tests must be skipped. */
 export function testDatabaseUrl(): string | undefined {
-  return process.env.TEST_DATABASE_URL || undefined;
+  return optionalEnv("TEST_DATABASE_URL");
 }
 
 export interface TestDatabase {

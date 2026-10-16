@@ -9,7 +9,7 @@ import {SeriesRegistry} from "../../src/SeriesRegistry.sol";
 import {VolOracle} from "../../src/VolOracle.sol";
 import {PriceGuard} from "../../src/PriceGuard.sol";
 import {IVolOracle} from "../../src/interfaces/IVolOracle.sol";
-import {SessionKind, Speed} from "../../src/libs/OptionTypes.sol";
+import {PriceReading, SessionKind, Speed} from "../../src/libs/OptionTypes.sol";
 import {MockGuardFeed, MockKindHours} from "../mocks/PriceGuardMocks.sol";
 import {MockSwapRouter} from "../mocks/MockSwapRouter.sol";
 
@@ -67,6 +67,19 @@ contract SystemHandler is Test {
     uint256 public buys;
     uint256 public sells;
     uint256 public claims;
+    // todo 10 R4 additions: guardian pauses, vol posts that move sigma, hedge equity posts, fresh-price sells
+    address public admin;
+    address public guardian;
+    uint64 public sigma = 5000;
+    uint256 public equity;
+    bool public equityPosted;
+    uint256 public pauses;
+    uint256 public unpauses;
+    uint256 public volPosts;
+    uint256 public hedgePosts;
+    uint256 public freshSells; // sells attempted while the price was fresh
+    uint256 public sellFailures; // ... that reverted
+    bytes public lastSellFailure;
 
     constructor(
         LemniscateEngine engine_,
@@ -116,6 +129,12 @@ contract SystemHandler is Test {
         nonce = nonce_;
     }
 
+    function setRoles(address admin_, address guardian_) external {
+        require(admin == address(0), "once");
+        admin = admin_;
+        guardian = guardian_;
+    }
+
     // --------------------------------------------------------------------------------------------- traders
 
     function buy(uint256 a, uint256 s, uint256 units) external {
@@ -145,6 +164,9 @@ contract SystemHandler is Test {
         uint256 tokens = bal * bound(frac, 1, 100) / 100;
         if (tokens == 0) return;
         uint256 before = usdg.balanceOf(who);
+        PriceReading memory r = guard.readLite(registry.seriesOf(id).stock);
+        bool fresh = r.fresh && r.session != SessionKind.HALTED;
+        if (fresh) ++freshSells;
         vm.prank(who);
         try engine.sell(id, uint128(tokens), 0, uint64(block.timestamp), who) returns (uint256 proceeds) {
             ++sells;
@@ -152,6 +174,11 @@ contract SystemHandler is Test {
             if (usdg.balanceOf(who) - before != proceeds) ++costMismatch;
         } catch (bytes memory err) {
             _checkPanic(err);
+            // Sells are never refused on a fresh price, whatever is paused (decision 3, R4 sellsWorkWhenPriceFresh).
+            if (fresh) {
+                ++sellFailures;
+                lastSellFailure = err;
+            }
         }
         _afterAction();
     }
@@ -272,15 +299,77 @@ contract SystemHandler is Test {
         _afterAction();
     }
 
-    /// Time passes (5 minutes to 2 hours); feeds print, vols are re-posted, the keeper accrues half the time.
+    /// Time passes (5 minutes to 2 hours); feeds print, vols are re-posted, the hedger re-posts its equity (hourly
+    /// in production), the keeper accrues half the time.
     function warp(uint256 secs, bool accrue) external {
         skip(bound(secs, 5 minutes, 2 hours));
         for (uint256 i; i < stocks.length; ++i) {
             _setPrice(i, px[i]);
         }
         _postVols();
+        if (equityPosted) _postEquity(equity, bytes32(0));
         if (accrue) _accrueAll();
         _afterAction();
+    }
+
+    // --------------------------------------------------------------------------------- guardian, admin, oracles
+
+    /// The guardian pauses buys (engine, one series, one name in PriceGuard) or deposits; the admin lifts it.
+    function pause(uint256 k, uint256 n, bool on) external {
+        if (guardian == address(0)) return;
+        uint256 what = k % 4;
+        address stock = stocks[n % stocks.length];
+        bytes32 id = ids[n % ids.length];
+        vm.startPrank(on ? guardian : admin);
+        if (what == 0) engine.setBuysPaused(on);
+        else if (what == 1) engine.setSeriesBuysPaused(id, on);
+        else if (what == 2) guard.setBuysPaused(stock, on);
+        else pool.setDepositsPaused(on);
+        vm.stopPrank();
+        if (on) ++pauses;
+        else ++unpauses;
+        _afterAction();
+    }
+
+    /// The vol signer moves sigma by up to 20% (inside the oracle's 25% step); a post the rolling-hour bound refuses
+    /// keeps the old sigma.
+    function volPost(uint256 step, bool up) external {
+        if (block.timestamp < lastVolPost + 5 minutes) skip(lastVolPost + 5 minutes - block.timestamp);
+        uint256 delta = uint256(sigma) * bound(step, 0, 2_000) / 10_000;
+        uint256 next = up ? sigma + delta : sigma - delta;
+        if (next < 3_500) next = 3_500;
+        if (next > 9_000) next = 9_000;
+        uint64 prior = sigma;
+        sigma = uint64(next);
+        bool ok = true;
+        for (uint256 i; i < stocks.length && ok; ++i) {
+            ok = _tryPost(stocks[i], Speed.DAILY) && _tryPost(stocks[i], Speed.WEEKLY);
+        }
+        if (ok) {
+            ++volPosts;
+            lastVolPost = block.timestamp;
+        } else {
+            sigma = prior; // later posts re-send the old value
+        }
+        _afterAction();
+    }
+
+    /// The hedger posts perp-venue equity (decision 19; zero to small, as no perp account exists yet).
+    function hedgePost(uint256 amount) external {
+        if (block.timestamp == 0) return;
+        _postEquity(bound(amount, 0, 10_000e6), keccak256(abi.encode(block.timestamp, amount)));
+        _afterAction();
+    }
+
+    function _postEquity(uint256 amount, bytes32 ref) internal {
+        vm.prank(hedger);
+        try pool.postHedgeEquity(amount, uint64(block.timestamp), ref) {
+            equity = amount;
+            equityPosted = true;
+            ++hedgePosts;
+        } catch (bytes memory err) {
+            _checkPanic(err);
+        }
     }
 
     // ----------------------------------------------------------------------------------------- internals
@@ -313,7 +402,7 @@ contract SystemHandler is Test {
         IVolOracle.Post memory p = IVolOracle.Post({
             stock: stock,
             speed: speed,
-            sigmaBps: 5000,
+            sigmaBps: sigma,
             skewK: 0,
             eventBumpBps: 0,
             buyBlockFrom: 0,
@@ -323,6 +412,27 @@ contract SystemHandler is Test {
         });
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PK, vol.hashPost(p));
         vol.post(p, abi.encodePacked(r, s, v));
+    }
+
+    function _tryPost(address stock, Speed speed) internal returns (bool) {
+        IVolOracle.Post memory p = IVolOracle.Post({
+            stock: stock,
+            speed: speed,
+            sigmaBps: sigma,
+            skewK: 0,
+            eventBumpBps: 0,
+            buyBlockFrom: 0,
+            buyBlockTo: 0,
+            validUntil: uint64(block.timestamp + 2 hours),
+            nonce: ++nonce
+        });
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PK, vol.hashPost(p));
+        try vol.post(p, abi.encodePacked(r, s, v)) {
+            return true;
+        } catch (bytes memory err) {
+            _checkPanic(err);
+            return false;
+        }
     }
 
     function _accrueAll() internal {

@@ -1,3 +1,4 @@
+import { rawEnv } from "./config";
 import { knownSecrets } from "./keys";
 import pino, { type Logger } from "pino";
 
@@ -48,12 +49,12 @@ export function safeErrorSummary(error: unknown): { name: string; message: strin
   const code = typeof rawCode === "string" || typeof rawCode === "number" ? rawCode : undefined;
   let message = code === undefined ? rawMessage : `${rawMessage} (code ${code})`;
   const sensitiveValues = [
-    ...(process.env.ALCHEMY_API_KEYS ?? "").split(","),
-    process.env.DATABASE_URL ?? "",
-    process.env.KEEPER_PRIVATE_KEY ?? "",
+    ...(rawEnv("ALCHEMY_API_KEYS") ?? "").split(","),
+    rawEnv("DATABASE_URL") ?? "",
+    rawEnv("KEEPER_PRIVATE_KEY") ?? "",
     ...knownSecrets(),
-    process.env.FORK_RPC_URL ?? "",
-    process.env.RPC_URL_OVERRIDE ?? "",
+    rawEnv("FORK_RPC_URL") ?? "",
+    rawEnv("RPC_URL_OVERRIDE") ?? "",
   ].filter((value) => value.length > 0);
 
   for (const value of sensitiveValues) message = message.split(value).join("[REDACTED]");
@@ -65,7 +66,7 @@ export function safeErrorSummary(error: unknown): { name: string; message: strin
   return { name, message: message.slice(0, 1000) };
 }
 
-export function createLogger(level = process.env.LOG_LEVEL ?? "info", name = "lemniscate"): Logger {
+export function createLogger(level = rawEnv("LOG_LEVEL") ?? "info", name = "lemniscate"): Logger {
   return pino({
     name,
     level,

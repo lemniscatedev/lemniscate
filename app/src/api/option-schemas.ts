@@ -246,7 +246,7 @@ export const poolResponseSchema = z.object({
 
 export const configResponseSchema = z.object({
   chainId: z.number().int(),
-  network: z.enum(["mainnet", "fork"]),
+  network: z.enum(["mainnet", "fork", "testnet"]),
   forkProof: z.object({ blockNumber: z.number().int().nonnegative(), blockHash: z.string() }).optional(),
   contracts: z.record(z.string(), z.string()),
   stocks: z.array(z.object({ name: z.string(), stock: z.string(), feed: z.string().nullable() })),

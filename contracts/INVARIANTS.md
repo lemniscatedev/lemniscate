@@ -111,20 +111,33 @@ over the real `WriterPool` (ERC1967 proxy), `Reserve`, `FeeRouter` and `UniswapV
 `test/system/` runs the REAL `LemniscateEngine` and REAL `WriterPool` (with `Reserve`, `FeeRouter`, `PoolHedging`,
 `UniswapV3HedgeAdapter`), the real `SeriesRegistry`, `PriceGuard` and `VolOracle` (signed posts) over mock feeds
 (`SystemFixture`). Handler `SystemHandler`: buys, sells, LP deposits / requests / claims, hedger rebalances, keeper
-accruals, moves of up to 3%, 25% gaps (others up to 10%), session changes, time.
+accruals, moves of up to 3%, 25% gaps (others up to 10%), session changes, time, and (todo 10 R4) guardian pauses with
+admin unpauses, vol posts that move sigma, and hedge-equity posts. Deep run: `FOUNDRY_PROFILE=deep forge test --match-path 'test/system/*'`.
 
 | Rule | Property | Test (`test/system/`) |
 |------|----------|------|
 | R1 | Pool NAV, deposits, claims, payouts use `engine.bookValue()` (O(1)); sell < 1.2M gas with 200 listed series; `nav()` < 2M gas with 1,000 series | `SystemGas.t.sol::test_R1_sellGasWith200ListedSeries`, `::test_R1_navGasWith1000Series` |
-| R1 | `bookValue == totalLiability` right after accrueMany of every live series | `SystemGas.t.sol::test_R1_bookValueEqualsTotalLiabilityAfterAccrueAll`, `SystemInvariant.t.sol::invariant_bookValueMatchesAfterAccrual` |
+| R1 | `bookValue == totalLiability` right after accrueMany of every live series | `SystemGas.t.sol::test_R1_bookValueEqualsTotalLiabilityAfterAccrueAll`, `SystemInvariant.t.sol::invariant_totalLiabilityRecompute` |
 | R1 | One source for the 35% / 8% caps: the engine's parameters; the pool mirrors `engine.capBps()` | `test/pool/WriterPool.t.sol::test_R8_capsExposedToEngine` |
 | R2 | 1,000 archived zero-supply series change buy, sell, accrueMany(live), totalLiability and shield gas by < 5%; accrueMany skips an empty series for < 5k gas | `SystemGas.t.sol::test_R2_onlyLiveSeriesCost` |
 | R3 | Epoch ids, relist below norm 0.001 or when archived, old epoch archived and sellable, `.N` symbols | `test/SeriesRegistry.t.sol::test_R3_seriesEpochs`, `::test_R3_relistThresholdAdminOnlyAndBounded`, `SystemGas.t.sol::test_R3_seriesEpochsEndToEnd` |
 | R4 | USDG conserved; engine and adapter hold none | `SystemInvariant.t.sol::invariant_usdgConserved` |
-| R4 | NAV > 0 through moves and 25% gaps; a gap never loses more than the stress loss measured on the book; no buy leaves the book over the budget | `SystemInvariant.t.sol::invariant_poolSolventUnderGaps`, `::test_R4_fullBookGapWithinStressBudget` |
+| R4 | NAV > 0 through moves and 25% gaps; a gap never loses more than the stress loss measured on the book; no buy leaves the book over the budget | `SystemInvariant.t.sol::invariant_poolSolventWithinCaps`, `::test_R4_fullBookGapWithinStressBudget` |
 | R4 | A trader's USDG only leaves as a buy's returned cost (loss bounded by premium) | `SystemInvariant.t.sol::invariant_buyerLossBoundedByPremium` |
-| R4 | Norm monotone; pool shares supply == holders; no Panic | `SystemInvariant.t.sol::invariant_normMonotone`, `::invariant_sharesSupplyEqualsHolders`, `::invariant_noPanic` |
+| R4 | Norm monotone; pool shares supply == holders; no Panic | `SystemInvariant.t.sol::invariant_normMonotone`, `::invariant_sharesSupplyMatchesHolders`, `::invariant_noPanics` |
+| R4 (todo 10) | A sell on a fresh price never reverts, through every pause, sigma move and hedge post | `SystemInvariant.t.sol::invariant_sellsWorkWhenPriceFresh` |
 | R5 | Gas table: buy, sell, accrueMany(50), deposit, claim, rebalance, nav, totalLiability | `SystemGas.t.sol::test_R5_gasTable` |
+
+## Deployment and timers (todo 10)
+
+| Rule | Property | Test (`test/system/`) |
+|------|----------|------|
+| R1 | The deploy script's code path deploys and wires every contract (fork profile over mocks, testnet profile with its own mocks), writes the app's deployment file, and the system trades | `DeploySystem.t.sol::test_R1_deployOnAnvilWorks_forkProfile`, `::test_R1_testnetProfileDeploysMocksAndTrades` |
+| R2 | Deployer holds no role after handoff; admin = 48h timelock run by a Safe (a contract on forks); keeper, hedger, vol signer are three addresses; the guardian can only pause buys, shield and deposits | `DeploySystem.t.sol::test_R2_rolesWired`, `::test_R2_botsMustBeThreeDifferentAddresses`, `::test_R2_guardianCanOnlyPauseBuysShieldAndDeposits` |
+| R3 | Post-deploy check passes on a fresh system and names each misconfiguration | `DeploySystem.t.sol::test_R3_postDeployCheckPassesOnFreshDeployment`, `::test_R3_fails_*` (17 cases) |
+| R8 | Every time rule is deploy-time with a hard minimum (pool queue, deposit lock, fee period, vol validity and rate limit, split windows, timelock); fork and mainnet deploy full values | `Timers.t.sol::test_R8_*`, `DeploySystem.t.sol::test_R8_*` |
+| R9 | Profiles: mainnet refuses any chain but 4663 and any Safe below 3-of-5; testnet only on 46630; fork/mainnet configs cannot shorten timers | `DeploySystem.t.sol::test_R9_*` |
+| R5 | With `FORK_RPC_URL`: PriceGuard reads every launch name's real feed and Stock Token, S within 2% of the Uniswap v3 TWAP | `test/fork/Fork.t.sol::test_R5_forkFeedsReadable` (skipped without the variable) |
 
 Notes:
 - `bookValue` staleness bound: each series is valued at its last touch; the keeper accrues every live series

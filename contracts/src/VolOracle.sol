@@ -41,17 +41,22 @@ contract VolOracle is AccessControl, EIP712, IVolOracle {
     uint64 public constant MAX_STEP_BPS = 2500;
     /// @notice Floor applied to a stock the admin has not configured (30%, mega-cap level).
     uint64 public constant DEFAULT_FLOOR_BPS = 3000;
-    /// @notice A post may be valid for at most this long after it lands.
-    uint64 public constant MAX_VALIDITY = 2 hours;
+    /// @notice A post may be valid for at most this long after it lands (2h on mainnet; deploy-time, bounded below).
+    uint64 public immutable MAX_VALIDITY;
+    uint64 public constant HARD_MIN_VALIDITY = 5 minutes;
+    uint64 public constant HARD_MAX_VALIDITY = 2 hours;
     /// @notice Longest earnings buy-block window.
     uint64 public constant MAX_BUY_BLOCK = 3 days;
     /// @notice Upper bound for an admin floor (1000%), so a typo cannot freeze a name.
     uint64 public constant MAX_FLOOR_BPS = 100_000;
 
-    /// @notice Minimum time between two accepted posts for one stock and speed.
-    uint64 public constant MIN_POST_INTERVAL = 5 minutes;
-    /// @notice Rolling window of the cumulative bound.
-    uint64 public constant ROLLING_WINDOW = 1 hours;
+    /// @notice Minimum time between two accepted posts for one stock and speed (5 min on mainnet; deploy-time).
+    uint64 public immutable MIN_POST_INTERVAL;
+    uint64 public constant HARD_MIN_POST_INTERVAL = 30 seconds;
+    uint64 public constant HARD_MAX_POST_INTERVAL = 1 hours;
+    /// @notice Rolling window of the cumulative bound: HISTORY x MIN_POST_INTERVAL (1h on mainnet), so the ring of the
+    /// last HISTORY posts always covers the window plus the value in force at its start.
+    uint64 public immutable ROLLING_WINDOW;
     /// @notice Largest cumulative move inside any rolling window, in bps of the value at its start (50%).
     uint64 public constant MAX_WINDOW_MOVE_BPS = 5000;
     /// @notice Accepted posts kept per stock and speed (12 * 5 min = 1 h).
@@ -65,6 +70,7 @@ contract VolOracle is AccessControl, EIP712, IVolOracle {
     error BadBuyBlockWindow(uint64 from, uint64 to);
     error RateLimited(uint64 nextAllowedAt);
     error WindowMoveTooLarge(uint64 anchorBps, uint64 next);
+    error InvalidTimer();
 
     event FloorSet(address indexed stock, uint64 floorBps);
 
@@ -100,8 +106,17 @@ contract VolOracle is AccessControl, EIP712, IVolOracle {
     mapping(address stock => mapping(Speed speed => Slot)) private _vol;
     mapping(address stock => Floor) private _floor;
 
-    constructor(address admin, address signer_) EIP712("LemniscateVolOracle", "1") {
+    constructor(address admin, address signer_, uint64 maxValidity_, uint64 minPostInterval_)
+        EIP712("LemniscateVolOracle", "1")
+    {
         if (admin == address(0)) revert InvalidAdmin();
+        if (
+            maxValidity_ < HARD_MIN_VALIDITY || maxValidity_ > HARD_MAX_VALIDITY
+                || minPostInterval_ < HARD_MIN_POST_INTERVAL || minPostInterval_ > HARD_MAX_POST_INTERVAL
+        ) revert InvalidTimer();
+        MAX_VALIDITY = maxValidity_;
+        MIN_POST_INTERVAL = minPostInterval_;
+        ROLLING_WINDOW = uint64(HISTORY) * minPostInterval_;
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _setSigner(signer_);
     }

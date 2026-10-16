@@ -61,14 +61,14 @@ abstract contract PoolFixture is Test {
     }
 
     function _deployPool(address guard_) internal {
-        WriterPool impl = new WriterPool();
+        WriterPool impl = new WriterPool(72 hours);
         bytes memory init = abi.encodeCall(
             WriterPool.initialize,
             (admin, IERC20(address(usdg)), IOptionEngine(address(engine)), IPriceGuard(guard_))
         );
         pool = WriterPool(address(new ERC1967Proxy(address(impl), init)));
         reserve = new Reserve(admin, IERC20(address(usdg)), address(pool));
-        fees = new FeeRouter(admin, IERC20(address(usdg)), address(pool), treasury);
+        fees = new FeeRouter(admin, IERC20(address(usdg)), address(pool), treasury, 7 days);
         pool.setModules(
             IOptionEngine(address(engine)), IReserve(address(reserve)), IFeeRouter(address(fees)), IPriceReference(address(0))
         );

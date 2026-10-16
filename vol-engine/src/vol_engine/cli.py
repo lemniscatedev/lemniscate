@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import sys
 import time
 from datetime import datetime, timezone
@@ -11,7 +12,7 @@ from .config import Settings
 from .engine import run_cycle
 from .history import History
 from .logs import configure_logging
-from .sender import make_sender
+from .sender import http_transport, make_sender, read_oracle_timers
 from .keystore import KeyConfigError
 from .store import PgStore
 
@@ -35,6 +36,13 @@ def main(argv: list[str] | None = None) -> int:
     if not settings.database_url:
         log.error("DATABASE_URL is required")
         return 2
+    if settings.rpc_url and settings.oracle_address:
+        try:  # keepers and services read the timers from the contract (todo 10 R8)
+            settings = dataclasses.replace(settings, **read_oracle_timers(settings.oracle_address, http_transport(settings.rpc_url)))
+            log.info("oracle timers: interval=%ds window=%ds max_validity=%ds", settings.min_post_interval_s,
+                     settings.rolling_window_s, settings.max_validity_s)
+        except Exception:  # noqa: BLE001 (keep the configured values; the contract still enforces its own)
+            log.warning("could not read the oracle timers, using the configured values")
     sender = make_sender(settings)
     log.info("starting: names=%s send=%s", ",".join(settings.names), "ON" if settings.send else "off (dry-run)")
     store = PgStore(settings.database_url)

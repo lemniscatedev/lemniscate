@@ -13,6 +13,7 @@ import { trimDecimal } from "../quote/rows";
 import { usdgMicro, usdgText } from "../quote/model";
 import { AaConfigError, loadAaConfig } from "../../aa/config";
 import { KERNEL_V33_IMPLEMENTATION, predictKernelAddressOffline } from "../../aa/counterfactual";
+import { optionalEnv } from "../../config";
 
 const trim = (value: string | null): string | null => (value === null ? null : trimDecimal(value));
 
@@ -88,7 +89,7 @@ export function registerAccountActivityRoutes(app: OpenAPIHono, deps: ApiDepende
       if (!(error instanceof AaConfigError)) throw error;
       return context.json({ error: "AA_UNAVAILABLE", message: "Smart accounts are not configured on this server." }, 503);
     }
-    const implementation = (process.env.AA_KERNEL_IMPLEMENTATION || KERNEL_V33_IMPLEMENTATION) as Address;
+    const implementation = (optionalEnv("AA_KERNEL_IMPLEMENTATION") || KERNEL_V33_IMPLEMENTATION) as Address;
     const account = predictKernelAddressOffline(
       { factory: config.kernelFactory, validator: config.kernelValidator, implementation }, address as Address, index,
     ).toLowerCase();

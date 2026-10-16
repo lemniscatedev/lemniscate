@@ -16,7 +16,10 @@ contract FeeRouter is AccessControl, IFeeRouter {
     using SafeERC20 for IERC20;
 
     uint256 private constant BPS = 10_000;
-    uint256 public constant PERIOD = 7 days;
+    /// @notice Time between two distributions, fixed per deployment (7 days on mainnet and fork, minutes on testnet).
+    uint256 public immutable PERIOD;
+    uint256 public constant MIN_PERIOD = 5 minutes;
+    uint256 public constant MAX_PERIOD = 30 days;
     uint16 private constant MAX_PROTOCOL_FEE_BPS = 3_000;
 
     bytes32 private constant BUCKET_KEEPERS = "keepers";
@@ -46,10 +49,12 @@ contract FeeRouter is AccessControl, IFeeRouter {
     uint256 public lastDistribution;
     mapping(bytes32 bucket => uint256 usdg) public held;
 
-    constructor(address admin, IERC20 usdg_, address pool_, address treasury_) {
+    constructor(address admin, IERC20 usdg_, address pool_, address treasury_, uint256 period_) {
         if (admin == address(0) || address(usdg_) == address(0) || pool_ == address(0) || treasury_ == address(0)) {
             revert InvalidParams();
         }
+        if (period_ < MIN_PERIOD || period_ > MAX_PERIOD) revert InvalidParams();
+        PERIOD = period_;
         usdg = usdg_;
         pool = pool_;
         treasury = treasury_;

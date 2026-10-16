@@ -5,8 +5,8 @@ from __future__ import annotations
 from .config import MAX_STEP_BPS
 
 BPS = 10_000
-MIN_POST_INTERVAL_S = 300  # VolOracle.MIN_POST_INTERVAL
-ROLLING_WINDOW_S = 3600  # VolOracle.ROLLING_WINDOW
+MIN_POST_INTERVAL_S = 300  # VolOracle.MIN_POST_INTERVAL on mainnet (deploy-time; Settings carries the live value)
+ROLLING_WINDOW_S = 3600  # VolOracle.ROLLING_WINDOW on mainnet (= HISTORY x MIN_POST_INTERVAL)
 MAX_WINDOW_MOVE_BPS = 5_000  # VolOracle.MAX_WINDOW_MOVE_BPS
 HISTORY = 12  # VolOracle.HISTORY ring size
 
@@ -18,19 +18,20 @@ def step_bounds(prior_bps: int, floor_bps: int) -> tuple[int, int]:
     return max(ref - allowed, floor_bps), ref + allowed
 
 
-def next_allowed_at(sent: list[tuple[float, int]]) -> float:
+def next_allowed_at(sent: list[tuple[float, int]], interval_s: int = MIN_POST_INTERVAL_S) -> float:
     """Earliest time the contract's rate limit allows the next post. `sent` = (at, sigma), newest first."""
-    return sent[0][0] + MIN_POST_INTERVAL_S if sent else 0.0
+    return sent[0][0] + interval_s if sent else 0.0
 
 
-def window_bounds(sent: list[tuple[float, int]], now_s: float, floor_bps: int) -> tuple[int, int] | None:
+def window_bounds(sent: list[tuple[float, int]], now_s: float, floor_bps: int,
+                  window_s: int = ROLLING_WINDOW_S) -> tuple[int, int] | None:
     """Mirror of VolOracle.windowBounds: the sigma range allowed by the rolling-hour rule, or None with no history.
 
     `sent` = (at, sigma) of posts the chain accepted, newest first. In force during [now-1h, now] are every post newer
     than the window start plus the newest one at or before it; the ring keeps the last 12. Each value is lifted to the
     floor. hi = floor(min * 1.5), lo = ceil(max * 0.5).
     """
-    start = now_s - ROLLING_WINDOW_S if now_s > ROLLING_WINDOW_S else 0
+    start = now_s - window_s if now_s > window_s else 0
     vals: list[int] = []
     for at, sigma in sent[:HISTORY]:
         vals.append(max(sigma, floor_bps))

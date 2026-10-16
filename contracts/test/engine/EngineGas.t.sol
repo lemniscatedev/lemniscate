@@ -61,8 +61,8 @@ contract EngineGasTest is Test {
         vm.warp(T0);
         usdg = new MockPausableUSDG();
         hours_ = new MockKindHours(); // REGULAR
-        guard = new PriceGuard(admin, address(hours_));
-        vol = new VolOracle(admin, vm.addr(SIGNER_PK));
+        guard = new PriceGuard(admin, address(hours_), 24 hours, 1 hours);
+        vol = new VolOracle(admin, vm.addr(SIGNER_PK), 2 hours, 5 minutes);
         registry = new SeriesRegistry(admin, IPriceGuard(address(guard)));
         pool = new MockEnginePool(IERC20(address(usdg)));
         LemniscateEngine impl = new LemniscateEngine();

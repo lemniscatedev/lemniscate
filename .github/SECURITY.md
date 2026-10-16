@@ -15,7 +15,7 @@ what we assume about them is listed below because it is part of our threat model
 
 Status of the code behind this document: the pricing, price guard, vol oracle, series, funding and pool contracts are built and
 tested; the engine and agent router are being rewritten. Every invariant and its test is in
-[contracts/INVARIANTS.md](contracts/INVARIANTS.md).
+[contracts/INVARIANTS.md](../contracts/INVARIANTS.md).
 
 ## What a buyer and a writer can lose
 
@@ -79,5 +79,5 @@ hedger and vol signer are three different addresses; the services refuse to star
 
 ## Audit history
 
-None yet. Internal review, fuzzing, stateful invariants and mutation tests are documented in [contracts/INVARIANTS.md](contracts/INVARIANTS.md).
+None yet. Internal review, fuzzing, stateful invariants and mutation tests are documented in [contracts/INVARIANTS.md](../contracts/INVARIANTS.md).
 This section will list each external audit, its date and its report once one exists.

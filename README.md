@@ -13,10 +13,12 @@ Pre-release, not deployed, not audited. No contract address exists yet, so none 
 ## Layout
 
 ```
-contracts/    Solidity contracts (Foundry)
+contracts/    Solidity contracts (Foundry), deploy and check scripts in contracts/script
 app/          Bun services: API, indexer, keeper, hedger, migrations
-vol-engine/   Python volatility engine: signs and posts sigma to VolOracle
-web/          Website (static build, subtree of the frontend repository)
+vol-engine/   Python volatility engine: signs and posts sigma to VolOracle (extra deliverable)
+web/          Website (static build, subtree of the frontend repository; extra deliverable)
+.github/      CI workflow and SECURITY.md
+.githooks/    pre-commit public guard and the Gitleaks config
 ```
 
 ### Contracts (`contracts/src`)
@@ -30,15 +32,16 @@ web/          Website (static build, subtree of the frontend repository)
 | `PriceGuard` | Reads a Chainlink feed and the Stock Token multiplier once, classifies the session, cross-checks a Uniswap v3 TWAP, never reverts on a bad read | built |
 | `VolOracle` | Stores sigma posts signed by one off-chain signer (EIP-712): step limit, rate limit, floor, expiry, nonces, earnings buy-block window | built |
 | `MarketHours` | Market session calendar, pushed by the keeper, with an NYSE calendar fallback | built |
-| `WriterPool` | ERC-4626-style USDG pool. Counterparty for all trades, holds the spot hedges, 72h withdrawal queue paid at NAV. The version in the tree is the legacy vault; the rewrite (with the first-loss reserve and the fee router) is being merged separately | in progress |
-| `AgentRouter` | Lets an owner give an agent key a budget, an expiry and a list of names; trades only through the engine, always to the owner | in progress |
+| `WriterPool` | ERC-4626-style USDG pool. Counterparty for all trades, holds the spot hedges (linked library `PoolHedging`), withdrawal queue paid at NAV (72h on mainnet) | built |
+| `Reserve`, `FeeRouter` | First-loss reserve funded from spread income; protocol fee split to the pool, keepers, hedger and treasury on a fixed period (7 days on mainnet) | built |
+| `AgentRouter` | Lets an owner give an agent key a budget, an expiry and a list of names; trades only through the engine, always to the owner | built |
 | `UniswapV3HedgeAdapter`, `UniswapV3TwapReference` | Swap route for the pool's hedges and the TWAP that floors forced sales | built |
 | `LemniscatePaymaster` | Verifying paymaster for ERC-4337 one-tap transactions | built |
 | `libs/` | `FixedMath`, `EverlastingMath`, `EverlastingGreeks`, `Funding`, `NyseCalendar`, `Roles`, `TickPrice` | built |
 
 Phase 2 (writer vaults, the `$LMNS` token and staking) is designed but not written, and ships closed.
 
-The engine, pool and market hours sit behind UUPS proxies that only the admin can upgrade; the engine's upgrades can be frozen for good. OpenZeppelin v5.4.0 and forge-std v1.9.7 are vendored in `contracts/lib`. Roles, trust assumptions and accepted risks are in [SECURITY.md](SECURITY.md); each invariant and the test that checks it is in [contracts/INVARIANTS.md](contracts/INVARIANTS.md).
+The engine, pool and market hours sit behind UUPS proxies that only the admin can upgrade; the engine's upgrades can be frozen for good. OpenZeppelin v5.4.0 and forge-std v1.9.7 are vendored in `contracts/lib`. Roles, trust assumptions and accepted risks are in [SECURITY.md](.github/SECURITY.md); each invariant and the test that checks it is in [contracts/INVARIANTS.md](contracts/INVARIANTS.md).
 
 ### Deployment
 
@@ -124,9 +127,28 @@ The paymaster signer (`PAYMASTER_SIGNER_*`), the x402 settler (`X402_SETTLER_*`)
 
 Never commit `.env` files or keys; they are ignored by `.gitignore`.
 
+Every time rule is a deploy-time value with a hard minimum enforced by the contract: pool withdrawal queue (72h on
+mainnet), deposit lock (24h), fee distribution period (7 days), vol post validity (2h) and rate limit (5 min), split
+pause window (24h before, 1h after), timelock (48h). The testnet profile deploys minutes; services read the values from
+the contracts.
+
+### Deploy
+
+`contracts/script/DeploySystem.s.sol` deploys and wires the whole system, lists the launch names, hands every admin
+role to a 48h `TimelockController` run by a Safe (testnet: to the owner), runs the post-deploy check and writes the
+deployment file. Profiles: `fork` (anvil, chain 31337), `testnet` (46630, with mock tokens and feeds) and `mainnet`
+(4663 only, Safe of at least 3 of 5). Token, feed and pool addresses come from a JSON config passed at run time;
+none is built into the source. Details: [contracts/script/README.md](contracts/script/README.md).
+
+```sh
+cd contracts
+DEPLOY_CONFIG_JSON="$(cat <config.json>)" forge script script/DeploySystem.s.sol --rpc-url <rpc> --account <keystore> --broadcast
+DEPLOYMENT_FILE=deployments/<profile>.json DEPLOY_CONFIG_JSON="$(cat <config.json>)" forge script script/PostDeployCheck.s.sol --rpc-url <rpc>
+```
+
 ### Deployment file
 
-The services read contract addresses from the JSON file named by `DEPLOYMENT_FILE` (schema: `app/src/chain/deployment.ts`): the engine, pool, registry, price guard, vol oracle, agent router and USDG addresses, the pool share decimals, and one entry per listed Stock Token with its feed and deploy block. The deploy script writes it; it is git-ignored.
+The services read contract addresses from the JSON file named by `DEPLOYMENT_FILE` (schema: `app/src/chain/deployment.ts`): the engine, pool, registry, price guard, vol oracle, agent router and USDG addresses, the pool share decimals, and one entry per listed Stock Token with its feed and deploy block. `DeploySystem.s.sol` writes it to `contracts/deployments/<profile>.json` (git-ignored) with the remaining contract and role addresses alongside; chain IDs 4663 (mainnet), 31337 (fork) and 46630 (testnet) are accepted.
 
 ## API
 

@@ -131,6 +131,9 @@ contract AgentRouter is IAgentRouter, ReentrancyGuardTransient {
         Series memory s = REGISTRY.seriesOf(seriesId);
         _requireStock(owner, s.stock);
 
+        // `owner` set a policy for msg.sender (_active reverts otherwise) and approved this router; tokens only go to the
+        // engine on the owner's behalf. Slither arbitrary-send-erc20 false positive.
+        // slither-disable-next-line arbitrary-send-erc20
         IERC20(s.token).safeTransferFrom(owner, address(this), tokens);
         uint256 ticketsBefore = IAgentRouterEngine(address(ENGINE)).ticketCount();
         proceeds = ENGINE.sell(seriesId, tokens, minProceedsUsdg, deadline, owner);
@@ -223,6 +226,8 @@ contract AgentRouter is IAgentRouter, ReentrancyGuardTransient {
         if (spent >= budget) revert BudgetExceeded(spent, 0, budget);
         uint256 limit = Math.min(Math.min(maxCostUsdg, maxPerTrade), budget - spent);
 
+        // Same authorisation as sellFor (policy checked by the caller); USDG only pays the owner's own buy, rest refunded.
+        // slither-disable-next-line arbitrary-send-erc20
         USDG.safeTransferFrom(owner, address(this), limit);
         USDG.forceApprove(address(ENGINE), limit);
         uint256 before = USDG.balanceOf(address(this));

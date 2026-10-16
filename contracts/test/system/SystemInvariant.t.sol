@@ -39,6 +39,13 @@ contract SystemInvariantTest is SystemFixture {
             fs[i] = feeds[i];
         }
         handler.init(ss, fs, px, ids, traders, lps, nonce);
+        address guardian = makeAddr("guardian");
+        vm.startPrank(admin);
+        engine.grantRole(engine.GUARDIAN_ROLE(), guardian);
+        pool.grantRole(pool.GUARDIAN_ROLE(), guardian);
+        guard.grantRole(guard.GUARDIAN_ROLE(), guardian);
+        vm.stopPrank();
+        handler.setRoles(admin, guardian);
         // The handler signs vol posts and pokes PriceGuard; it needs nothing else.
         for (uint256 i; i < traders.length; ++i) {
             if (traders[i] != alice) {
@@ -65,7 +72,7 @@ contract SystemInvariantTest is SystemFixture {
             startBalance[traders[i]] = usdg.balanceOf(traders[i]);
         }
         targetContract(address(handler));
-        bytes4[] memory sel = new bytes4[](12);
+        bytes4[] memory sel = new bytes4[](15);
         sel[0] = SystemHandler.buy.selector;
         sel[1] = SystemHandler.sell.selector;
         sel[2] = SystemHandler.deposit.selector;
@@ -78,6 +85,9 @@ contract SystemInvariantTest is SystemFixture {
         sel[9] = SystemHandler.session.selector;
         sel[10] = SystemHandler.warp.selector;
         sel[11] = SystemHandler.buy.selector; // buys twice as likely
+        sel[12] = SystemHandler.pause.selector;
+        sel[13] = SystemHandler.volPost.selector;
+        sel[14] = SystemHandler.hedgePost.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: sel}));
     }
 
@@ -96,7 +106,7 @@ contract SystemInvariantTest is SystemFixture {
 
     /// Pool solvency within caps: NAV stays positive through moves and 25% gaps, and a gap never loses more than the
     /// stress loss the engine measured on the book (the 20% stress budget gates every buy).
-    function invariant_poolSolventUnderGaps() public view {
+    function invariant_poolSolventWithinCaps() public view {
         assertGt(pool.nav(), 0, "NAV > 0");
         assertEq(handler.gapBreaches(), 0, "gap loss within the measured stress loss");
         assertEq(handler.stressBreaches(), 0, "no buy leaves the book over the stress budget");
@@ -116,12 +126,12 @@ contract SystemInvariantTest is SystemFixture {
     }
 
     /// bookValue == totalLiability right after the keeper's accrueMany of every live series.
-    function invariant_bookValueMatchesAfterAccrual() public view {
+    function invariant_totalLiabilityRecompute() public view {
         assertEq(handler.bookDrift(), 0);
     }
 
     /// Pool shares: supply == LP balances + the queue escrow held by the pool.
-    function invariant_sharesSupplyEqualsHolders() public view {
+    function invariant_sharesSupplyMatchesHolders() public view {
         uint256 sum = pool.balanceOf(address(pool));
         for (uint256 i; i < lps.length; ++i) {
             sum += pool.balanceOf(lps[i]);
@@ -130,8 +140,14 @@ contract SystemInvariantTest is SystemFixture {
         assertEq(pool.balanceOf(address(pool)), pool.queuedShares(), "escrow == queued shares");
     }
 
-    function invariant_noPanic() public view {
+    function invariant_noPanics() public view {
         assertEq(handler.panics(), 0);
+    }
+
+    /// Todo 10 R4: a sell on a fresh price never reverts, through guardian pauses, vol moves and hedge posts
+    /// (a payout the pool cannot make is queued, not refused).
+    function invariant_sellsWorkWhenPriceFresh() public view {
+        assertEq(handler.sellFailures(), 0, "fresh-price sell reverted");
     }
 
     /// Deterministic R4 case: fill one name's book up to whatever cap binds first, then gap it 25% both ways (others
@@ -187,6 +203,10 @@ contract SystemInvariantTest is SystemFixture {
         emit log_named_uint("claims", handler.claims());
         emit log_named_uint("gaps", handler.gaps());
         emit log_named_uint("worst gap loss, bps of NAV", handler.worstGapLossBps());
+        emit log_named_uint("fresh sells", handler.freshSells());
+        emit log_named_uint("pauses", handler.pauses());
+        emit log_named_uint("vol posts (sigma moves)", handler.volPosts());
+        emit log_named_uint("hedge posts", handler.hedgePosts());
 
     }
 }

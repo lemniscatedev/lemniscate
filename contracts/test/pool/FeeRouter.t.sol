@@ -21,7 +21,7 @@ contract FeeRouterTest is Test {
 
     function setUp() public {
         usdg = new MockUSDG();
-        router = new FeeRouter(address(this), IERC20(address(usdg)), pool, treasury);
+        router = new FeeRouter(address(this), IERC20(address(usdg)), pool, treasury, 7 days);
         router.setRecipient("keepers", keepers);
         router.setRecipient("hedger", hedger);
     }

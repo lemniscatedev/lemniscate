@@ -37,7 +37,7 @@ contract PriceGuardTest is Test {
         hours_ = new MockKindHours();
         stock = new MockSwitchingStock();
         feed = new MockGuardFeed(8, 100e8);
-        guard = new PriceGuard(admin, address(hours_));
+        guard = new PriceGuard(admin, address(hours_), 24 hours, 1 hours);
         bytes32 guardianRole = guard.GUARDIAN_ROLE();
         vm.startPrank(admin);
         guard.grantRole(guardianRole, guardian);

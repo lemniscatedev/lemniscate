@@ -18,7 +18,7 @@ from .config import (
     floor_for,
 )
 from .earnings import reconcile, report_times
-from .guard import clamp_step, next_allowed_at, window_bounds
+from .guard import ROLLING_WINDOW_S, clamp_step, next_allowed_at, window_bounds
 from .history import History
 from .realized import realized_vol
 from .sender import Sender, SignedPost
@@ -48,7 +48,8 @@ class Plan:
 
 
 def plan_post(name: str, speed: int, now: datetime, store: Store, history: History, validity_s: int,
-              include_dry_run: bool, stocks: dict[str, str] | None = None) -> Plan | None:
+              include_dry_run: bool, stocks: dict[str, str] | None = None, rolling_window_s: int | None = None,
+              max_validity_s: int = MAX_VALIDITY_S) -> Plan | None:
     stocks = stocks or {}
     stock = stocks.get(name) or store.stock_token(name)
     if not stock:
@@ -97,7 +98,8 @@ def plan_post(name: str, speed: int, now: datetime, store: Store, history: Histo
     floor_bps = round(floor_for(name) * BPS)
     target = round(sigma * BPS)
     prior = store.reference(stock, SPEED_NAMES[speed], include_dry_run)
-    window = window_bounds(store.recent_sent(stock, SPEED_NAMES[speed], now_s), now_s, floor_bps)  # 1h bound (04b R7)
+    window = window_bounds(store.recent_sent(stock, SPEED_NAMES[speed], now_s), now_s, floor_bps,
+                           rolling_window_s or ROLLING_WINDOW_S)  # rolling bound (04b R7; 1h on mainnet)
     sigma_bps, ramped = clamp_step(target, prior, floor_bps, window)  # R8
     if ramped:
         flags.append(f"ramped:{target}->{sigma_bps}")
@@ -105,7 +107,7 @@ def plan_post(name: str, speed: int, now: datetime, store: Store, history: Histo
     post = Post(
         stock=stock, speed=speed, sigma_bps=sigma_bps, skew_k=pack_skew_k(),
         event_bump_bps=max(0, round((sigma - base) * BPS)), buy_block_from=block_from, buy_block_to=block_to,
-        valid_until=now_s + min(validity_s, MAX_VALIDITY_S - 60), nonce=store.max_nonce(stock, SPEED_NAMES[speed]) + 1,
+        valid_until=now_s + min(validity_s, max_validity_s - 60), nonce=store.max_nonce(stock, SPEED_NAMES[speed]) + 1,
     )
     return Plan(name, stock, speed, post, target, ramped, rv.sigma, base, flags, decision.alerts)
 
@@ -138,13 +140,14 @@ def run_cycle(now: datetime, store: Store, sender: Sender, settings: Settings, h
     now_s = int(now.timestamp())
     for name in settings.names:
         for speed in (0, 1):
-            plan = plan_post(name, speed, now, store, history, settings.validity_s, include_dry, dict(settings.stocks))
+            plan = plan_post(name, speed, now, store, history, settings.validity_s, include_dry, dict(settings.stocks),
+                             settings.rolling_window_s, settings.max_validity_s)
             if plan is None:
                 continue
             _record_alerts(store, name, plan.alerts, now_s)
             speed_name = SPEED_NAMES[speed]
-            nxt = next_allowed_at(store.recent_sent(plan.stock, speed_name, now_s))
-            if now_s < nxt:  # the contract rejects (RateLimited) a second post inside 5 min, even when forced
+            nxt = next_allowed_at(store.recent_sent(plan.stock, speed_name, now_s), settings.min_post_interval_s)
+            if now_s < nxt:  # the contract rejects (RateLimited) a second post inside the interval, even when forced
                 log.info("%s %s rate-limited until %d, skipping", name, speed_name, nxt)
                 continue
             if not force and not worth_posting(plan, store.last_intent(plan.stock, speed_name), settings.validity_s, now_s):

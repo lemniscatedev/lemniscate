@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { optionalEnv } from "../config";
 
 export interface EphemeralPostgres {
   readonly url: string;
@@ -14,8 +15,9 @@ const PG_ENV = { ...process.env, LC_ALL: "C", LANG: "C" };
 
 function candidateBinDirs(): string[] {
   const dirs: string[] = [];
-  if (process.env.PG_BIN) dirs.push(process.env.PG_BIN);
-  for (const entry of (process.env.PATH ?? "").split(":")) if (entry) dirs.push(entry);
+  const pgBin = optionalEnv("PG_BIN");
+  if (pgBin) dirs.push(pgBin);
+  for (const entry of (optionalEnv("PATH") ?? "").split(":")) if (entry) dirs.push(entry);
   for (const version of ["16", "17", "18", "15"]) {
     dirs.push(`/opt/homebrew/opt/postgresql@${version}/bin`, `/usr/local/opt/postgresql@${version}/bin`, `/usr/lib/postgresql/${version}/bin`);
   }

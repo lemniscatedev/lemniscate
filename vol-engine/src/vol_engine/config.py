@@ -68,6 +68,11 @@ class Settings:
     moves_file: str = ""
     weekend_file: str = ""
     validity_s: int = 3_600
+    # VolOracle timers (deploy-time on chain since todo 10 R8: minutes on testnet). Mainnet defaults here; the CLI
+    # replaces them with the deployed oracle's own values when an RPC and the oracle address are configured.
+    min_post_interval_s: int = 300
+    rolling_window_s: int = 3_600
+    max_validity_s: int = MAX_VALIDITY_S
     names: tuple[str, ...] = LAUNCH_NAMES
     stocks: tuple[tuple[str, str], ...] = ()  # optional (name, address) overrides from VOL_STOCKS
 
@@ -86,6 +91,9 @@ class Settings:
             moves_file=e.get("VOL_MOVES_FILE", ""),
             weekend_file=e.get("VOL_WEEKEND_FILE", ""),
             validity_s=int(e.get("VOL_VALIDITY_S", "3600")),
+            min_post_interval_s=int(e.get("VOL_MIN_POST_INTERVAL_S", "300")),
+            rolling_window_s=int(e.get("VOL_ROLLING_WINDOW_S", "3600")),
+            max_validity_s=int(e.get("VOL_MAX_VALIDITY_S", str(MAX_VALIDITY_S))),
             names=names,
             stocks=tuple(
                 (k.strip().upper(), v.strip().lower())

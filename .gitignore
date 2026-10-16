@@ -27,6 +27,7 @@ id_ed25519*
 /deploy/
 /deploy-config/
 /deployments/
+contracts/deployments/
 /docker/
 AGENTS.md
 memories.md

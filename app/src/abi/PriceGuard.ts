@@ -13,6 +13,16 @@ export const PriceGuardAbi = [
         "name": "marketHours_",
         "type": "address",
         "internalType": "address"
+      },
+      {
+        "name": "splitLead_",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "splitTail_",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "nonpayable"
@@ -104,6 +114,45 @@ export const PriceGuardAbi = [
         "name": "",
         "type": "bytes32",
         "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "HARD_MAX_SPLIT_WINDOW",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "HARD_MIN_SPLIT_LEAD",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "HARD_MIN_SPLIT_TAIL",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -1287,6 +1336,11 @@ export const PriceGuardAbi = [
   {
     "type": "error",
     "name": "InvalidGracePeriod",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidTimer",
     "inputs": []
   },
   {

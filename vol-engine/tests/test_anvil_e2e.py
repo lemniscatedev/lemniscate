@@ -4,6 +4,7 @@ Skipped when anvil/cast or the compiled contract (contracts/out, built by `forge
 Nothing here touches a real network.
 """
 
+import dataclasses
 import json
 import shutil
 import socket
@@ -18,7 +19,7 @@ from vol_engine.bars import Tick
 from vol_engine.config import Settings
 from vol_engine.engine import run_cycle
 from vol_engine.history import History
-from vol_engine.sender import http_transport, make_sender
+from vol_engine.sender import http_transport, make_sender, read_oracle_timers
 from vol_engine.store import MemoryStore
 
 from helpers import ANVIL_KEY, STOCKS, synthetic_ticks, weekdays
@@ -64,7 +65,7 @@ def chain():
 
 def test_engine_posts_are_accepted_by_the_real_contract(chain):
     code = json.loads(ARTIFACT.read_text())["bytecode"]["object"]
-    args = cast("abi-encode", "constructor(address,address)", DEV0, DEV0)
+    args = cast("abi-encode", "constructor(address,address,uint64,uint64)", DEV0, DEV0, "7200", "300")
     out = cast("send", "--rpc-url", chain, "--private-key", ANVIL_KEY, "--create", code + args[2:], "--json")
     oracle = json.loads(out)["contractAddress"]
 
@@ -102,3 +103,31 @@ def test_engine_posts_are_accepted_by_the_real_contract(chain):
     assert run_cycle(chain_now + timedelta(seconds=5), st, sender, s, History(), force=True) == []
     assert [i.status for i in st.intents] == ["sent"] * 4
     assert cast("block-number", "--rpc-url", chain) == blk
+
+
+def test_short_testnet_timers_are_read_from_the_contract(chain):
+    """Todo 10 R8: a testnet oracle deployed with a 30 s rate limit; the engine reads the timers and posts again after
+    31 s instead of 5 minutes."""
+    code = json.loads(ARTIFACT.read_text())["bytecode"]["object"]
+    args = cast("abi-encode", "constructor(address,address,uint64,uint64)", DEV0, DEV0, "1800", "30")
+    out = cast("send", "--rpc-url", chain, "--private-key", ANVIL_KEY, "--create", code + args[2:], "--json")
+    oracle = json.loads(out)["contractAddress"]
+    timers = read_oracle_timers(oracle, http_transport(chain))
+    assert timers == {"max_validity_s": 1800, "min_post_interval_s": 30, "rolling_window_s": 360}
+
+    chain_now = datetime.fromtimestamp(int(cast("block", "--rpc-url", chain, "--field", "timestamp")), timezone.utc)
+    st = MemoryStore()
+    ticks, _, _ = synthetic_ticks(weekdays(date(2026, 9, 14), 21), seed=7, bar_vol=0.0010)
+    ticks.append(Tick(chain_now.timestamp() - 30, ticks[-1].spot, "REGULAR", True))
+    st.tick_rows[STOCKS["NVDA"]] = ticks
+    st.stocks["NVDA"] = STOCKS["NVDA"]
+    s = dataclasses.replace(
+        Settings(signer_key=ANVIL_KEY, sender_key=ANVIL_KEY, oracle_address=oracle, chain_id=31337, rpc_url=chain,
+                 send=True, names=("NVDA",)), **timers)
+    sender = make_sender(s, http_transport(chain))
+    assert len(run_cycle(chain_now, st, sender, s, History(), force=True)) == 2
+    cast("rpc", "--rpc-url", chain, "evm_increaseTime", "31")
+    cast("rpc", "--rpc-url", chain, "evm_mine")
+    later = datetime.fromtimestamp(int(cast("block", "--rpc-url", chain, "--field", "timestamp")), timezone.utc)
+    assert len(run_cycle(later, st, sender, s, History(), force=True)) == 2
+    assert [i.status for i in st.intents] == ["sent"] * 4
