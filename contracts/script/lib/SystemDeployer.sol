@@ -261,6 +261,8 @@ abstract contract SystemDeployer is SystemConfig {
 
     function _grantRoles(Config memory c, Deployed memory d) private {
         IAccessControl(d.engine).grantRole(GUARDIAN, c.roles.guardian);
+        // The keeper's risk monitor pauses buys (never sells) when a risk limit trips (todo 13 R5): engine GUARDIAN only.
+        IAccessControl(d.engine).grantRole(GUARDIAN, c.roles.keeper);
         IAccessControl(d.pool).grantRole(GUARDIAN, c.roles.guardian);
         IAccessControl(d.priceGuard).grantRole(GUARDIAN, c.roles.guardian);
         IAccessControl(d.pool).grantRole(HEDGER, c.roles.hedger);

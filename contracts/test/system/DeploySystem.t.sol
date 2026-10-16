@@ -526,6 +526,22 @@ contract DeploySystemTest is Test, SystemChecks {
         _expectFail(c, d, "KEEPER_ROLE_MISSING");
     }
 
+    /// todo 23 (fork run): the keeper's risk monitor pauses buys through the engine's GUARDIAN role (todo 13 R5); the deploy
+    /// never granted it, so the keeper refused to start on the fork. The keeper may pause engine buys, nothing else.
+    function test_R2_keeperCanPauseEngineBuysForTheRiskMonitor() public {
+        (, Deployed memory d) = _fresh();
+        assertTrue(IAccessControl(d.engine).hasRole(GUARDIAN, keeper), "keeper holds engine GUARDIAN (risk monitor)");
+        assertFalse(IAccessControl(d.pool).hasRole(GUARDIAN, keeper), "keeper does not pause deposits");
+        assertFalse(IAccessControl(d.priceGuard).hasRole(GUARDIAN, keeper), "keeper does not pause PriceGuard");
+    }
+
+    function test_R3_fails_keeperGuardianMissing() public {
+        (Config memory c, Deployed memory d) = _fresh();
+        vm.prank(d.timelock);
+        IAccessControl(d.engine).revokeRole(GUARDIAN, keeper);
+        _expectFail(c, d, "KEEPER_GUARDIAN_MISSING");
+    }
+
     function test_R3_fails_guardianHasAdmin() public {
         (Config memory c, Deployed memory d) = _fresh();
         vm.prank(d.timelock);

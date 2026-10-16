@@ -164,6 +164,7 @@ abstract contract SystemChecks is SystemDeployer {
             "KEEPER_ROLE_MISSING"
         );
         _failIf(!IAccessControl(d.pool).hasRole(HEDGER, r.hedger), "HEDGER_ROLE_MISSING");
+        _failIf(!IAccessControl(d.engine).hasRole(GUARDIAN, r.keeper), "KEEPER_GUARDIAN_MISSING");
         _failIf(
             !IAccessControl(d.engine).hasRole(GUARDIAN, r.guardian) || !IAccessControl(d.pool).hasRole(GUARDIAN, r.guardian)
                 || !IAccessControl(d.priceGuard).hasRole(GUARDIAN, r.guardian),
