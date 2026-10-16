@@ -7,7 +7,7 @@
 #   bash scripts/fork/down.sh     stops everything (state, database and deployment are kept)
 #   bash scripts/fork/reset.sh    down + delete the fork state, deployment and database (next up forks a fresh block)
 #
-# Env: PORT_OFFSET (all ports, see env.sh), FORK_DIR (default app/.fork), RHC_MAINNET_RPC_URL (upstream, default the free
+# Env: PORT_OFFSET (all ports, see env.sh), FORK_DIR (default ~/.lemniscate/fork, outside the repo), RHC_MAINNET_RPC_URL (upstream, default the free
 # public RPC), DEPLOY_CONFIG (deploy config JSON path; required on the first run), VOL_ENGINE_PYTHON (a Python with the
 # vol-engine dependencies; default vol-engine/.venv/bin/python), FORK_BLOCK (pin a block instead of upstream latest).
 # The deployer and every bot are anvil's own dev accounts; their keys are read from anvil's --config-out file at run time.

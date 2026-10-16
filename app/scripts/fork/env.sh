@@ -1,12 +1,14 @@
 # Shared settings for the anvil mainnet-fork stack (sourced by up.sh, down.sh, reset.sh; never run alone).
 # PORT_OFFSET moves every port at once so two stacks (or another project's anvil) never collide:
 #   anvil 8545+O (what MetaMask uses with O=0), rpc cache 9545+O, Postgres 5433+O, api 3101+O, mcp 3102+O,
-#   bundler 4337+O. FORK_DIR holds the state, logs, pids, env files and the database cluster (git-ignored).
+#   bundler 4337+O. FORK_DIR holds the state, logs, pids, env files and the database cluster. It defaults to
+#   ~/.lemniscate/fork, outside the repository: the fork's files carry mainnet token and feed addresses that the
+#   private scrub check must never find inside backend/.
 APP="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ROOT="$(cd "$APP/.." && pwd)"
 export PATH="$HOME/.foundry/bin:$HOME/.bun/bin:$PATH"
 PORT_OFFSET="${PORT_OFFSET:-0}"
-FORK_DIR="${FORK_DIR:-$APP/.fork}"
+FORK_DIR="${FORK_DIR:-$HOME/.lemniscate/fork}"
 ANVIL_PORT=$((8545 + PORT_OFFSET))
 CACHE_PORT=$((9545 + PORT_OFFSET))
 PG_PORT=$((5433 + PORT_OFFSET))

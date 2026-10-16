@@ -12,7 +12,7 @@ export const FORK_CHAIN_ID = 31337;
 const offset = Number(process.env.PORT_OFFSET ?? "0");
 export const APP = resolve(import.meta.dir, "../..");
 export const ROOT = resolve(APP, "..");
-export const FORK_DIR = process.env.FORK_DIR ?? join(APP, ".fork");
+export const FORK_DIR = process.env.FORK_DIR ?? join(process.env.HOME ?? APP, ".lemniscate", "fork");
 export const PORTS = {
   anvil: 8545 + offset, cache: 9545 + offset, pg: 5433 + offset, api: 3101 + offset, mcp: 3102 + offset,
   bundler: 4337 + offset, web: 7200 + offset,
@@ -91,3 +91,18 @@ export const erc20Abi = parseAbi([
 ]);
 
 export function readJson<T>(path: string): T { return JSON.parse(readFileSync(path, "utf8")) as T; }
+
+/** Next instant at or after `from` whose New York wall clock is weekday `dow` (0 Sun..6 Sat) at hh:mm. */
+export function nextNy(from: number, dow: number, hh: number, mm = 0): number {
+  const parts = (t: number) => {
+    const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+      .formatToParts(new Date(t * 1000)).map((x) => [x.type, x.value]));
+    return { dow: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(p.weekday!), h: Number(p.hour), m: Number(p.minute) };
+  };
+  let t = Math.ceil(from / 60) * 60;
+  for (let i = 0; i < 60 * 24 * 8; i++, t += 60) {
+    const p = parts(t);
+    if (p.dow === dow && p.h === hh && p.m === mm) return t;
+  }
+  throw new Error("no such time within 8 days");
+}

@@ -1,11 +1,14 @@
 // Funds addresses on the anvil fork: ETH with anvil_setBalance, USDG by impersonating a large REAL holder and calling
 // transfer (no storage writes, so USDG's own accounting stays exact). Fork only: refuses any chain but 31337.
 //
-//   bun scripts/fork/fund.ts 0xYourAddress [more addresses] [--usdg 100000] [--eth 10] [--stock NVDA=10 ...]
+//   bun scripts/fork/fund.ts 0xYourAddress [more addresses] [--usdg 100000] [--eth 10] [--stock NVDA=10 ...] [--depositor]
+// --depositor also puts the addresses on the Writer Pool's closed-beta deposit allowlist (the timelock's
+// pool.setDepositor, sent through anvil impersonation: on the fork Claude plays the Safe + 48h timelock).
 //
 // Holder: FUND_USDG_HOLDER, else the Uniswap v4 PoolManager (chain-facts: about 40M USDG at the pinned block; the fork
 // never uses v4, so moving its USDG cannot disturb anything the protocol touches).
 import { formatUnits, getAddress, parseEther, parseUnits, type Address } from "viem";
+import { PoolAbi } from "@/abi";
 import { erc20Abi, forkClients, impersonated, loadDeployment } from "./lib";
 
 export const DEFAULT_USDG_HOLDER = getAddress("0x8366a39cc670b4001a1121b8f6a443a643e40951");
@@ -58,9 +61,23 @@ if (import.meta.main) {
     const [name, amount] = args.splice(i, 2)[1]!.split("=");
     stocks[name!.toUpperCase()] = Number(amount);
   }
+  const depositor = args.includes("--depositor");
+  if (depositor) args.splice(args.indexOf("--depositor"), 1);
   const targets = args.map((a) => getAddress(a));
   if (!targets.length) throw new Error("usage: bun scripts/fork/fund.ts <address...> [--usdg N] [--eth N]");
   for (const r of await fund(targets, usdg, eth, stocks)) {
     console.log(`fund: ${r.address} ${formatUnits(r.usdg, 6)} USDG, ${formatUnits(r.eth, 18)} ETH${r.hash ? ` (${r.hash})` : ""}`);
+  }
+  if (depositor) {
+    const { pub, test } = forkClients();
+    const dep = loadDeployment();
+    const timelock = getAddress(dep.contracts.timelock ?? "");
+    const admin = await impersonated(test, timelock);
+    for (const a of targets) {
+      const hash = await admin.writeContract({ address: dep.contracts.pool, abi: PoolAbi, functionName: "setDepositor", args: [a, true], chain: null, account: timelock });
+      await pub.waitForTransactionReceipt({ hash });
+      console.log(`fund: ${a} may deposit into the Writer Pool (${hash})`);
+    }
+    await test.stopImpersonatingAccount({ address: timelock });
   }
 }
