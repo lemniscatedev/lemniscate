@@ -1,10 +1,16 @@
-import { formatUnits, parseUnits, type Address, type Hex } from "viem";
+import { formatUnits, type Address, type Hex } from "viem";
 
 export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
+
+/** USDG has 6 decimals. */
 export const USDG_DECIMALS = 6;
-export const POWER_TOKEN_DECIMALS = 18;
-export const LWP_DECIMALS = 12;
+/** Option tokens are ERC-20 clones with 18 decimals. */
+export const OPTION_TOKEN_DECIMALS = 18;
+/** S, K, V, prices, units, norm, net greeks: WAD. */
 export const WAD_DECIMALS = 18;
+
+export const DAILY_TAU_SECONDS = 86_400;
+export const WEEKLY_TAU_SECONDS = 604_800;
 
 export function asBigInt(value: unknown, fallback = 0n): bigint {
   if (typeof value === "bigint") return value;
@@ -29,28 +35,65 @@ export function asAddress(value: unknown): Address {
   return String(value).toLowerCase() as Address;
 }
 
+export function asHex32(value: unknown): Hex {
+  return String(value).toLowerCase() as Hex;
+}
+
+/** Exact decimal string of an integer amount with `decimals` places. bigint math only, so no float loss. */
 export function units(value: unknown, decimals: number): string {
   return formatUnits(asBigInt(value), decimals);
 }
 
+/** WAD (1e18) value -> decimal string. */
 export function wad(value: unknown): string {
   return units(value, WAD_DECIMALS);
 }
 
+/** Signed WAD value (net greeks, NAV) -> decimal string. */
+export function signedWad(value: bigint): string {
+  return formatUnits(value, WAD_DECIMALS);
+}
+
+/** USDG raw (6 dp) -> decimal string. */
 export function usdg(value: unknown): string {
   return units(value, USDG_DECIMALS);
 }
 
-export function power(value: unknown): string {
-  return units(value, POWER_TOKEN_DECIMALS);
+/** Option-token raw amount (18 dp) -> decimal string. */
+export function optionTokens(value: unknown): string {
+  return units(value, OPTION_TOKEN_DECIMALS);
 }
 
-export function writerPool(value: unknown): string {
-  return units(value, LWP_DECIMALS);
+const SESSION_NAMES = ["REGULAR", "EXTENDED", "CLOSED", "UNKNOWN", "HALTED"] as const;
+export type SessionName = (typeof SESSION_NAMES)[number];
+
+export function sessionName(value: unknown): SessionName {
+  const index = asNumber(value, -1);
+  return SESSION_NAMES[index] ?? "UNKNOWN";
 }
 
-export function parseUsdg(value: string): bigint {
-  return parseUnits(value, USDG_DECIMALS);
+export function speedName(value: unknown): "DAILY" | "WEEKLY" {
+  return asNumber(value) === 1 ? "WEEKLY" : "DAILY";
+}
+
+export function tauSeconds(speed: "DAILY" | "WEEKLY"): number {
+  return speed === "WEEKLY" ? WEEKLY_TAU_SECONDS : DAILY_TAU_SECONDS;
+}
+
+/** bytes32 reason codes are short ASCII strings right padded with zeros ("EARNINGS", "SPLIT"). */
+export function bytes32Text(value: unknown): string {
+  const hex = String(value).toLowerCase();
+  if (!/^0x[0-9a-f]{64}$/.test(hex)) return hex;
+  const bytes = hex.slice(2).match(/../g)!.map((pair) => Number.parseInt(pair, 16));
+  const end = bytes.findIndex((byte) => byte === 0);
+  const used = end === -1 ? bytes : bytes.slice(0, end);
+  if (used.length === 0) return "";
+  const printable = used.every((byte) => byte >= 0x20 && byte < 0x7f);
+  return printable ? String.fromCharCode(...used) : hex;
+}
+
+export function unixToDate(value: unknown): Date {
+  return new Date(Number(asBigInt(value)) * 1_000);
 }
 
 export function parseChainTimestamp(value: unknown): Date | undefined {

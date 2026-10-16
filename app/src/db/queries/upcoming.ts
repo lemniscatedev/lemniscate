@@ -2,7 +2,7 @@ import { apiNow } from "../../api/clock";
 import type { ApiDependencies, DbRow } from "../../api/types";
 import { asRows, numberValue, textValue } from "../../api/types";
 import { upcomingMarketConfig, type UpcomingMarketConfig } from "../../config/upcoming";
-import { listMarkets, type MarketView } from "./markets";
+import { listedNames } from "./series";
 
 export interface UpcomingItem extends UpcomingMarketConfig {
   status: "soon" | "live";
@@ -17,7 +17,7 @@ export interface UpcomingResponse {
 
 export function buildUpcoming(
   items: readonly UpcomingMarketConfig[],
-  markets: readonly Pick<MarketView, "symbol" | "launched">[],
+  markets: readonly { readonly symbol: string; readonly launched: boolean }[],
   counts: ReadonlyMap<string, number>,
   subscribed: ReadonlySet<string> | null,
   asOf: string,
@@ -36,7 +36,7 @@ export function buildUpcoming(
 
 export async function upcomingMarkets(deps: ApiDependencies, address?: string): Promise<UpcomingResponse> {
   const [markets, countResult, subscribedResult, now] = await Promise.all([
-    deps.cache.getOrLoad("markets:list", 3_000, () => listMarkets(deps)),
+    deps.cache.getOrLoad("series:names", 3_000, () => listedNames(deps)).then((names) => names.map((entry) => ({ symbol: entry.name, launched: entry.buyable }))),
     deps.sql`select upcoming_id, count(*)::int as n from upcoming_subscriptions group by upcoming_id`,
     address
       ? deps.sql`select upcoming_id from upcoming_subscriptions where address = ${address}`

@@ -1,119 +1,104 @@
 import type { Logger } from "pino";
 import type { Sql } from "postgres";
 import type { Address } from "viem";
-import type { ServiceClients } from "../chain/clients";
-import type { Deployment } from "../chain/deployment";
-import type { RuntimeConfig } from "../config";
-import { confirmationBlocks } from "../config";
+import type { OptionDeployment } from "../chain/deployment";
 import { LEMNISCATE_EVENTS_CHANNEL } from "../db/notify";
 import { safeErrorSummary } from "../log";
-import { decodeChainLog, watchedExternalTopics } from "./events";
-import { handleEngineEvent } from "./handlers/engine";
-import { handleHoursEvent } from "./handlers/hours";
-import { handleOracleEvent } from "./handlers/oracle";
-import { applyBalanceDeltas, handleTokenEvent, type TokenTransferDelta } from "./handlers/token";
-import { handleVaultEvent } from "./handlers/vault";
-import {
-  marketAddressMaps,
-  marketMap,
-  persistMarketRegistry,
-  readMarketRegistry,
-  registryMetadata,
-  resolveFeedAggregators,
-  type RegistrySnapshot,
-} from "./markets-sync";
-import { fetchLogPair, timestampsForLogs, type BlockTimestampCache } from "./rpc";
-import { takeSnapshot } from "./snapshot";
-import type { ChainEvent, IndexerContext, MarketInfo, RpcLog } from "./types";
-import { asAddress, asBigInt, asNumber } from "./units";
+import type { ChainSource } from "./chain-source";
+import { decodeChainLog, listedSeries, watchedStockTopics } from "./events";
+import { handleEvents } from "./handlers";
+import { rollbackAfter } from "./rollback";
+import { takeSnapshot, type SnapshotReader } from "./snapshot";
+import type { BlockHeader, ChainEvent, IndexerContext, RpcLog, SeriesInfo } from "./types";
+import { asNumber } from "./units";
 
 const INITIAL_RANGE = 50_000n;
 const MAX_RANGE = 200_000n;
-const SNAPSHOT_HEARTBEAT_MS = 10 * 60_000;
+/** pool_nav is snapshotted at least this often, and on every trade. */
+export const SNAPSHOT_HEARTBEAT_MS = 10 * 60_000;
 const SNAPSHOT_DEBOUNCE_MS = 2_000;
-// Queued account reads left over from a capped snapshot drain at this pace.
-const ACCOUNT_BACKLOG_SNAPSHOT_MS = 60_000;
-
-function snapshotDue(state: IndexerState): boolean {
-  const sinceLast = Date.now() - state.lastSnapshotAt;
-  return state.pendingSnapshot || sinceLast >= SNAPSHOT_HEARTBEAT_MS
-    || (state.pendingAccountSnapshots.size > 0 && sinceLast >= ACCOUNT_BACKLOG_SNAPSHOT_MS);
-}
 const ACTIVE_EVENT_MS = 2 * 60_000;
 const IDLE_AFTER_MS = 30 * 60_000;
+/** A block hash that changed deeper than this many blocks is not repaired automatically. */
+export const MAX_REORG_DEPTH = 20n;
+/** How many recent block hashes are kept for reorg detection. */
+export const HASH_WINDOW = 32n;
+const DISCOVERY_PASSES = 4;
+
+export interface IndexerSettings {
+  /** Blocks behind the head that are treated as final. 0 ingests the head and relies on reorg repair. */
+  readonly confirmations: number;
+  readonly pollActiveMs: number;
+  readonly pollBaseMs: number;
+  readonly pollIdleMs: number;
+}
+
+export class ReorgTooDeepError extends Error {
+  constructor(readonly cursor: bigint, readonly depth: bigint | undefined) {
+    super(
+      depth === undefined
+        ? `Block hashes disagree with the chain further back than the ${HASH_WINDOW} blocks kept (cursor ${cursor}); needs a manual re-index`
+        : `Reorg of ${depth} blocks at cursor ${cursor} exceeds the automatic limit of ${MAX_REORG_DEPTH}; needs a manual re-index`,
+    );
+    this.name = "ReorgTooDeepError";
+  }
+}
 
 export interface IndexerState {
-  readonly config: RuntimeConfig;
-  readonly clients: ServiceClients;
+  readonly settings: IndexerSettings;
+  readonly source: ChainSource;
+  readonly reader: SnapshotReader;
   readonly sql: Sql;
   readonly logger: Logger;
-  readonly deployment: Deployment;
-  readonly blockTimestampCache: BlockTimestampCache;
+  readonly deployment: OptionDeployment;
+  readonly now: () => number;
+  /** Lightweight RPC counters for the status row (the RPC pool's stats in production). */
+  readonly rpcStats: () => unknown;
+  readonly seriesByToken: Map<string, SeriesInfo>;
+  readonly stockNames: Map<string, string>;
+  readonly stockFeeds: Map<string, string>;
   readonly lemniscateAddresses: Set<Address>;
-  readonly externalAddresses: Set<Address>;
-  readonly tokenToMarket: Map<string, number>;
-  readonly stockToMarket: Map<string, number>;
-  readonly feedToMarket: Map<string, number>;
-  readonly aggregatorToMarket: Map<string, number>;
-  readonly feedProxies: Set<string>;
-  readonly marketsById: Map<number, MarketInfo>;
-  readonly marketStatesById: Map<number, Record<string, unknown>>;
-  readonly globalConfig: Record<string, unknown>;
-  readonly vaultConfig: Record<string, unknown>;
-  readonly marketHours: Record<string, unknown>;
-  readonly listedBlocks: Map<number, bigint>;
-  readonly existingListedBlocks: Map<number, bigint>;
-  readonly pendingAccountSnapshots: Set<string>;
   cursor: bigint;
   range: bigint;
   successfulRanges: number;
-  registryDirty: boolean;
   pendingSnapshot: boolean;
-  initialized: boolean;
   lastEventAt: number;
   lastLemniscateEventAt: number;
   lastSnapshotAt: number;
-  lastAggregatorResolveAt: number;
+  /** Unix seconds of the last indexed block, for the keeper's fork clock. */
+  lastIndexedBlockTime: number;
   failureBackoffMs: number;
 }
 
 export interface TickResult {
-  readonly delayMs?: number;
+  readonly delayMs: number;
   readonly caughtUp: boolean;
   readonly processedTo?: bigint;
   readonly events: number;
+  readonly reorgDepth?: bigint;
 }
 
-interface StoredMarketRow {
-  id: number;
-  symbol: string;
-  token: string;
-  stock: string;
-  feed: string;
-  scale: string;
-  pool_fee: number;
-  listed_block: string;
-  config: Record<string, unknown> | string;
-}
-
-interface StoredStatusRow {
-  meta: Record<string, unknown> | string | null;
+export interface CreateIndexerStateArgs {
+  readonly settings: IndexerSettings;
+  readonly source: ChainSource;
+  readonly reader: SnapshotReader;
+  readonly sql: Sql;
+  readonly logger: Logger;
+  readonly deployment: OptionDeployment;
+  readonly now?: () => number;
+  readonly rpcStats?: () => unknown;
 }
 
 function parseJsonObject(value: unknown): Record<string, unknown> {
   if (typeof value === "string") {
     try {
       const parsed: unknown = JSON.parse(value);
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)
-        : {};
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
     } catch {
       return {};
     }
   }
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function parseDate(value: unknown, fallback: number): number {
@@ -122,128 +107,98 @@ function parseDate(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function objectAt(record: Record<string, unknown>, key: string): Record<string, unknown> {
-  return parseJsonObject(record[key]);
+export function confirmedAt(settings: IndexerSettings, head: bigint): bigint {
+  const confirmations = BigInt(settings.confirmations);
+  return head > confirmations ? head - confirmations : 0n;
 }
 
-async function storedMarkets(sql: Sql): Promise<StoredMarketRow[]> {
-  return (await sql`
-    SELECT id, symbol, token, stock, feed, scale, pool_fee, listed_block, config
-    FROM markets
-    ORDER BY id
-  `) as StoredMarketRow[];
-}
-
-async function storedStatus(sql: Sql): Promise<Record<string, unknown>> {
-  const rows = (await sql`SELECT meta FROM keeper_status WHERE job = 'indexer' LIMIT 1`) as StoredStatusRow[];
-  return parseJsonObject(rows[0]?.meta);
-}
-
-function toMarketInfo(row: StoredMarketRow, state?: Record<string, unknown>): MarketInfo {
-  return {
-    id: Number(row.id),
-    symbol: row.symbol,
-    token: asAddress(row.token),
-    stock: asAddress(row.stock),
-    feed: asAddress(row.feed),
-    scale: BigInt(row.scale),
-    poolFee: Number(row.pool_fee),
-    listedBlock: BigInt(row.listed_block),
-    config: parseJsonObject(row.config),
-    ...(state ? { state } : {}),
-  };
-}
-
-function deploymentMarketInfos(deployment: Deployment): MarketInfo[] {
-  return deployment.markets.map((market) => ({
-    id: market.id,
-    symbol: market.symbol.toUpperCase(),
-    token: market.token,
-    stock: market.stock,
-    feed: market.feed,
-    scale: BigInt(market.scale),
-    poolFee: market.poolFee,
-    listedBlock: BigInt(deployment.deployBlock),
-    config: {},
-  }));
-}
-
-function marketMetadataFromStored(meta: Record<string, unknown>): Map<number, Record<string, unknown>> {
-  const result = new Map<number, Record<string, unknown>>();
-  const values = objectAt(meta, "marketsById");
-  for (const [key, value] of Object.entries(values)) {
-    const id = Number(key);
-    if (!Number.isInteger(id) || id < 0) continue;
-    const market = parseJsonObject(value);
-    const state = parseJsonObject(market.state);
-    if (Object.keys(state).length > 0) result.set(id, state);
-  }
-  return result;
-}
-
-function deploymentSummary(deployment: Deployment): Record<string, unknown> {
-  return {
-    chainId: deployment.chainId,
-    network: deployment.network,
-    deployBlock: String(deployment.deployBlock),
-    contracts: deployment.contracts,
-  };
-}
-
-async function storedCursorOrCreate(sql: Sql, deployBlock: number): Promise<bigint> {
-  const rows = (await sql`SELECT block FROM cursors WHERE name = 'main' LIMIT 1`) as { block: string }[];
-  if (rows[0]) return BigInt(rows[0].block);
-  const initialBlock = BigInt(deployBlock) - 1n;
+export async function createIndexerState(args: CreateIndexerStateArgs): Promise<IndexerState> {
+  const { sql, deployment } = args;
+  const initialBlock = BigInt(deployment.deployBlock) - 1n;
   await sql`
-    INSERT INTO cursors (name, block, updated_at)
-    VALUES ('main', ${initialBlock.toString()}, NOW())
+    INSERT INTO cursors (name, block, updated_at) VALUES ('main', ${initialBlock.toString()}, NOW())
     ON CONFLICT (name) DO NOTHING
   `;
-  const inserted = (await sql`SELECT block FROM cursors WHERE name = 'main' LIMIT 1`) as { block: string }[];
-  return BigInt(inserted[0]?.block ?? initialBlock.toString());
+  const [cursorRows, statusRows, seriesRows] = await Promise.all([
+    sql`SELECT block FROM cursors WHERE name = 'main'`,
+    sql`SELECT meta FROM keeper_status WHERE job = 'indexer'`,
+    sql`SELECT id, token, stock_token FROM series`,
+  ]);
+  const meta = parseJsonObject((statusRows[0] as { meta?: unknown } | undefined)?.meta);
+  const now = args.now ?? Date.now;
+
+  const stockNames = new Map<string, string>();
+  const stockFeeds = new Map<string, string>();
+  for (const entry of deployment.stocks) {
+    stockNames.set(entry.stock, entry.name);
+    if (entry.feed) stockFeeds.set(entry.stock, entry.feed);
+  }
+  const seriesByToken = new Map<string, SeriesInfo>();
+  for (const row of seriesRows as unknown as { id: string; token: string; stock_token: string }[]) {
+    seriesByToken.set(row.token, { id: row.id, token: row.token, stock: row.stock_token });
+  }
+  const contracts = deployment.contracts;
+  const lemniscateAddresses = new Set<Address>([contracts.engine, contracts.pool, contracts.registry, contracts.volOracle, contracts.priceGuard]);
+  if (contracts.agentRouter) lemniscateAddresses.add(contracts.agentRouter);
+  for (const token of seriesByToken.keys()) lemniscateAddresses.add(token as Address);
+
+  const startedAt = now();
+  return {
+    settings: args.settings,
+    source: args.source,
+    reader: args.reader,
+    sql,
+    logger: args.logger,
+    deployment,
+    now,
+    rpcStats: args.rpcStats ?? (() => ({})),
+    seriesByToken,
+    stockNames,
+    stockFeeds,
+    lemniscateAddresses,
+    cursor: BigInt((cursorRows[0] as { block: string }).block),
+    range: INITIAL_RANGE,
+    successfulRanges: 0,
+    // A fresh process always starts with a snapshot so the status row reflects the chain right away.
+    pendingSnapshot: true,
+    lastEventAt: parseDate(meta.lastEventAt, startedAt),
+    lastLemniscateEventAt: parseDate(meta.lastLemniscateEventAt, startedAt),
+    lastSnapshotAt: parseDate(meta.lastSnapshotAt, 0),
+    lastIndexedBlockTime: asNumber(meta.chainTimestamp, 0),
+    failureBackoffMs: 5_000,
+  };
 }
 
-function statusMeta(state: IndexerState, head: bigint, indexedBlock = state.cursor): Record<string, unknown> {
+// ---------------------------------------------------------------------------------------------------------------
+// Status (R8): what the keeper and the API health route read to judge staleness.
+// ---------------------------------------------------------------------------------------------------------------
+
+export function buildStatusMeta(state: IndexerState, head: bigint, indexedBlock: bigint = state.cursor): Record<string, unknown> {
   const lag = head > indexedBlock ? head - indexedBlock : 0n;
   return {
     lastHeadBlock: head.toString(),
     lastIndexedBlock: indexedBlock.toString(),
     lagBlocks: lag.toString(),
     pendingSnapshot: state.pendingSnapshot,
-    registrySyncPending: state.registryDirty,
-    pendingAccountSnapshots: [...state.pendingAccountSnapshots].sort(),
+    lastSnapshotAt: state.lastSnapshotAt > 0 ? new Date(state.lastSnapshotAt).toISOString() : null,
     lastEventAt: new Date(state.lastEventAt).toISOString(),
     lastLemniscateEventAt: new Date(state.lastLemniscateEventAt).toISOString(),
-    deployment: deploymentSummary(state.deployment),
-    globalConfig: state.globalConfig,
-    vaultConfig: state.vaultConfig,
-    marketHours: state.marketHours,
-    marketsById: Object.fromEntries(
-      [...state.marketsById.entries()].map(([id, market]) => [
-        String(id),
-        {
-          id,
-          symbol: market.symbol,
-          token: market.token.toLowerCase(),
-          stock: market.stock.toLowerCase(),
-          feed: market.feed.toLowerCase(),
-          scale: market.scale.toString(),
-          poolFee: market.poolFee,
-          config: market.config,
-          ...(state.marketStatesById.get(id) ? { state: state.marketStatesById.get(id) } : {}),
-        },
-      ]),
-    ),
-    rpc: state.clients.pool.stats(),
+    chainTimestamp: String(state.lastIndexedBlockTime),
+    chainTimeObservedAt: new Date(state.now()).toISOString(),
+    deployment: {
+      chainId: state.deployment.chainId,
+      network: state.deployment.network,
+      deployBlock: String(state.deployment.deployBlock),
+      contracts: state.deployment.contracts,
+      stocks: state.deployment.stocks.map((entry) => entry.name),
+    },
+    seriesWatched: state.seriesByToken.size,
+    rpc: state.rpcStats(),
   };
 }
 
-async function writeIndexerStatus(
-  state: IndexerState,
-  head: bigint,
-  errorMessage: string | null,
-): Promise<void> {
-  const meta = statusMeta(state, head);
+async function writeIndexerStatus(state: IndexerState, head: bigint, errorMessage: string | null): Promise<void> {
+  const meta = buildStatusMeta(state, head);
   await state.sql`
     INSERT INTO keeper_status (job, last_run, last_ok, last_error, meta)
     VALUES (
@@ -258,280 +213,54 @@ async function writeIndexerStatus(
   `;
 }
 
-async function syncStateMaps(state: IndexerState, registry: RegistrySnapshot): Promise<void> {
-  const previousMarkets = new Map(state.marketsById);
-  const nextMarkets = marketMap(registry.markets);
-  for (const [id, market] of nextMarkets) {
-    const stateSnapshot = registry.statesByMarket.get(id);
-    nextMarkets.set(id, stateSnapshot ? { ...market, state: stateSnapshot } : market);
-  }
-  state.marketsById.clear();
-  for (const [id, market] of nextMarkets) state.marketsById.set(id, market);
-  state.marketStatesById.clear();
-  for (const [id, marketState] of registry.statesByMarket) {
-    const view = marketState;
-    state.marketStatesById.set(id, { ...view });
-  }
-  Object.assign(state.globalConfig, registry.globalConfig);
-  Object.assign(state.vaultConfig, registry.vaultConfig);
-  Object.assign(state.marketHours, registry.marketHours);
+// ---------------------------------------------------------------------------------------------------------------
+// Reorg detection and repair (R5)
+// ---------------------------------------------------------------------------------------------------------------
 
-  state.tokenToMarket.clear();
-  state.stockToMarket.clear();
-  state.feedToMarket.clear();
-  const addressMaps = marketAddressMaps([...state.marketsById.values()]);
-  for (const [address, id] of addressMaps.tokenToMarket) state.tokenToMarket.set(address, id);
-  for (const [address, id] of addressMaps.stockToMarket) state.stockToMarket.set(address, id);
-  for (const [address, id] of addressMaps.feedToMarket) state.feedToMarket.set(address, id);
+/**
+ * Compares the stored hash of the last ingested block with the chain. If it changed, finds the newest block both
+ * agree on, deletes everything derived from the orphaned blocks and moves the cursor back, so the normal loop
+ * re-ingests the replacement chain. Returns the depth of the reorg (0 = none).
+ */
+export async function repairReorg(state: IndexerState): Promise<bigint> {
+  const stored = (await state.sql`
+    SELECT block, hash FROM block_hashes ORDER BY block DESC LIMIT ${Number(HASH_WINDOW)}
+  `) as unknown as { block: string; hash: string }[];
+  const top = stored[0];
+  if (!top) return 0n;
+  const topBlock = BigInt(top.block);
 
-  state.lemniscateAddresses.clear();
-  state.lemniscateAddresses.add(state.deployment.contracts.engine);
-  state.lemniscateAddresses.add(state.deployment.contracts.vault);
-  state.lemniscateAddresses.add(state.deployment.contracts.marketHours);
-  state.externalAddresses.clear();
-  for (const market of state.marketsById.values()) {
-    state.lemniscateAddresses.add(market.token);
-    state.externalAddresses.add(market.stock);
-  }
-  state.feedProxies.clear();
-  for (const feed of state.feedToMarket.keys()) state.feedProxies.add(feed);
-  state.aggregatorToMarket.clear();
-  const head = await state.clients.logsClient.getBlockNumber();
-  const block = confirmedAt(state.config, head);
-  if (block > 0n) {
-    const aggregators = await resolveFeedAggregators(state.clients, state.feedToMarket, block);
-    for (const [address, id] of aggregators) {
-      state.aggregatorToMarket.set(address, id);
-      state.externalAddresses.add(address as Address);
-    }
-  }
-  state.lastAggregatorResolveAt = Date.now();
+  const topHeader = (await state.source.getHeaders([topBlock])).get(topBlock);
+  if (topHeader && topHeader.hash === top.hash) return 0n;
 
-  // Existing market listing blocks must survive a routine config refresh.
-  for (const [id, market] of previousMarkets) {
-    const next = state.marketsById.get(id);
-    if (next && market.listedBlock < next.listedBlock) {
-      state.marketsById.set(id, { ...next, listedBlock: market.listedBlock });
-    }
-  }
-}
-
-function confirmedAt(config: RuntimeConfig, head: bigint): bigint {
-  const confirmations = BigInt(confirmationBlocks(config));
-  return head > confirmations ? head - confirmations : 0n;
-}
-
-export async function createIndexerState(args: {
-  config: RuntimeConfig;
-  clients: ServiceClients;
-  sql: Sql;
-  logger: Logger;
-  deployment: Deployment;
-}): Promise<IndexerState> {
-  const { config, clients, sql, logger, deployment } = args;
-  const [meta, dbMarkets, cursor] = await Promise.all([
-    storedStatus(sql),
-    storedMarkets(sql),
-    storedCursorOrCreate(sql, deployment.deployBlock),
-  ]);
-  const statesFromMeta = marketMetadataFromStored(meta);
-  const marketsById = new Map<number, MarketInfo>();
-  const existingListedBlocks = new Map<number, bigint>();
-  for (const row of dbMarkets) {
-    const market = toMarketInfo(row, statesFromMeta.get(Number(row.id)));
-    marketsById.set(market.id, market);
-    existingListedBlocks.set(market.id, market.listedBlock);
-  }
-  for (const market of deploymentMarketInfos(deployment)) {
-    if (!marketsById.has(market.id)) marketsById.set(market.id, market);
-  }
-  const addressMaps = marketAddressMaps([...marketsById.values()]);
-  const now = Date.now();
-  const pendingAccountsValue = meta.pendingAccountSnapshots;
-  const pendingAccountSnapshots = new Set(
-    Array.isArray(pendingAccountsValue)
-      ? pendingAccountsValue.filter((item): item is string => typeof item === "string").map((item) => item.toLowerCase())
-      : [],
-  );
-  const globalConfig = objectAt(meta, "globalConfig");
-  const vaultConfig = objectAt(meta, "vaultConfig");
-  const marketHours = objectAt(meta, "marketHours");
-  const state: IndexerState = {
-    config,
-    clients,
-    sql,
-    logger,
-    deployment,
-    blockTimestampCache: new Map(),
-    lemniscateAddresses: new Set([
-      deployment.contracts.engine,
-      deployment.contracts.vault,
-      deployment.contracts.marketHours,
-      ...[...marketsById.values()].map((market) => market.token),
-    ]),
-    externalAddresses: new Set([
-      ...[...marketsById.values()].map((market) => market.stock),
-    ]),
-    tokenToMarket: new Map(addressMaps.tokenToMarket),
-    stockToMarket: new Map(addressMaps.stockToMarket),
-    feedToMarket: new Map(addressMaps.feedToMarket),
-    aggregatorToMarket: new Map(),
-    feedProxies: new Set(addressMaps.feedToMarket.keys()),
-    marketsById,
-    marketStatesById: statesFromMeta,
-    globalConfig,
-    vaultConfig,
-    marketHours,
-    listedBlocks: new Map(),
-    existingListedBlocks,
-    pendingAccountSnapshots,
-    cursor,
-    range: INITIAL_RANGE,
-    successfulRanges: 0,
-    registryDirty: Boolean(meta.registrySyncPending),
-    pendingSnapshot: Boolean(meta.pendingSnapshot),
-    initialized: false,
-    lastEventAt: parseDate(meta.lastEventAt, now),
-    lastLemniscateEventAt: parseDate(meta.lastLemniscateEventAt, now),
-    lastSnapshotAt: parseDate(meta.lastSnapshotAt, 0),
-    lastAggregatorResolveAt: 0,
-    failureBackoffMs: 5_000,
-  };
-  return state;
-}
-
-function syncKnownMarketIds(state: IndexerState, events: readonly ChainEvent[]): void {
-  for (const event of events) {
-    if (event.source === "engine" && event.eventName === "MarketListed") {
-      const id = asNumber(event.args.id, -1);
-      const token = typeof event.args.token === "string" ? asAddress(event.args.token) : undefined;
-      const stock = typeof event.args.stock === "string" ? asAddress(event.args.stock) : undefined;
-      const feed = typeof event.args.feed === "string" ? asAddress(event.args.feed) : undefined;
-      if (id < 0 || !token || !stock || !feed) continue;
-      const market = state.marketsById.get(id);
-      if (!market) {
-        state.marketsById.set(id, {
-          id,
-          symbol: `MARKET${id}`,
-          token,
-          stock,
-          feed,
-          scale: asBigInt(event.args.scale),
-          poolFee: 0,
-          listedBlock: event.blockNumber,
-          config: {},
-        });
-      }
-      state.tokenToMarket.set(token.toLowerCase(), id);
-      state.stockToMarket.set(stock.toLowerCase(), id);
-      state.feedToMarket.set(feed.toLowerCase(), id);
-      state.listedBlocks.set(id, event.blockNumber);
-    }
-  }
-}
-
-function addNewWatchedAddresses(state: IndexerState, events: readonly ChainEvent[]): boolean {
-  let changed = false;
-  for (const event of events) {
-    if (event.source !== "engine" || event.eventName !== "MarketListed") continue;
-    const id = asNumber(event.args.id, -1);
-    const token = typeof event.args.token === "string" ? asAddress(event.args.token) : undefined;
-    const stock = typeof event.args.stock === "string" ? asAddress(event.args.stock) : undefined;
-    const feed = typeof event.args.feed === "string" ? asAddress(event.args.feed) : undefined;
-    if (id < 0 || !token || !stock || !feed) continue;
-    if (!state.lemniscateAddresses.has(token)) {
-      state.lemniscateAddresses.add(token);
-      changed = true;
-    }
-    if (!state.externalAddresses.has(stock)) {
-      state.externalAddresses.add(stock);
-      changed = true;
-    }
-    if (!state.feedProxies.has(feed.toLowerCase())) {
-      state.feedProxies.add(feed.toLowerCase());
-      state.feedToMarket.set(feed.toLowerCase(), id);
-      changed = true;
-    }
-    state.tokenToMarket.set(token.toLowerCase(), id);
-    state.stockToMarket.set(stock.toLowerCase(), id);
-  }
-  return changed;
-}
-
-async function reResolveAggregators(state: IndexerState, block: bigint): Promise<boolean> {
-  const next = await resolveFeedAggregators(state.clients, state.feedToMarket, block);
-  const changed =
-    next.size !== state.aggregatorToMarket.size ||
-    [...next.entries()].some(([address, id]) => state.aggregatorToMarket.get(address) !== id);
-  state.aggregatorToMarket.clear();
-  state.externalAddresses.clear();
-  for (const address of state.stockToMarket.keys()) state.externalAddresses.add(address as Address);
-  for (const [address, id] of next) {
-    state.aggregatorToMarket.set(address, id);
-    state.externalAddresses.add(address as Address);
-  }
-  state.lastAggregatorResolveAt = Date.now();
-  return changed;
-}
-
-async function initializeAtFreshHead(state: IndexerState, head: bigint): Promise<boolean> {
-  const confirmedHead = confirmedAt(state.config, head);
-  if (confirmedHead < BigInt(state.deployment.deployBlock)) return false;
-  const ids = [...state.marketsById.keys()].sort((a, b) => a - b);
-  const registry = await readMarketRegistry(
-    state.clients,
-    state.deployment,
-    ids,
-    state.listedBlocks,
-    state.existingListedBlocks,
-    confirmedHead,
-  );
-  const previousMarkets = new Map(state.marketsById);
-  await syncStateMaps(state, registry);
-  await state.sql.begin(async (tx) => {
-    await persistMarketRegistry(tx, registry, previousMarkets);
-    await tx`
-      INSERT INTO cursors (name, block, updated_at)
-      VALUES ('main', ${state.cursor.toString()}, NOW())
-      ON CONFLICT (name) DO NOTHING
-    `;
-    const metadata = registryMetadata(registry, previousMarkets);
-    const meta = {
-      ...metadata,
-      ...statusMeta(state, head),
-      registrySyncPending: false,
-      pendingSnapshot: true,
-      pendingAccountSnapshots: [...state.pendingAccountSnapshots],
-    };
-    await tx`
-      INSERT INTO keeper_status (job, last_run, last_ok, last_error, meta)
-      VALUES ('indexer', NOW(), NOW(), NULL, ${JSON.stringify(meta)}::jsonb)
-      ON CONFLICT (job) DO UPDATE SET
-        last_run = NOW(), last_ok = NOW(), last_error = NULL,
-        meta = keeper_status.meta || EXCLUDED.meta
-    `;
+  const numbers = stored.map((row) => BigInt(row.block));
+  const headers = await state.source.getHeaders(numbers);
+  const ancestor = stored.find((row) => {
+    const header = headers.get(BigInt(row.block));
+    return header !== undefined && header.hash === row.hash;
   });
-  state.registryDirty = false;
+  if (!ancestor) throw new ReorgTooDeepError(state.cursor, undefined);
+  const ancestorBlock = BigInt(ancestor.block);
+  const depth = state.cursor - ancestorBlock;
+  if (depth > MAX_REORG_DEPTH) throw new ReorgTooDeepError(state.cursor, depth);
+
+  await state.sql.begin(async (tx) => {
+    await rollbackAfter(tx, ancestorBlock);
+  });
+  state.logger.warn(
+    { depth: depth.toString(), ancestor: ancestorBlock.toString(), previousCursor: state.cursor.toString() },
+    "Chain reorganised: rolled back orphaned blocks and will re-ingest them",
+  );
+  state.cursor = ancestorBlock;
   state.pendingSnapshot = true;
-  const stateSnapshot = await takeSnapshot(state, confirmedHead, state.pendingAccountSnapshots);
-  state.pendingSnapshot = false;
-  for (const account of stateSnapshot.processedAccounts) state.pendingAccountSnapshots.delete(account);
-  state.lastSnapshotAt = stateSnapshot.snapshotAt.getTime();
-  state.initialized = true;
-  state.failureBackoffMs = 5_000;
-  state.logger.info({ block: confirmedHead.toString(), markets: state.marketsById.size }, "Indexer initialized from confirmed chain state");
-  return true;
+  state.successfulRanges = 0;
+  // Tokens of series listed on the orphaned branch stay watched; they simply stop producing logs.
+  return depth;
 }
 
-function eventAddressMaps(state: IndexerState) {
-  return {
-    deployment: state.deployment,
-    marketById: state.marketsById,
-    tokenToMarket: state.tokenToMarket,
-    stockToMarket: state.stockToMarket,
-    aggregatorToMarket: state.aggregatorToMarket,
-  };
-}
+// ---------------------------------------------------------------------------------------------------------------
+// Ingest
+// ---------------------------------------------------------------------------------------------------------------
 
 function eventOrder(a: ChainEvent, b: ChainEvent): number {
   if (a.blockNumber !== b.blockNumber) return a.blockNumber < b.blockNumber ? -1 : 1;
@@ -554,92 +283,115 @@ function isRangeLimitError(error: unknown): boolean {
   return /range|too many results|response.{0,12}too large|result.{0,12}limit|query returned more|block limit/.test(message);
 }
 
-function makeContext(state: IndexerState, tx: IndexerContext["tx"]): IndexerContext {
-  return {
-    tx,
-    deployment: state.deployment,
-    logger: state.logger,
-    tokenToMarket: state.tokenToMarket,
-    marketById: state.marketsById,
-    stockToMarket: state.stockToMarket,
-    touchedAccounts: new Set(),
-    insertedTradeTxs: new Set(),
-    insertedVaultActionTxs: new Set(),
-    marketIds: new Set(),
-    kinds: new Set(),
-    metaPatch: {},
-    globalConfig: state.globalConfig,
-    vaultConfig: state.vaultConfig,
-    marketHours: state.marketHours,
-    marketStatesById: state.marketStatesById,
-    snapshotNeeded: false,
-    registryNeeded: false,
-    hasLemniscateEvents: false,
-  };
+function eventMaps(state: IndexerState) {
+  return { deployment: state.deployment, seriesByToken: state.seriesByToken, stockNames: state.stockNames };
 }
 
-async function ingestDecodedRange(
+function blockOf(log: RpcLog): bigint {
+  const value = log.blockNumber;
+  return typeof value === "bigint" ? value : BigInt(value ?? 0);
+}
+
+/** Fetches the logs of a range, adding the token of every series listed inside it and fetching again until the set of
+ * watched tokens is stable (a series can be listed and traded in the same range). */
+async function fetchLogs(state: IndexerState, fromBlock: bigint, toBlock: bigint): Promise<RpcLog[]> {
+  for (let pass = 0; ; pass += 1) {
+    const raw = await state.source.getLogs({
+      fromBlock,
+      toBlock,
+      lemniscateAddresses: [...state.lemniscateAddresses],
+      stockAddresses: [...state.stockNames.keys()] as Address[],
+      stockTopics: watchedStockTopics,
+    });
+    const logs = uniqueLogs([...raw.lemniscateLogs, ...raw.stockLogs]);
+    if (pass >= DISCOVERY_PASSES) return logs;
+    const discovered = listedSeries(
+      logs.map((log) => decodeChainLog(log, eventMaps(state), new Date(0))).filter((event): event is ChainEvent => event !== undefined),
+    ).filter((series) => !state.lemniscateAddresses.has(series.token as Address));
+    if (discovered.length === 0) return logs;
+    for (const series of discovered) {
+      state.seriesByToken.set(series.token, series);
+      state.lemniscateAddresses.add(series.token as Address);
+    }
+  }
+}
+
+async function headersFor(
   state: IndexerState,
-  events: readonly ChainEvent[],
+  logs: readonly RpcLog[],
+  fromBlock: bigint,
   toBlock: bigint,
-  head: bigint,
-  registry: RegistrySnapshot | undefined,
-): Promise<void> {
-  const previousMarkets = new Map(state.marketsById);
-  const contextHolder: { context?: IndexerContext; balanceTransfers: TokenTransferDelta[] } = {
-    balanceTransfers: [],
-  };
+): Promise<{ headers: Map<bigint, BlockHeader>; tail: BlockHeader[] }> {
+  const wanted = new Set<bigint>([fromBlock]);
+  for (const log of logs) wanted.add(blockOf(log));
+  const tailStart = toBlock - HASH_WINDOW + 1n > fromBlock ? toBlock - HASH_WINDOW + 1n : fromBlock;
+  for (let block = tailStart; block <= toBlock; block += 1n) wanted.add(block);
+  const fetched = await state.source.getHeaders([...wanted]);
+  const headers = new Map<bigint, BlockHeader>();
+  for (const block of wanted) {
+    const header = fetched.get(block);
+    if (!header) throw new Error(`Block header unavailable for ${block}`);
+    headers.set(block, header);
+  }
+  const tail: BlockHeader[] = [];
+  for (let block = tailStart; block <= toBlock; block += 1n) tail.push(headers.get(block)!);
+  return { headers, tail };
+}
+
+async function ingestRange(state: IndexerState, fromBlock: bigint, toBlock: bigint, head: bigint): Promise<number> {
+  const logs = await fetchLogs(state, fromBlock, toBlock);
+  const { headers, tail } = await headersFor(state, logs, fromBlock, toBlock);
+
+  // The first block of the range must still sit on the branch we stored; otherwise the chain moved under us.
+  const previous = (await state.sql`SELECT hash FROM block_hashes WHERE block = ${(fromBlock - 1n).toString()}`) as unknown as { hash: string }[];
+  const first = headers.get(fromBlock)!;
+  if (previous[0] && previous[0].hash !== first.parentHash) {
+    throw new Error(`Chain reorganised while ingesting ${fromBlock}; retrying after repair`);
+  }
+
+  const events: ChainEvent[] = [];
+  for (const log of logs) {
+    const header = headers.get(blockOf(log));
+    const event = header ? decodeChainLog(log, eventMaps(state), header.timestamp) : undefined;
+    if (event) events.push(event);
+  }
+  events.sort(eventOrder);
+
+  const toHeader = headers.get(toBlock)!;
   await state.sql.begin(async (tx) => {
-    if (registry) {
-      await persistMarketRegistry(tx, registry, previousMarkets);
-      const registryPatch = registryMetadata(registry, previousMarkets);
-      Object.assign(state.globalConfig, registry.globalConfig);
-      Object.assign(state.vaultConfig, registry.vaultConfig);
-      Object.assign(state.marketHours, registry.marketHours);
-      for (const [id, market] of state.marketsById) {
-        const refreshed = registry.markets.find((item) => item.id === id);
-        if (refreshed) state.marketsById.set(id, refreshed);
-      }
-      for (const [id, marketState] of registry.statesByMarket) {
-        state.marketStatesById.set(id, { ...marketState });
-      }
-      contextHolder.context = makeContext(state, tx);
-      contextHolder.context.metaPatch.registry = registryPatch;
-    } else {
-      contextHolder.context = makeContext(state, tx);
-    }
-    const context = contextHolder.context;
-    if (!context) throw new Error("Indexer transaction context was not initialized");
-
-    for (const event of events) {
-      if (event.eventName === "Transfer" && (event.source === "token" || event.source === "vault")) continue;
-      await handleEngineEvent(context, event);
-      await handleVaultEvent(context, event);
-      await handleHoursEvent(context, event);
-      await handleOracleEvent(context, event);
-    }
-    for (const event of events) {
-      if (event.eventName !== "Transfer" || (event.source !== "token" && event.source !== "vault")) continue;
-      const transfer = await handleTokenEvent(context, event);
-      if (transfer) contextHolder.balanceTransfers.push(transfer);
-    }
-    await applyBalanceDeltas(context, contextHolder.balanceTransfers);
-
-    state.pendingSnapshot ||= context.snapshotNeeded;
-    state.registryDirty ||= context.registryNeeded;
-    for (const account of context.touchedAccounts) state.pendingAccountSnapshots.add(account);
-    if (events.length > 0) state.lastEventAt = Date.now();
-    if (context.hasLemniscateEvents) state.lastLemniscateEventAt = Date.now();
-    if (registry) state.registryDirty = false;
-
-    await tx`
-      UPDATE cursors SET block = ${toBlock.toString()}, updated_at = NOW()
-      WHERE name = 'main'
-    `;
-    const meta = {
-      ...(registry ? registryMetadata(registry, previousMarkets) : {}),
-      ...statusMeta(state, head, toBlock),
+    const context: IndexerContext = {
+      tx,
+      deployment: state.deployment,
+      logger: state.logger,
+      seriesByToken: state.seriesByToken,
+      stockNames: state.stockNames,
+      stockFeeds: state.stockFeeds,
+      transactionInput: (hash) => state.source.getTransactionInput(hash),
+      touchedBalances: new Map(),
+      newSeries: [],
+      kinds: new Set(),
+      snapshotNeeded: false,
+      seriesRefreshNeeded: false,
     };
+    await handleEvents(context, events);
+
+    for (const header of tail) {
+      await tx`
+        INSERT INTO block_hashes (block, hash, parent_hash, ts)
+        VALUES (${header.number.toString()}, ${header.hash}, ${header.parentHash}, ${header.timestamp.toISOString()})
+        ON CONFLICT (block) DO UPDATE SET hash = EXCLUDED.hash, parent_hash = EXCLUDED.parent_hash, ts = EXCLUDED.ts
+      `;
+    }
+    await tx`DELETE FROM block_hashes WHERE block <= ${(toBlock - 2n * HASH_WINDOW).toString()}`;
+
+    const touched = events.length > 0;
+    state.pendingSnapshot ||= context.snapshotNeeded || context.seriesRefreshNeeded;
+    if (touched) state.lastEventAt = state.now();
+    if (events.some((event) => event.source !== "stock")) state.lastLemniscateEventAt = state.now();
+    state.lastIndexedBlockTime = Math.floor(toHeader.timestamp.getTime() / 1_000);
+
+    await tx`UPDATE cursors SET block = ${toBlock.toString()}, updated_at = NOW() WHERE name = 'main'`;
+    const meta = buildStatusMeta(state, head, toBlock);
     await tx`
       INSERT INTO keeper_status (job, last_run, last_ok, last_error, meta)
       VALUES ('indexer', NOW(), NOW(), NULL, ${JSON.stringify(meta)}::jsonb)
@@ -652,87 +404,66 @@ async function ingestDecodedRange(
         LEMNISCATE_EVENTS_CHANNEL,
         JSON.stringify({
           block: toBlock.toString(),
-          markets: [...context.marketIds].sort((a, b) => a - b),
           kinds: context.kinds.size > 0 ? [...context.kinds].sort() : ["chain"],
           logCount: events.length,
         }),
       );
     }
   });
-
   state.cursor = toBlock;
+  return events.length;
 }
 
-async function takePendingSnapshot(state: IndexerState, block: bigint): Promise<void> {
-  const snapshot = await takeSnapshot(state, block, state.pendingAccountSnapshots);
+// ---------------------------------------------------------------------------------------------------------------
+// Snapshots (R7)
+// ---------------------------------------------------------------------------------------------------------------
+
+function snapshotDue(state: IndexerState): boolean {
+  return state.pendingSnapshot || state.now() - state.lastSnapshotAt >= SNAPSHOT_HEARTBEAT_MS;
+}
+
+async function takePendingSnapshot(state: IndexerState, block: bigint, head: bigint): Promise<void> {
+  const header = (await state.source.getHeaders([block])).get(block);
+  if (!header) throw new Error(`Block header unavailable for snapshot block ${block}`);
+  await takeSnapshot(
+    { sql: state.sql, deployment: state.deployment, reader: state.reader, logger: state.logger },
+    block,
+    header.timestamp,
+  );
   state.pendingSnapshot = false;
-  // Accounts beyond the per-snapshot cap, or whose reads failed, carry over.
-  for (const account of snapshot.processedAccounts) state.pendingAccountSnapshots.delete(account);
-  state.lastSnapshotAt = snapshot.snapshotAt.getTime();
-  await writeIndexerStatus(state, block, null);
+  state.lastSnapshotAt = state.now();
+  state.lastIndexedBlockTime = Math.floor(header.timestamp.getTime() / 1_000);
+  await writeIndexerStatus(state, head, null);
 }
 
-async function maybeResolveAggregators(state: IndexerState, head: bigint, force: boolean): Promise<void> {
-  if (!force && Date.now() - state.lastAggregatorResolveAt < 6 * 60 * 60_000) return;
-  const block = confirmedAt(state.config, head);
-  if (block <= 0n) return;
-  const changed = await reResolveAggregators(state, block);
-  if (changed) {
-    state.logger.info({ feeds: state.feedProxies.size, aggregators: state.aggregatorToMarket.size }, "Indexer refreshed feed aggregators");
-  }
-}
-
-async function allMarketsOffHours(sql: Sql): Promise<boolean> {
-  const rows = (await sql`
-    SELECT
-      (SELECT COUNT(*) FROM markets) AS market_count,
-      (SELECT COUNT(*) FROM (
-        SELECT DISTINCT ON (market_id) market_id, regime
-        FROM ticks
-        ORDER BY market_id, ts DESC
-      ) latest WHERE latest.regime = 1) AS off_hours_count
-  `) as { market_count: string; off_hours_count: string }[];
-  const count = Number(rows[0]?.market_count ?? 0);
-  return count > 0 && Number(rows[0]?.off_hours_count ?? -1) === count;
+async function allQuiet(state: IndexerState): Promise<boolean> {
+  const rows = (await state.sql`
+    SELECT COUNT(*)::int AS stocks, COUNT(*) FILTER (WHERE session IN ('CLOSED', 'UNKNOWN'))::int AS closed
+    FROM (SELECT DISTINCT ON (stock_token) stock_token, session FROM ticks ORDER BY stock_token, ts DESC) latest
+  `) as unknown as { stocks: number; closed: number }[];
+  const row = rows[0];
+  return Boolean(row && row.stocks > 0 && row.stocks === row.closed);
 }
 
 export async function nextPollDelay(state: IndexerState): Promise<number> {
-  const now = Date.now();
-  // Poll cadence follows on-chain activity only; public API traffic must not
-  // be able to drive indexer (and RPC) load.
-  if (now - state.lastLemniscateEventAt < ACTIVE_EVENT_MS) {
-    return state.config.INDEXER_POLL_ACTIVE_MS;
-  }
-  if (now - state.lastEventAt >= IDLE_AFTER_MS && await allMarketsOffHours(state.sql)) {
-    return state.config.INDEXER_POLL_IDLE_MS;
-  }
-  return state.config.INDEXER_POLL_BASE_MS;
+  const now = state.now();
+  // Poll cadence follows on-chain activity only; public API traffic must not drive indexer (and RPC) load.
+  if (now - state.lastLemniscateEventAt < ACTIVE_EVENT_MS) return state.settings.pollActiveMs;
+  if (now - state.lastEventAt >= IDLE_AFTER_MS && (await allQuiet(state))) return state.settings.pollIdleMs;
+  return state.settings.pollBaseMs;
 }
 
 export async function runIndexerTick(state: IndexerState): Promise<TickResult> {
-  const head = await state.clients.logsClient.getBlockNumber();
-  const confirmedHead = confirmedAt(state.config, head);
-  if (!state.initialized) {
-    if (!(await initializeAtFreshHead(state, head))) {
-      await writeIndexerStatus(state, head, null);
-      return { delayMs: state.config.INDEXER_POLL_BASE_MS, caughtUp: false, events: 0 };
-    }
-    return { delayMs: await nextPollDelay(state), caughtUp: true, processedTo: state.cursor, events: 0 };
-  }
-
-  await maybeResolveAggregators(state, head, false);
+  const head = await state.source.getHead();
+  const confirmedHead = confirmedAt(state.settings, head);
+  const reorgDepth = await repairReorg(state);
   const fromBlock = state.cursor + 1n;
+
   if (fromBlock <= confirmedHead) {
     const toBlock = confirmedHead < fromBlock + state.range - 1n ? confirmedHead : fromBlock + state.range - 1n;
-    let raw: Awaited<ReturnType<typeof fetchLogPair>>;
+    let eventCount: number;
     try {
-      raw = await fetchLogPair(state.clients.pool, {
-        fromBlock,
-        toBlock,
-        lemniscateAddresses: [...state.lemniscateAddresses],
-        externalAddresses: [...state.externalAddresses],
-        externalTopics: watchedExternalTopics,
-      });
+      eventCount = await ingestRange(state, fromBlock, toBlock, head);
     } catch (error) {
       if (isRangeLimitError(error) && state.range > 1n) {
         state.range = state.range / 2n > 0n ? state.range / 2n : 1n;
@@ -742,58 +473,15 @@ export async function runIndexerTick(state: IndexerState): Promise<TickResult> {
       }
       throw error;
     }
-    const allLogs = uniqueLogs([...raw.lemniscateLogs, ...raw.externalLogs]);
-    const discoveryEvents = allLogs
-      .map((log) => decodeChainLog(log, eventAddressMaps(state), new Date(0)))
-      .filter((event): event is ChainEvent => event !== undefined);
-    syncKnownMarketIds(state, discoveryEvents);
-    if (addNewWatchedAddresses(state, discoveryEvents)) {
-      const discoveryHead = confirmedHead > 0n ? confirmedHead : head;
-      await reResolveAggregators(state, discoveryHead);
-      return { delayMs: 100, caughtUp: false, processedTo: state.cursor, events: 0 };
-    }
-
-    const timestamps = await timestampsForLogs(state.clients.pool, allLogs, state.blockTimestampCache);
-    const events = allLogs
-      .map((log) => {
-        const ts = timestamps.get(log);
-        return ts ? decodeChainLog(log, eventAddressMaps(state), ts) : undefined;
-      })
-      .filter((event): event is ChainEvent => event !== undefined)
-      .sort(eventOrder);
-    const registryEvent = events.some(
-      (event) =>
-        (event.source === "engine" && ["MarketListed", "MarketConfigUpdated"].includes(event.eventName)) ||
-        (event.source === "vault" && event.eventName === "HedgeRouteUpdated"),
-    );
-    state.registryDirty ||= registryEvent;
-    const shouldSyncRegistry = state.registryDirty && toBlock === confirmedHead;
-    let registry: RegistrySnapshot | undefined;
-    if (shouldSyncRegistry) {
-      const ids = [...new Set([...state.marketsById.keys(), ...events.map((event) => event.marketId).filter((id): id is number => id !== undefined)])];
-      registry = await readMarketRegistry(
-        state.clients,
-        state.deployment,
-        ids,
-        state.listedBlocks,
-        state.existingListedBlocks,
-        toBlock,
-      );
-      await syncStateMaps(state, registry);
-    }
-
-    await ingestDecodedRange(state, events, toBlock, head, registry);
-
-    if (registry) state.registryDirty = false;
     state.successfulRanges += 1;
     if (state.successfulRanges >= 10 && state.range < MAX_RANGE) {
       state.range = state.range * 2n > MAX_RANGE ? MAX_RANGE : state.range * 2n;
       state.successfulRanges = 0;
     }
     if (snapshotDue(state) && toBlock === confirmedHead) {
-      if (state.pendingSnapshot) await new Promise((resolve) => setTimeout(resolve, SNAPSHOT_DEBOUNCE_MS));
+      if (state.pendingSnapshot && state.settings.pollActiveMs > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(SNAPSHOT_DEBOUNCE_MS, state.settings.pollActiveMs)));
       try {
-        await takePendingSnapshot(state, confirmedHead);
+        await takePendingSnapshot(state, confirmedHead, head);
       } catch (error) {
         state.logger.warn({ err: safeErrorSummary(error) }, "Indexer snapshot failed and remains queued for retry");
         await writeIndexerStatus(state, head, safeErrorSummary(error).message).catch(() => undefined);
@@ -803,13 +491,14 @@ export async function runIndexerTick(state: IndexerState): Promise<TickResult> {
       delayMs: await nextPollDelay(state),
       caughtUp: state.cursor >= confirmedHead,
       processedTo: state.cursor,
-      events: events.length,
+      events: eventCount,
+      ...(reorgDepth > 0n ? { reorgDepth } : {}),
     };
   }
 
-  if (snapshotDue(state) && confirmedHead > 0n) {
+  if (snapshotDue(state) && confirmedHead > 0n && state.cursor >= confirmedHead) {
     try {
-      await takePendingSnapshot(state, confirmedHead);
+      await takePendingSnapshot(state, confirmedHead, head);
     } catch (error) {
       state.logger.warn({ err: safeErrorSummary(error) }, "Indexer snapshot retry failed");
       await writeIndexerStatus(state, head, safeErrorSummary(error).message).catch(() => undefined);
@@ -817,15 +506,20 @@ export async function runIndexerTick(state: IndexerState): Promise<TickResult> {
   } else {
     await writeIndexerStatus(state, head, null);
   }
-
-  return { delayMs: await nextPollDelay(state), caughtUp: true, processedTo: state.cursor, events: 0 };
+  return {
+    delayMs: await nextPollDelay(state),
+    caughtUp: true,
+    processedTo: state.cursor,
+    events: 0,
+    ...(reorgDepth > 0n ? { reorgDepth } : {}),
+  };
 }
 
 export async function recordIndexerFailure(state: IndexerState, error: unknown): Promise<number> {
   const safe = safeErrorSummary(error);
   state.logger.error({ err: safe }, "Indexer poll failed; the event cursor was not advanced");
   try {
-    const head = await state.clients.logsClient.getBlockNumber();
+    const head = await state.source.getHead();
     await writeIndexerStatus(state, head, safe.message);
   } catch {
     // Keep the chain cursor as the durable recovery point when Postgres is down.

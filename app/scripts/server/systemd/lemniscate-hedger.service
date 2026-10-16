@@ -1,0 +1,44 @@
+# Lemniscate hedger: computes hedge targets and calls the pool's rebalance
+# Installed to /etc/systemd/system by provision.sh and deploy.sh; restarted and stopped with lemniscate.target.
+# HEDGER_DRY_RUN=1 in lemniscate.env: it simulates and reports, and never trades, until Kal sets it to 0. It holds gas only; the pool holds the hedges.
+# A second hedger exits at once (Postgres lock).
+[Unit]
+Description=Lemniscate hedger, computes hedge targets and calls the pool's rebalance
+Documentation=file:/opt/lemniscate/current/app/scripts/server/README.md
+PartOf=lemniscate.target
+After=network-online.target postgresql.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=lemniscate
+Group=lemniscate
+WorkingDirectory=/opt/lemniscate/current/app
+Environment=HOME=/var/lib/lemniscate
+Environment=HEDGER_KEYSTORE=/etc/lemniscate/keys/hedger.json
+Environment=HEDGER_KEYSTORE_PASSWORD_FILE=/etc/lemniscate/keys/hedger.password
+EnvironmentFile=/etc/lemniscate/lemniscate.env
+EnvironmentFile=/etc/lemniscate/db.env
+EnvironmentFile=-/etc/lemniscate/hedger.env
+ExecStart=/usr/local/bin/bun src/bin/hedger.ts
+Restart=always
+RestartSec=30
+TimeoutStopSec=30
+MemoryMax=512M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lemniscate-hedger
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lemniscate
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=lemniscate.target

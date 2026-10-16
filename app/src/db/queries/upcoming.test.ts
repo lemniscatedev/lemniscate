@@ -32,8 +32,8 @@ test("buildUpcoming uses null subscription state when no address is supplied", (
 test("upcomingMarkets returns fresh per-address state and launched status", async () => {
   const calls: { query: string; values: unknown[] }[] = [];
   const cache = new TtlCache();
-  void cache.getOrLoad("markets:list", 3_000, async () => [
-    { symbol: "SPCX", launched: true }, { symbol: "GLD", launched: false },
+  void cache.getOrLoad("series:names", 3_000, async () => [
+    { name: "SPCX", buyable: true }, { name: "GLD", buyable: false },
   ]);
   const sql = async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const query = strings.join("?");

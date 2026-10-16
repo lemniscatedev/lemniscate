@@ -3,7 +3,7 @@ import type { ApiDependencies, DbRow } from "../../api/types";
 import { asRows } from "../../api/types";
 import { earningsOverrides, NO_EARNINGS, type EarningsOverride } from "../../config/earnings";
 import { upcomingMarketConfig } from "../../config/upcoming";
-import { listMarkets, type MarketView } from "./markets";
+import { listedNames } from "./series";
 
 const DAY_MS = 86_400_000;
 
@@ -30,18 +30,10 @@ export interface NextEarnings {
   daysUntil: number;
 }
 
-export interface EarningsMarket {
-  symbol: string;
-  curve: string;
-  price: string;
-  change24hPct: number;
-  dailyCarryPct: number;
-}
-
 export interface EarningsItem extends MergedRow {
   daysUntil: number;
+  /** True for a configured upcoming name that has no listed series yet. */
   upcoming: boolean;
-  markets: EarningsMarket[];
 }
 
 export interface EarningsResponse {
@@ -163,37 +155,13 @@ async function queryMergedEarnings(
   return { todayEt, items };
 }
 
-function earningsMarket(market: MarketView): EarningsMarket {
-  return {
-    symbol: market.symbol,
-    curve: market.curve,
-    price: market.price,
-    change24hPct: market.change24hPct,
-    dailyCarryPct: market.dailyCarryPct,
-  };
-}
-
-export function attachEarningsMarkets(
+/** Marks the names that are configured as coming soon and have no series listed yet. */
+export function markUpcoming(
   items: Array<MergedRow & { daysUntil: number }>,
-  markets: MarketView[],
+  listed: ReadonlySet<string>,
 ): EarningsItem[] {
-  const marketsByUnderlying = new Map<string, EarningsMarket[]>();
-  for (const market of markets) {
-    if (!market.launched) continue;
-    const underlying = market.underlying.toUpperCase();
-    const matches = marketsByUnderlying.get(underlying) ?? [];
-    matches.push(earningsMarket(market));
-    marketsByUnderlying.set(underlying, matches);
-  }
   const upcomingUnderlyings = new Set(upcomingMarketConfig.map((item) => item.underlying.toUpperCase()));
-  return items.map((row) => {
-    const rowMarkets = marketsByUnderlying.get(row.symbol) ?? [];
-    return {
-      ...row,
-      upcoming: rowMarkets.length === 0 && upcomingUnderlyings.has(row.symbol),
-      markets: rowMarkets,
-    };
-  });
+  return items.map((row) => ({ ...row, upcoming: !listed.has(row.symbol) && upcomingUnderlyings.has(row.symbol) }));
 }
 
 export async function upcomingEarnings(
@@ -203,12 +171,12 @@ export async function upcomingEarnings(
 ): Promise<EarningsResponse> {
   const now = requestedNow ?? await apiNow(deps);
   const { todayEt, items } = await queryMergedEarnings(deps, days, now);
-  const markets = await deps.cache.getOrLoad("markets:list", 3_000, () => listMarkets(deps));
+  const listed = await deps.cache.getOrLoad("series:names", 3_000, () => listedNames(deps));
   return {
     asOf: now.toISOString(),
     todayEt,
     days,
-    items: attachEarningsMarkets(items, markets),
+    items: markUpcoming(items, new Set(listed.map((entry) => entry.name))),
   };
 }
 

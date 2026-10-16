@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import pino from "pino";
+import { testDeployment } from "../../indexer/test-support";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { TtlCache } from "../cache";
 import { createApiApp } from "../app";
@@ -58,7 +59,7 @@ async function fixture(apiRateLimit = 0) {
   const app = createApiApp({
     sql,
     config: { CORS_ORIGINS: [origin], API_RATE_LIMIT_PER_MINUTE: apiRateLimit, API_CLIENT_IP_HEADER: "", NETWORK: "mainnet" },
-    deployment: {}, logger: pino({ level: "silent" }), cache,
+    deployment: testDeployment(), logger: pino({ level: "silent" }), cache,
   } as unknown as ApiDependencies);
   return { app, calls, subscriptions };
 }

@@ -1,0 +1,57 @@
+# Template for /etc/caddy/Caddyfile, rendered by provision.sh: __API_DOMAIN__, __MCP_DOMAIN__ and __ACME_EMAIL__ are
+# replaced with API_DOMAIN, MCP_DOMAIN and ACME_EMAIL (see README.md). Edit the template and re-run provision.sh rather
+# than editing /etc/caddy/Caddyfile by hand. With no MCP_DOMAIN the block between "BEGIN mcp" and "END mcp" is removed.
+#
+# HTTPS is automatic: once each domain's DNS A/AAAA record points at this server (Cloudflare grey cloud, DNS only) and
+# ports 80 and 443 are open, Caddy gets the certificates from Let's Encrypt and renews them itself.
+#
+# Only the API (127.0.0.1:3101) and, if enabled, the MCP server (127.0.0.1:3102) are public. Every other port is closed
+# by ufw. The API takes the client address from X-Forwarded-For (API_CLIENT_IP_HEADER), which Caddy sets itself, and the
+# Cloudflare headers a client could forge are removed. If Cloudflare's proxy (orange cloud) is ever put in front, read
+# "Cloudflare" in README.md first.
+
+{
+	email __ACME_EMAIL__
+}
+
+(lemniscate_common) {
+	encode zstd gzip
+	request_body {
+		max_size 10MB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+	log {
+		output file /var/log/caddy/{args[0]}.log {
+			roll_size 20MiB
+			roll_keep 5
+		}
+	}
+}
+
+# X-Forwarded-For needs no line: with no trusted_proxies configured, Caddy discards the value a client sends and
+# sets it to the client's own address.
+(lemniscate_upstream_headers) {
+	header_up -CF-Connecting-IP
+	header_up -CF-IPCountry
+}
+
+__API_DOMAIN__ {
+	import lemniscate_common api
+	reverse_proxy 127.0.0.1:3101 {
+		import lemniscate_upstream_headers
+	}
+}
+
+# BEGIN mcp
+__MCP_DOMAIN__ {
+	import lemniscate_common mcp
+	reverse_proxy 127.0.0.1:3102 {
+		import lemniscate_upstream_headers
+	}
+}
+# END mcp

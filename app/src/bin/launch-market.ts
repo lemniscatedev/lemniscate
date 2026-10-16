@@ -18,10 +18,10 @@ if (!/^[A-Z][A-Z0-9]{0,15}$/.test(symbol) || !["on", "off", "status"].includes(a
 
   try {
     const marketRows = asRows<Record<string, unknown>>(await sql`
-      select symbol from markets where upper(symbol) = ${symbol} limit 1
+      select name from series where upper(name) = ${symbol} limit 1
     `);
     const marketIndexed = marketRows.length > 0;
-    if (!marketIndexed) logger.warn({ symbol, action }, "Market is not indexed yet");
+    if (!marketIndexed) logger.warn({ symbol, action }, "No series are indexed for this name yet");
 
     if (action === "on" || action === "off") {
       await sql`

@@ -1,8 +1,7 @@
-import { earningsSymbols } from "../../config/earnings";
+import { earningsOverrides, earningsSymbols, NO_EARNINGS } from "../../config/earnings";
 import { upcomingMarketConfig } from "../../config/upcoming";
-import { decodeKind, underlyingOf } from "../../lib/market-kind";
 import { fetchTextWithTimeout } from "../http";
-import { saveJobMeta, type IndexerMetadata, type KeeperContext } from "../context";
+import { saveJobMeta, type KeeperContext } from "../context";
 
 const providerUrl = "https://www.alphavantage.co/query?function=EARNINGS_CALENDAR&horizon=3month&apikey=";
 
@@ -97,12 +96,9 @@ function jobMeta(value: unknown): EarningsJobMeta {
   return value && typeof value === "object" && !Array.isArray(value) ? value as EarningsJobMeta : {};
 }
 
-function marketUnderlyings(metadata: IndexerMetadata): string[] {
-  return Object.values(metadata.marketsById ?? {}).map((market) => {
-    const rawKind = market.config.kind;
-    const kind = typeof rawKind === "number" ? rawKind : Number(rawKind);
-    return underlyingOf(market.symbol, decodeKind(kind).curve);
-  });
+/** The tickers of the launch stocks; the earnings calendar is asked about exactly these. */
+function marketUnderlyings(context: KeeperContext): string[] {
+  return context.deployment.stocks.map((entry) => entry.name);
 }
 
 async function storedJobMeta(context: KeeperContext): Promise<EarningsJobMeta> {
@@ -143,7 +139,7 @@ export async function updateEarnings(context: KeeperContext): Promise<Record<str
   }
 
   const wanted = new Set(earningsSymbols(
-    marketUnderlyings(metadata),
+    marketUnderlyings(context),
     upcomingMarketConfig.map((item) => item.underlying),
   ));
 
@@ -187,4 +183,26 @@ export async function updateEarnings(context: KeeperContext): Promise<Record<str
     failureDate: today,
     failuresToday: 0,
   };
+}
+
+export const COMPANY_IR_SOURCE = "company_ir";
+
+/**
+ * Second, independent earnings source for the vol-engine: report dates the company itself published on its
+ * investor-relations page (app/src/config/earnings-overrides.json, entries with confirmed = true). The engine only
+ * trusts a date when this source and Alpha Vantage agree within a day. Needs no key and no network.
+ */
+export async function syncCompanyIrEarnings(context: KeeperContext): Promise<{ rows: number }> {
+  const metadata = await context.metadata();
+  const today = context.now(metadata).toISOString().slice(0, 10);
+  const rows = earningsOverrides.filter((item) => item.confirmed && !NO_EARNINGS.has(item.symbol) && item.date >= today);
+  await context.sql.begin(async (transaction) => {
+    await transaction`delete from earnings where source = ${COMPANY_IR_SOURCE} and report_date >= ${today}::date`;
+    for (const row of rows) {
+      await transaction`insert into earnings (symbol, report_date, session, fiscal_date_ending, source)
+        values (${row.symbol}, ${row.date}::date, ${row.session}, null, ${COMPANY_IR_SOURCE})
+        on conflict (symbol, report_date, source) do update set session = excluded.session, fetched_at = now()`;
+    }
+  });
+  return { rows: rows.length };
 }

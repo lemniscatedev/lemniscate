@@ -1,8 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
-import { keccak256, parseAbi, stringToHex } from "viem";
 import { createClients } from "../chain/clients";
-import { assertDeploymentNetwork, loadDeployment, type Deployment } from "../chain/deployment";
+import { assertDeploymentNetwork, loadOptionDeployment } from "../chain/deployment";
 import { loadConfig, loadKeeperSigningKey, safeConfigSummary } from "../config";
 import { createRpcPool } from "../chain/rpc-pool";
 import { createDbClient } from "../db/client";
@@ -12,14 +11,17 @@ import { chainClock, readIndexerMetadata, saveJobMeta, type KeeperContext } from
 import { createScheduler } from "./scheduler";
 import { createTransactionQueue } from "./tx";
 import { acquireKeeperLock } from "./lock";
-import { updateSessions, sessionHash } from "./jobs/sessions";
-import { accrueStale } from "./jobs/accrue";
+import { updateSessions, sessionsMeta } from "./jobs/sessions";
+import { createAccrueJob } from "./jobs/accrue";
+import { createListerJob } from "./jobs/lister";
 import { createHedgeJob } from "./jobs/hedge";
-import { updateCarry } from "./jobs/carry";
 import { createRiskJob } from "./jobs/risk";
 import { updateCorporateActions } from "./jobs/corp-actions";
+import { writeReceipts } from "./jobs/receipts";
 import { updateReferencePrices } from "./jobs/reference";
-import { updateEarnings } from "./jobs/earnings";
+import { syncCompanyIrEarnings, updateEarnings } from "./jobs/earnings";
+import { checkRoles, requiredRoles } from "./startup";
+import { SESSION_EXTENDED, SESSION_REGULAR } from "./sessions";
 
 const config = loadConfig();
 const logger = createLogger(config.LOG_LEVEL, "keeper");
@@ -38,11 +40,12 @@ const tx = createTransactionQueue(clients, {
 });
 logger.info({ config: safeConfigSummary(config), signer: clients.walletClient?.account?.address, dryRun: config.KEEPER_DRY_RUN }, "Keeper starting");
 const enabled = new Set(config.KEEPER_ENABLED_JOBS.split(",").map((job) => job.trim()).filter(Boolean));
-const validJobs = new Set(["sessions", "accrue", "hedge", "carry", "risk", "corp-actions", "reference", "earnings"]);
+// hedge is the legacy job until the hedger (todo 14) replaces it.
+const validJobs = new Set(["sessions", "lister", "accrue", "hedge", "risk", "corp-actions", "receipts", "reference", "earnings"]);
 for (const job of enabled) if (!validJobs.has(job)) throw new Error(`Unknown keeper job: ${job}`);
 
-async function startup(): Promise<Deployment> {
-  const deployment = await loadDeployment(config.DEPLOYMENT_FILE);
+async function startup(): Promise<KeeperContext["deployment"]> {
+  const deployment = await loadOptionDeployment(config.DEPLOYMENT_FILE);
   assertDeploymentNetwork(deployment, config);
   if (await clients.txClient.getChainId() !== config.CHAIN_ID) throw new Error("Keeper RPC chain ID mismatch");
   if (config.NETWORK === "fork") {
@@ -53,26 +56,31 @@ async function startup(): Promise<Deployment> {
     const block = await clients.stateClient.getBlock({ blockNumber: BigInt(deployment.forkProof.blockNumber) });
     if (block.hash?.toLowerCase() !== deployment.forkProof.blockHash.toLowerCase()) throw new Error("Fork proof does not match the node");
   }
-  if ([...enabled].some((job) => job !== "corp-actions" && job !== "reference" && job !== "earnings")) {
+  if (enabled.has("sessions") && !deployment.contracts.marketHours) throw new Error("The sessions job needs contracts.marketHours in the deployment");
+  const sendsTransactions = ["sessions", "lister", "risk", "corp-actions", "accrue"].some((job) => enabled.has(job));
+  if (sendsTransactions) {
     const account = clients.walletClient?.account;
-    if (!account || account.address.toLowerCase() !== deployment.keeper) throw new Error("Signer does not match deployment keeper");
-    const abi = parseAbi(["function hasRole(bytes32 role,address account) view returns(bool)"]);
-    const keeper = keccak256(stringToHex("KEEPER_ROLE"));
-    const guardian = keccak256(stringToHex("GUARDIAN_ROLE"));
-    const roles = await clients.stateClient.multicall({ allowFailure: false, contracts: [
-      { address: deployment.contracts.engine, abi, functionName: "hasRole", args: [keeper, account.address] },
-      { address: deployment.contracts.vault, abi, functionName: "hasRole", args: [keeper, account.address] },
-      { address: deployment.contracts.marketHours, abi, functionName: "hasRole", args: [keeper, account.address] },
-      { address: deployment.contracts.engine, abi, functionName: "hasRole", args: [guardian, account.address] },
-    ] });
-    if (roles.some((role) => !role)) throw new Error("Keeper lacks a required keeper/guardian role");
+    if (!account) throw new Error("No keeper signer configured (KEEPER_PRIVATE_KEY)");
+    if (deployment.keeper && account.address.toLowerCase() !== deployment.keeper) throw new Error("Signer does not match deployment keeper");
+    const roles = await checkRoles(clients, requiredRoles(enabled, deployment), account.address);
+    for (const need of roles.unverified) logger.warn({ job: need.job, contract: need.contract, role: need.role }, "Could not verify keeper role");
+    if (roles.missing.length && !config.KEEPER_DRY_RUN) {
+      throw new Error(`Keeper lacks required roles: ${roles.missing.map((need) => `${need.job}:${need.contract}.${need.role}`).join(", ")}`);
+    }
+    for (const need of roles.missing) logger.warn({ job: need.job, contract: need.contract, role: need.role }, "Keeper lacks a role (dry run continues)");
   }
-  const sessions = await clients.stateClient.readContract({ address: deployment.contracts.marketHours, abi: MarketHoursAbi, functionName: "sessions" });
-  const meta = { sessions: sessions.map((s) => ({ open: s.open.toString(), close: s.close.toString() })),
-    sessionsHash: sessionHash([...sessions]), horizon: sessions.at(-1)?.close.toString() ?? "0" };
-  await sql`insert into keeper_status (job,meta) values ('sessions',${JSON.stringify(meta)}::jsonb)
-    on conflict (job) do update set meta=keeper_status.meta || excluded.meta`;
-  return deployment;
+  if (deployment.contracts.marketHours) {
+    const marketHours = deployment.contracts.marketHours as `0x${string}`;
+    const [sessions, kinds] = await Promise.all([
+      clients.stateClient.readContract({ address: marketHours, abi: MarketHoursAbi, functionName: "sessions" }),
+      clients.stateClient.readContract({ address: marketHours, abi: MarketHoursAbi, functionName: "sessionKinds" }),
+    ]);
+    const stored = sessions.map((s, i) => ({ open: s.open, close: s.close, kind: (Number(kinds[i]) === 1 ? SESSION_EXTENDED : SESSION_REGULAR) as 0 | 1 }));
+    const meta = sessionsMeta(stored);
+    await sql`insert into keeper_status (job,meta) values ('sessions',${JSON.stringify(meta)}::jsonb)
+      on conflict (job) do update set meta=keeper_status.meta || excluded.meta`;
+  }
+  return deployment as KeeperContext["deployment"];
 }
 
 // Only one keeper instance may sign: a standby instance waits here until the
@@ -109,25 +117,31 @@ let heartbeat: ReturnType<typeof setInterval> | undefined;
 let pulseBusy = false;
 if (context && lock && !abort.signal.aborted) {
   const ctx = context;
+  const accrue = createAccrueJob(ctx);
+  const lister = createListerJob(ctx);
   const definitions = [
     { name: "sessions", everyMs: 3600000, run: () => updateSessions(ctx) },
-    { name: "accrue", everyMs: 60000, run: async () => {
+    { name: "lister", everyMs: 3600000, run: () => lister() },
+    { name: "accrue", everyMs: 300000, run: async () => {
       const force = forceAccrue;
       forceAccrue = false;
-      try { return await accrueStale(ctx, force); }
+      try { return await accrue(force); }
       catch (error) {
-        // Preserve a failed boundary request across the scheduler's retry. A
-        // recent regular accrual must not suppress it for another six hours.
+        // Preserve a failed boundary request across the scheduler's retry.
         forceAccrue ||= force;
         throw error;
       }
     } },
     { name: "hedge", everyMs: 900000, run: createHedgeJob(ctx) },
-    { name: "carry", everyMs: 60000, run: () => updateCarry(ctx) },
     { name: "risk", everyMs: 60000, run: createRiskJob(ctx) },
-    { name: "corp-actions", everyMs: 3600000, run: () => updateCorporateActions(ctx) },
+    { name: "corp-actions", everyMs: 600000, run: () => updateCorporateActions(ctx) },
+    { name: "receipts", everyMs: 300000, run: () => writeReceipts(ctx) },
     { name: "reference", everyMs: 60000, run: () => updateReferencePrices(ctx) },
-    { name: "earnings", everyMs: 3600000, run: () => updateEarnings(ctx) },
+    { name: "earnings", everyMs: 3600000, run: async () => {
+      // Second source for the vol-engine's two-source check; a failure here must not stop the Alpha Vantage import.
+      await syncCompanyIrEarnings(ctx).catch((error) => logger.warn(`Company IR earnings sync failed: ${error instanceof Error ? error.message : "error"}`));
+      return updateEarnings(ctx);
+    } },
   ];
   for (const job of definitions) if (enabled.has(job.name)) scheduler.add({ ...job, jitterMs: 2000 });
   const listener = await sql.listen("lemniscate_events", (payload) => {

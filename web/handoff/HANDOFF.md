@@ -12,7 +12,9 @@ There is no server application in this repository. `serve.mjs` is a development 
 | --- | --- |
 | Shared branding, navigation, footer, section content, modal behavior, page/dashboard navigation | `dist/lemniscate.js` |
 | Theme, text spacing, responsive sections, image sizing, loading animation | `dist/lemniscate.css` |
-| Dashboard views, controls, calculations, browser storage, receipts and exports | `dist/dashboard.js` |
+| Dashboard views and flows (API-backed) | `dist/dashboard.js` |
+| API client, wallet, region gate, ABI helpers, demo data | `dist/chain/*.js` |
+| Deployment settings (API, WalletConnect id, site URL, regions) | `dist/config.js` |
 | Dashboard layout, mobile app presentation, cards and chart styling | `dist/dashboard.css` |
 | Native page layout, original animation structure, article content modules | `dist/runtime/*.mjs` (see route map) |
 | Page title, description, initial markup and head references | Each route's `index.html` |
@@ -37,13 +39,18 @@ Marketing pages retain native client navigation. The dashboard mounts into a sib
 
 ## Dashboard data and backend integration
 
-The dashboard's working controls currently update browser-local state. No brokerage, exchange, wallet, chain, custody, identity, payment, market-data or trading backend is connected. Product copy and interactions are preserved from the current site; developers should treat all account balances, quotes and receipts as local application records until APIs are integrated.
+The dashboard is wired to the Lemniscate API and the visitor's wallet. Nothing financial is stored in the browser.
 
-Storage key: `lemniscate.workspace.v1`. The versioned record contains `balance`, `positions`, `poolShares`, `poolQueues`, `watch`, `policies`, `activity`, `settings` and `history`. A new browser receives the default account state from `defaults()`; no existing visitor's saved data is shipped. JSON export is available in the interface. For a clean QA state, remove that key from local storage on the test origin.
+- **One config file:** `dist/config.js` (`window.LM_CONFIG`): `apiBase`, `siteUrl`, `walletConnectProjectId`, `appKitUrl` (pinned Reown AppKit CDN build), chain id/RPC/explorer, `oneTap`, `blockedRegions` (GB, CA, CH; the US is allowed) and an optional same-origin `geoEndpoint`. It ships with everything empty: the app then shows a "Live data is not available" state and makes no API calls.
+- **Data:** `dist/chain/api.js` calls `/v1/config`, `/v1/chains`, `/v1/chains/{name}`, `/v1/vol/{name}`, `/v1/corporate-actions`, `/v1/pool`, `/v1/accounts/{address}/positions`, `/v1/accounts/{address}/activity` (cursor paging, Activity tab), `/v1/accounts/{address}/agents` (Agent desk policies and trades), `/v1/accounts/{address}/smart-account` (fills the one-tap address in Settings; a pasted address overrides it), `POST /v1/quote` and `POST /v1/intent/{buy,sell,shield}` (plus `?format=userop` and `/v1/userop/*` when `oneTap` is on and a smart account is set in Settings). Spreads, sessions, block reasons, Shield strikes (listed Weekly puts only), pool NAV and caps all come from these responses.
+- **Wallet:** `dist/chain/wallet.js`: EIP-6963 browser wallets are always listed; WalletConnect loads the pinned AppKit build only when chosen and only with a project id. Trades: the API returns unsigned calldata and the exact USDG approval; the site approves exactly that amount, sends, waits for the receipt and records the transaction hash (Activity tab, `lemniscate.receipts.v2`). Pool deposit/redeem and agent policies are encoded locally (`dist/chain/abi.js`).
+- **Region gate:** `dist/chain/region.js`. With `geoEndpoint` empty the visitor declares residence once (stored locally); on Cloudflare set `geoEndpoint:'/cdn-cgi/trace'` for an edge lookup that never leaves the site's origin.
+- **Demo:** `/dashboard?demo=1` uses `dist/chain/demo.js` (illustrative prices, same response shapes) and is labelled "Demo, not real funds".
+- **Browser storage keys:** `lemniscate.prefs.v2` (slippage, deadline, optional smart account override), `lemniscate.receipts.v2` (this browser's own sends, shown as pending until the service lists them), `lemniscate.policy-draft.v1` (the unsent policy form only), `lemniscate.region.v1`, `lemniscate.wallet.v1`. The old `lemniscate.workspace.v1` is no longer read.
 
-The hardcoded underlying set is NVDA, TSLA, SPY, QQQ and HOOD. `markets`, `optionValue()`, `quote()`, `effective()` and `session()` provide local pricing, decay and session behavior. Session gating is calculated from the browser clock in New York time, without exchange calendars or live halt detection. Writer Pool values, exit queue timing and account events are maintained locally.
+Tests: `npm run check` (routes, syntax, copy lint), `npm run lint:copy`, `npm run test:browser` (Playwright: all 18 routes and every dashboard tab at 390 px, console errors, offline/unreachable states, and buy/sell/Shield/pool flows against `scripts/mock-api.mjs` with a fake EIP-6963 wallet). `npm run mock-api` starts the mock alone (`MOCK_SESSION`, `MOCK_EARNINGS`, `MOCK_SPLIT` set states).
 
-Backend integration should replace these data/calculation/action boundaries with authenticated APIs; validate orders, funds, quotes, settlement and policies on the server; persist records remotely; and return authoritative receipts to the existing views. The backend PDF in `references/` describes intended protocol behavior rather than implemented services. The published site's private access wrapper belongs to its host and is not part of this portable website.
+Copy fixes inside generated native modules and CMS content live in `scripts/apply-copy-fixes.mjs` (idempotent; it uses `scripts/cms-codec.mjs` to keep the CMS length prefixes valid). Run it, then `npm run build`. `npm run stamp` rewrites every page head from `siteUrl` (canonical, og:url, og:image) and must be re-run after changing it.
 
 ## Adding pages or changing assets
 

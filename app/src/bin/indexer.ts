@@ -1,9 +1,11 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { createClients } from "../chain/clients";
-import { assertDeploymentNetwork, loadDeployment } from "../chain/deployment";
-import { loadConfig, safeConfigSummary, stripKeeperSecrets } from "../config";
+import { assertDeploymentNetwork, loadOptionDeployment } from "../chain/deployment";
+import { confirmationBlocks, loadConfig, safeConfigSummary, stripKeeperSecrets } from "../config";
 import { createDbClient } from "../db/client";
 import { createLogger, safeErrorSummary } from "../log";
+import { createRpcChainSource } from "../indexer/chain-source";
+import { createRpcSnapshotReader } from "../indexer/snapshot";
 import {
   createIndexerState,
   persistMissingDeploymentStatus,
@@ -35,17 +37,30 @@ try {
   while (!abort.signal.aborted) {
     let state: IndexerState;
     try {
-      const deployment = await loadDeployment(config.DEPLOYMENT_FILE);
+      const deployment = await loadOptionDeployment(config.DEPLOYMENT_FILE);
       assertDeploymentNetwork(deployment, config);
       const chainId = await clients.logsClient.getChainId();
       if (chainId !== config.CHAIN_ID) {
         throw new Error(`Indexer RPC chain ID ${chainId} does not match configured ${config.CHAIN_ID}`);
       }
-      state = await createIndexerState({ config, clients, sql, logger, deployment });
+      state = await createIndexerState({
+        settings: {
+          confirmations: confirmationBlocks(config),
+          pollActiveMs: config.INDEXER_POLL_ACTIVE_MS,
+          pollBaseMs: config.INDEXER_POLL_BASE_MS,
+          pollIdleMs: config.INDEXER_POLL_IDLE_MS,
+        },
+        source: createRpcChainSource(clients),
+        reader: createRpcSnapshotReader(clients, deployment),
+        sql,
+        logger,
+        deployment,
+        rpcStats: () => clients.pool.stats(),
+      });
     } catch (error) {
       const summary = safeErrorSummary(error);
       logger.warn({ err: summary }, "Indexer waiting for a valid deployment and database");
-      await persistMissingDeploymentStatus(sql, error).catch((statusError) => {
+      await persistMissingDeploymentStatus(sql, error).catch((statusError: unknown) => {
         logger.warn({ err: safeErrorSummary(statusError) }, "Could not persist missing deployment status");
       });
       await sleep(60_000, undefined, { signal: abort.signal }).catch(() => undefined);
@@ -56,7 +71,8 @@ try {
       {
         network: state.deployment.network,
         deployBlock: state.deployment.deployBlock,
-        markets: state.deployment.markets.length,
+        stocks: state.deployment.stocks.length,
+        series: state.seriesByToken.size,
       },
       "Indexer connected to deployment",
     );

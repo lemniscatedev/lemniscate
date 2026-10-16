@@ -1,0 +1,10 @@
+# Every Lemniscate service. `systemctl restart lemniscate.target` restarts each enabled lemniscate-*.service (they are
+# PartOf it); `systemctl stop lemniscate.target` stops them. A service joins the target when it is enabled.
+[Unit]
+Description=Lemniscate backend services
+Documentation=file:/opt/lemniscate/current/app/scripts/server/README.md
+Wants=network-online.target postgresql.service
+After=network-online.target postgresql.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,10 +1,7 @@
 import type { TransactionSql } from "postgres";
 import type { Logger } from "pino";
 import type { Address, Hex } from "viem";
-import type { Deployment } from "../chain/deployment";
-import type { RuntimeConfig } from "../config";
-import type { ServiceClients } from "../chain/clients";
-import type { Sql } from "postgres";
+import type { OptionDeployment } from "../chain/deployment";
 
 export interface RpcLog {
   readonly address: Address;
@@ -16,8 +13,16 @@ export interface RpcLog {
   readonly blockTimestamp?: Hex | bigint | number | null;
 }
 
+export interface BlockHeader {
+  readonly number: bigint;
+  readonly hash: string;
+  readonly parentHash: string;
+  readonly timestamp: Date;
+}
+
+export type EventSource = "engine" | "pool" | "registry" | "volOracle" | "priceGuard" | "agentRouter" | "token" | "stock";
+
 export interface ChainEvent {
-  readonly log: RpcLog;
   readonly address: string;
   readonly blockNumber: bigint;
   readonly txHash: string;
@@ -25,49 +30,37 @@ export interface ChainEvent {
   readonly ts: Date;
   readonly eventName: string;
   readonly args: Record<string, unknown>;
-  readonly source: "engine" | "vault" | "token" | "hours" | "external";
-  readonly marketId?: number;
+  readonly source: EventSource;
 }
 
-export interface MarketInfo {
-  readonly id: number;
-  readonly symbol: string;
-  readonly token: Address;
-  readonly stock: Address;
-  readonly feed: Address;
-  readonly scale: bigint;
-  readonly poolFee: number;
-  readonly listedBlock: bigint;
-  readonly config: Record<string, unknown>;
-  readonly state?: Record<string, unknown>;
+export interface SeriesInfo {
+  readonly id: string;
+  readonly token: string;
+  readonly stock: string;
 }
 
 export interface IndexerContext {
   readonly tx: TransactionSql;
-  readonly deployment: Deployment;
+  readonly deployment: OptionDeployment;
   readonly logger: Logger;
-  readonly tokenToMarket: Map<string, number>;
-  readonly marketById: Map<number, MarketInfo>;
-  readonly stockToMarket: Map<string, number>;
-  readonly touchedAccounts: Set<string>;
-  readonly insertedTradeTxs: Set<string>;
-  readonly insertedVaultActionTxs: Set<string>;
-  readonly marketIds: Set<number>;
+  /** option token address -> series */
+  readonly seriesByToken: Map<string, SeriesInfo>;
+  /** stock token address -> ticker */
+  readonly stockNames: ReadonlyMap<string, string>;
+  readonly stockFeeds: ReadonlyMap<string, string>;
+  /** Reads the calldata of a transaction (to recover the signature of a vol post). May be unavailable. */
+  readonly transactionInput: (hash: string) => Promise<Hex | undefined>;
+  /** (token, account) pairs whose balance must be recomputed from the transfers table. */
+  readonly touchedBalances: Map<string, { token: string; account: string }>;
+  /** Series (re)listed in this batch: their tokens must be watched from now on. */
+  readonly newSeries: SeriesInfo[];
   readonly kinds: Set<string>;
-  readonly metaPatch: Record<string, unknown>;
-  readonly globalConfig: Record<string, unknown>;
-  readonly vaultConfig: Record<string, unknown>;
-  readonly marketHours: Record<string, unknown>;
-  readonly marketStatesById: Map<number, Record<string, unknown>>;
+  /** A trade, accrual or pool change happened: pool_nav and limits must be re-snapshotted. */
   snapshotNeeded: boolean;
-  registryNeeded: boolean;
-  hasLemniscateEvents: boolean;
+  /** Series structure changed: refresh their on-chain state at the next snapshot. */
+  seriesRefreshNeeded: boolean;
 }
 
-export interface IndexerRuntime {
-  readonly config: RuntimeConfig;
-  readonly clients: ServiceClients;
-  readonly sql: Sql;
+export interface IndexerRuntimeLogger {
   readonly logger: Logger;
-  readonly deployment: Deployment;
 }

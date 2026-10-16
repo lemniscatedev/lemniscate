@@ -1,0 +1,44 @@
+# Lemniscate keeper: scheduled jobs that send transactions
+# Installed to /etc/systemd/system by provision.sh and deploy.sh; restarted and stopped with lemniscate.target.
+# Exactly one keeper per database and deployment. This is a plain (non-template) unit, so systemd never runs two copies on
+# this host, and the keeper also takes a Postgres advisory lock and waits while another keeper holds it. Never copy this unit.
+[Unit]
+Description=Lemniscate keeper, scheduled jobs that send transactions
+Documentation=file:/opt/lemniscate/current/app/scripts/server/README.md
+PartOf=lemniscate.target
+After=network-online.target postgresql.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=lemniscate
+Group=lemniscate
+WorkingDirectory=/opt/lemniscate/current/app
+Environment=HOME=/var/lib/lemniscate
+Environment=KEEPER_KEYSTORE=/etc/lemniscate/keys/keeper.json
+Environment=KEEPER_KEYSTORE_PASSWORD_FILE=/etc/lemniscate/keys/keeper.password
+EnvironmentFile=/etc/lemniscate/lemniscate.env
+EnvironmentFile=/etc/lemniscate/db.env
+EnvironmentFile=-/etc/lemniscate/keeper.env
+ExecStart=/usr/local/bin/bun src/bin/keeper.ts
+Restart=always
+RestartSec=30
+TimeoutStopSec=30
+MemoryMax=512M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lemniscate-keeper
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lemniscate
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=lemniscate.target

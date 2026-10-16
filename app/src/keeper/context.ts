@@ -1,54 +1,36 @@
 import type { Logger } from "pino";
+import type { Address } from "viem";
 import type { ServiceClients } from "../chain/clients";
-import type { Deployment } from "../chain/deployment";
+import type { OptionDeployment } from "../chain/deployment";
 import type { RuntimeConfig } from "../config";
 import type { LemniscateDbClient } from "../db/client";
 import type { createTransactionQueue } from "./tx";
 
-export interface IndexedMarket {
-  symbol: string;
-  token: string;
-  stock: string;
-  feed: string;
-  config: Record<string, string | number>;
-  state: {
-    baseCarryWad: string;
-    baseCarryUpdatedAt: string;
-    lastAccrual: string;
-    regime: number;
-    lastUtilBps: number;
-    buysPaused: boolean;
-    vaultShort?: string;
-  };
-}
-
+/** What the indexer writes into keeper_status.meta for job 'indexer' (see indexer/ingest.ts buildStatusMeta), plus the
+ * two fields readIndexerMetadata adds from the row itself. The keeper reads state from the chain and the series /
+ * ticks / limits / pool tables; this is only the freshness signal. */
 export interface IndexerMetadata {
-  globalConfig?: { globalBuysPaused: boolean; maxGlobalExposureBps: number };
-  vaultConfig?: {
-    cashBufferBps: number;
-    hedgeRatioBps: number;
-    rebalanceThresholdBps: number;
-    maxHedgeSlippageBps: number;
-    minHedgeTradeUsdg: string;
-    maxTotalDeposits: string;
-    publicDeposits: boolean;
-    lockSeconds: number;
-  };
-  marketsById?: Record<string, IndexedMarket>;
   chainTimestamp?: string;
   chainTimeObservedAt?: string;
   lagBlocks?: number | string;
   pendingSnapshot?: boolean;
-  lastSnapshotAt?: string;
-  registrySyncPending?: boolean;
+  lastSnapshotAt?: string | null;
+  lastHeadBlock?: string;
+  lastIndexedBlock?: string;
   indexerLastOk?: string;
   indexerLastError?: string | null;
+  /** @deprecated Retired power-payoff vault settings; only the legacy hedge job still reads them (todo 14 replaces it). */
+  vaultConfig?: {
+    minHedgeTradeUsdg: string;
+    rebalanceThresholdBps: number;
+  };
 }
 
 export interface KeeperContext {
   sql: LemniscateDbClient["sql"];
   clients: ServiceClients;
-  deployment: Deployment;
+  /** The option-system deployment. The `vault` member exists only for the legacy hedge job (todo 14 removes it). */
+  deployment: OptionDeployment & { contracts: { vault: Address } };
   config: RuntimeConfig;
   logger: Logger;
   tx: ReturnType<typeof createTransactionQueue>;

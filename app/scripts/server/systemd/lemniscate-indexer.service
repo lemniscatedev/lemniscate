@@ -1,0 +1,41 @@
+# Lemniscate indexer: reads the chain into Postgres
+# Installed to /etc/systemd/system by provision.sh and deploy.sh; restarted and stopped with lemniscate.target.
+# No signing key.
+[Unit]
+Description=Lemniscate indexer, reads the chain into Postgres
+Documentation=file:/opt/lemniscate/current/app/scripts/server/README.md
+PartOf=lemniscate.target
+After=network-online.target postgresql.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=lemniscate
+Group=lemniscate
+WorkingDirectory=/opt/lemniscate/current/app
+Environment=HOME=/var/lib/lemniscate
+EnvironmentFile=/etc/lemniscate/lemniscate.env
+EnvironmentFile=/etc/lemniscate/db.env
+EnvironmentFile=-/etc/lemniscate/indexer.env
+ExecStart=/usr/local/bin/bun src/bin/indexer.ts
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+MemoryMax=512M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lemniscate-indexer
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lemniscate
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=lemniscate.target

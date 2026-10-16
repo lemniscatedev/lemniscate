@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { KEY_ROLES, KeyConfigError, keyVariables, resolveAddress, resolveKey } from "./keys";
 
 const routeSchema = z
   .string()
@@ -30,11 +31,33 @@ const envSchema = z.object({
   INDEXER_POLL_BASE_MS: z.coerce.number().int().positive().default(15000),
   INDEXER_POLL_IDLE_MS: z.coerce.number().int().positive().default(60000),
   DEPLOYMENT_FILE: z.string().min(1).default("/app/deployments/fork.json"),
-  KEEPER_ENABLED_JOBS: z.string().default("sessions,accrue,hedge,carry,risk,corp-actions,reference,earnings"),
+  // hedge (todo 14) is opt-in until the hedger lands. receipts and lister are new in todo 13.
+  KEEPER_ENABLED_JOBS: z.string().default("sessions,lister,accrue,risk,corp-actions,receipts,reference,earnings"),
   KEEPER_DRY_RUN: z.enum(["0", "1"]).default("0").transform((value) => value === "1"),
-  // Accrue every market once any market's last accrual is this old while positions are open. Paused marks fall
-  // back to the last accrued price, so a short interval keeps that price close to the feed.
-  KEEPER_ACCRUE_MAX_AGE_SECONDS: z.coerce.number().int().min(300).default(3600),
+  // Accrue a series once its last accrual is this old and somebody holds it. Spec: at least hourly, so 3600 is the cap.
+  KEEPER_ACCRUE_MAX_AGE_SECONDS: z.coerce.number().int().min(300).max(3600).default(3600),
+  // Series per engine.accrueMany transaction (a failing batch is split in half and retried).
+  KEEPER_ACCRUE_BATCH: z.coerce.number().int().min(1).max(200).default(40),
+  // The lister sends at most this many listing/archive transactions per run; the rest follows on the next run.
+  KEEPER_LISTER_MAX_TX: z.coerce.number().int().min(1).max(500).default(60),
+  // Minimum time between two automatic pauses for the same reason (the monitor never unpauses).
+  KEEPER_RISK_COOLDOWN_SECONDS: z.coerce.number().int().min(60).default(3600),
+  // Hedger (todo 14). Dry run is the default: the hedger simulates and reports, and never trades, until HEDGER_DRY_RUN=0.
+  HEDGER_DRY_RUN: z.enum(["0", "1"]).default("1").transform((value) => value === "1"),
+  HEDGER_BAND_BPS: z.coerce.number().int().min(1).max(10_000).default(50),
+  HEDGER_INTERVAL_SECONDS: z.coerce.number().int().min(60).default(1800),
+  HEDGER_COOLDOWN_SECONDS: z.coerce.number().int().min(0).default(120),
+  HEDGER_MIN_TRADE_USDG: z.coerce.number().min(0).default(25),
+  HEDGER_MAX_SLIPPAGE_BPS: z.coerce.number().int().min(1).max(1000).default(100),
+  HEDGER_TWAP_SECONDS: z.coerce.number().int().min(60).default(1800),
+  // Each spot trade is capped at this share of the USDG needed to move the pool about 1%.
+  HEDGER_MAX_LIQUIDITY_BPS: z.coerce.number().int().min(1).max(10_000).default(2500),
+  HEDGER_EQUITY_INTERVAL_SECONDS: z.coerce.number().int().min(60).default(3600),
+  HEDGER_CYCLE_SECONDS: z.coerce.number().int().min(10).default(60),
+  HEDGER_ADAPTER_ADDRESS: z.string().regex(/^(0x[0-9a-fA-F]{40})?$/).default(""),
+  HEDGER_PERP_ENABLED: z.enum(["0", "1"]).default("0").transform((value) => value === "1"),
+  ARCUS_API_URL: z.string().url().default("https://api.arcus.xyz"),
+  ARCUS_API_KEY_ID: z.string().default(""),
   API_PORT: z.coerce.number().int().min(1).max(65535).default(3101),
   CORS_ORIGINS: z.string().default(""),
   // Per-client-IP requests per minute on the public API (0 disables).
@@ -88,21 +111,57 @@ export function loadConfig(source: Record<string, string | undefined> = process.
   });
 }
 
-/** The keeper signing key is deliberately not part of the shared schema: only
- * the keeper entry point reads it, so other services never load a signer even
- * when they share an env file. */
-export function loadKeeperSigningKey(source: Record<string, string | undefined> = process.env): `0x${string}` | undefined {
-  const value = source.KEEPER_PRIVATE_KEY?.trim();
-  if (!value) return undefined;
-  if (!/^0x[0-9a-fA-F]{64}$/.test(value)) {
-    throw new ConfigurationError("Invalid service configuration: KEEPER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex key");
+/** Runs a key lookup and reports a KeyConfigError as a ConfigurationError (a key or password never appears in it). */
+function keyConfig<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (error) {
+    if (error instanceof KeyConfigError) throw new ConfigurationError(`Invalid service configuration: ${error.message}`);
+    throw error;
   }
-  return value as `0x${string}`;
 }
 
-/** Remove keeper-only secrets from a non-keeper process environment. */
+/** The keeper signing key is deliberately not part of the shared schema: only the keeper entry point reads it, so other
+ * services never load a signer even when they share an env file. KEEPER_PRIVATE_KEY (development) or
+ * KEEPER_KEYSTORE + KEEPER_KEYSTORE_PASSWORD_FILE; NODE_ENV=production accepts the keystore form only. */
+export function loadKeeperSigningKey(source: Record<string, string | undefined> = process.env): `0x${string}` | undefined {
+  return keyConfig(() => {
+    const key = resolveKey(KEY_ROLES.keeper, source);
+    if (!key) return undefined;
+    assertKeysSeparated(source);
+    return key;
+  });
+}
+
+/** The roles that must never share a key: the keeper (sessions, listing, accrual, pauses), the hedger (trades the
+ * pool's delta) and the vol signer (signs the sigma posts). One leaked key must not carry more than one role.
+ * VOL_SENDER pays gas for the vol posts; it may equal the vol signer (its default) but not the keeper or hedger. */
+const SEPARATED_KEYS = [KEY_ROLES.keeper, KEY_ROLES.hedger, KEY_ROLES.volSigner, KEY_ROLES.volSender] as const;
+
+/** Throws ConfigurationError when two of the keeper, hedger and vol signer keys are the same key, whether each one is a
+ * raw key or a keystore (compared by the address they control, so case and a 0x prefix do not hide a duplicate). Names
+ * the roles, never prints a key. */
+export function assertKeysSeparated(source: Record<string, string | undefined> = process.env): void {
+  keyConfig(() => {
+    const present = SEPARATED_KEYS.flatMap((spec) => {
+      const address = resolveAddress(spec, source);
+      return address ? [{ spec, address }] : [];
+    });
+    for (let i = 0; i < present.length; i++) {
+      for (let j = i + 1; j < present.length; j++) {
+        const a = present[i]!;
+        const b = present[j]!;
+        if (a.address !== b.address) continue;
+        if (a.spec === KEY_ROLES.volSigner && b.spec === KEY_ROLES.volSender) continue;
+        throw new KeyConfigError(`the ${a.spec.label} and ${b.spec.label} keys must be different keys`);
+      }
+    }
+  });
+}
+
+/** Remove keeper-only secrets (the raw key, or the keystore and password file locations) from a non-keeper process. */
 export function stripKeeperSecrets(source: Record<string, string | undefined> = process.env): void {
-  delete source.KEEPER_PRIVATE_KEY;
+  for (const variable of keyVariables(KEY_ROLES.keeper)) delete source[variable];
 }
 
 export function safeConfigSummary(config: RuntimeConfig): Record<string, string | number | boolean> {

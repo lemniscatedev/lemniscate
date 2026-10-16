@@ -49,3 +49,6 @@ coverage/
 *.sqlite*
 .DS_Store
 lcov.info
+
+# Local mainnet stack working directory (env files, logs, keystore copies).
+.mainnet/

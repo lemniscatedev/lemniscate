@@ -3,18 +3,21 @@ import { cors } from "hono/cors";
 import { bodyLimit } from "hono/body-limit";
 import type { ApiDependencies } from "./types";
 import { openApiDocument } from "./openapi";
-import { registerAccountRoutes } from "./routes/accounts";
-import { registerConfigRoutes } from "./routes/config";
 import { registerCorporateActionRoutes } from "./routes/corp-actions";
-import { registerEarningsRoutes } from "./routes/earnings";
+import { registerAccountRoutes } from "./routes/accounts";
+import { registerAccountActivityRoutes } from "./routes/account-activity";
+import { registerChainRoutes } from "./routes/chains";
+import { registerConfigRoutes } from "./routes/config";
 import { registerHealthRoutes } from "./routes/health";
-import { registerLeaderboardRoutes } from "./routes/leaderboard";
-import { registerMarketRoutes } from "./routes/markets";
-import { registerStatsRoutes } from "./routes/stats";
+import { registerIntentUserOp } from "./routes/intent-userop";
+import { registerPoolRoutes } from "./routes/pool";
+import { registerQuoteRoutes } from "./routes/quote";
+import { registerSeriesRoutes } from "./routes/series";
+import { registerVolRoutes } from "./routes/vol";
 import { registerUpcomingRoutes } from "./routes/upcoming";
-import { registerVaultRoutes } from "./routes/vault";
 import { safeErrorSummary } from "../log";
 import { rateLimit } from "./rate-limit";
+import { registerX402 } from "../x402";
 
 export function createApiApp(deps: ApiDependencies) {
   const allowedOrigins = new Set(deps.config.CORS_ORIGINS);
@@ -39,7 +42,8 @@ export function createApiApp(deps: ApiDependencies) {
     await next();
     deps.logger.info({
       method: context.req.method,
-      path: context.req.path,
+      // The route pattern, never the concrete path: account addresses must not reach the logs.
+      path: context.req.routePath,
       status: context.res.status,
       durationMs: Date.now() - startedAt,
     }, "API request");
@@ -59,18 +63,32 @@ export function createApiApp(deps: ApiDependencies) {
     windowMs: 60_000,
     clientIpHeader: deps.config.API_CLIENT_IP_HEADER,
   });
-  app.on(["POST", "PUT", "DELETE"], "/v1/*", writeLimiter);
+  app.on(["POST", "PUT", "DELETE"], "/v1/upcoming/*", writeLimiter);
+  // Quotes and intents are computed from Postgres and change nothing, so they get a roomier limit than signed writes.
+  app.use("/v1/quote", bodyLimit({ maxSize: 4 * 1024 }));
+  app.use("/v1/intent/*", bodyLimit({ maxSize: 4 * 1024 }));
+  const quoteLimiter = rateLimit({
+    limit: deps.config.API_RATE_LIMIT_PER_MINUTE === 0 ? 0 : 120,
+    windowMs: 60_000,
+    clientIpHeader: deps.config.API_CLIENT_IP_HEADER,
+  });
+  app.on(["POST"], ["/v1/quote", "/v1/intent/*"], quoteLimiter);
+
+  if (deps.x402) registerX402(app, deps.x402);
 
   registerHealthRoutes(app, deps);
   registerConfigRoutes(app, deps);
-  registerMarketRoutes(app, deps);
+  registerChainRoutes(app, deps);
+  registerSeriesRoutes(app, deps);
+  // Before the quote routes: its middleware rewrites /v1/intent/*?format=userop responses.
+  registerIntentUserOp(app, deps);
+  registerQuoteRoutes(app, deps);
+  registerVolRoutes(app, deps);
+  registerPoolRoutes(app, deps);
   registerAccountRoutes(app, deps);
-  registerVaultRoutes(app, deps);
+  registerAccountActivityRoutes(app, deps);
   registerCorporateActionRoutes(app, deps);
-  registerEarningsRoutes(app, deps);
   registerUpcomingRoutes(app, deps);
-  registerStatsRoutes(app, deps);
-  registerLeaderboardRoutes(app, deps);
 
   app.get("/v1/openapi.json", (context) => {
     try {

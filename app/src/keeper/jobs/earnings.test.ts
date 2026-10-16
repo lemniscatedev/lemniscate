@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { loadConfig, safeConfigSummary, type RuntimeConfig } from "../../config";
 import type { KeeperContext } from "../context";
 import { earningsSymbols } from "../../config/earnings";
-import { parseEarningsCsv, updateEarnings } from "./earnings";
+import { COMPANY_IR_SOURCE, parseEarningsCsv, syncCompanyIrEarnings, updateEarnings } from "./earnings";
 
 const wanted = new Set(["AAPL", "TSLA", "AMD"]);
 
@@ -78,13 +78,8 @@ function fakeContext(options: { key?: string; jobMeta?: Record<string, unknown> 
   const context = {
     sql,
     config: { ALPHAVANTAGE_API_KEY: options.key ?? "" } as RuntimeConfig,
-    metadata: async () => ({
-      marketsById: {
-        "0": { symbol: "NVDAROOT", config: { kind: 3 } },
-        "1": { symbol: "TSLA", config: { kind: 0 } },
-        "2": { symbol: "SPY", config: { kind: 0 } },
-      },
-    }),
+    metadata: async () => ({}),
+    deployment: { stocks: [{ name: "NVDA" }, { name: "TSLA" }, { name: "SPY" }] },
     now: () => new Date("2026-10-08T14:00:00.000Z"),
     logger: {
       info: (value: unknown) => logs.push(String(value)),
@@ -194,4 +189,18 @@ test("updateEarnings persists a capped failure count without leaking the provide
   expect(statements.filter((statement) => statement.query.includes("insert into keeper_status (job, meta)"))).toHaveLength(3);
   expect(JSON.stringify(logs)).not.toContain("provider-secret");
   expect(JSON.stringify(logs)).not.toContain("apikey=");
+});
+
+test("syncCompanyIrEarnings stores only confirmed future company dates under its own source", async () => {
+  const { context, statements } = fakeContext();
+  const result = await syncCompanyIrEarnings(context);
+  const deletion = statements.find((statement) => statement.query.includes("delete from earnings"));
+  expect(deletion?.values).toEqual([COMPANY_IR_SOURCE, "2026-10-08"]);
+  const inserts = statements.filter((statement) => statement.query.includes("insert into earnings"));
+  expect(inserts).toHaveLength(result.rows);
+  const symbols = inserts.map((statement) => statement.values[0]);
+  expect(symbols).toContain("NVDA");
+  expect(symbols).toContain("TSLA");
+  expect(symbols).not.toContain("PLTR"); // confirmed = false in the override file
+  expect(inserts.every((statement) => statement.values.at(-1) === COMPANY_IR_SOURCE)).toBe(true);
 });

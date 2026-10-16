@@ -1,54 +1,71 @@
-import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
+import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import type { ApiDependencies } from "../types";
-import { accountStatsResponseSchema, activityQuery, activityResponseSchema, addressParams, exportQuery, portfolioResponseSchema } from "../schemas";
-import { accountActivity, accountPortfolio } from "../../db/queries/accounts";
-import { accountStats } from "../../db/queries/account-stats";
-import { accountExport } from "../../db/queries/account-export";
+import { apiNow } from "../clock";
+import { accountParams, positionsResponseSchema } from "../option-schemas";
+import { loadNameContext, marketInputs, type NameContext } from "../quote/context";
+import { displayCost, looseWad, quoteUnits, usdgMicro, usdgText } from "../quote/model";
+import { trimDecimal } from "../quote/rows";
+import { accountPositions } from "../../db/queries/positions";
+import { openQueuedSells } from "../../db/queries/pool";
 
-const portfolioRoute = createRoute({
-  method: "get", path: "/v1/accounts/{address}/portfolio", tags: ["accounts"], request: { params: addressParams },
-  responses: { 200: { description: "Wallet positions, cost basis, and Writer Pool holdings", content: { "application/json": { schema: portfolioResponseSchema } } } },
-});
-const activityRoute = createRoute({
-  method: "get", path: "/v1/accounts/{address}/activity", tags: ["accounts"], request: { params: addressParams, query: activityQuery },
-  responses: { 200: { description: "Cursor-paginated wallet activity", content: { "application/json": { schema: activityResponseSchema } } } },
-});
-const statsRoute = createRoute({
-  method: "get", path: "/v1/accounts/{address}/stats", tags: ["accounts"], request: { params: addressParams },
-  responses: { 200: { description: "Lifetime trading statistics for a wallet", content: { "application/json": { schema: accountStatsResponseSchema } } } },
-});
-const exportRoute = createRoute({
-  method: "get", path: "/v1/accounts/{address}/export.csv", tags: ["accounts"], request: { params: addressParams, query: exportQuery },
-  responses: { 200: { description: "Complete wallet history as CSV", content: { "text/csv": { schema: z.string() } } } },
+const route = createRoute({
+  method: "get", path: "/v1/accounts/{address}/positions", tags: ["accounts"], request: { params: accountParams },
+  responses: { 200: { description: "Open positions: units after funding, value at bid, today's cost, cost basis and P&L", content: { "application/json": { schema: positionsResponseSchema } } } },
 });
 
 export function registerAccountRoutes(app: OpenAPIHono, deps: ApiDependencies): void {
-  app.openapi(portfolioRoute, async (context) => {
-    context.header("Cache-Control", "private, max-age=5");
+  app.openapi(route, async (context) => {
+    context.header("Cache-Control", "private, no-store");
     const { address } = context.req.valid("param");
-    return context.json(await accountPortfolio(deps, address), 200);
-  });
-  app.openapi(activityRoute, async (context) => {
-    context.header("Cache-Control", "private, max-age=5");
-    const { address } = context.req.valid("param");
-    const { type, cursor, limit } = context.req.valid("query");
-    return context.json(await accountActivity(deps, address, type, cursor, limit), 200);
-  });
-  app.openapi(statsRoute, async (context) => {
-    context.header("Cache-Control", "private, max-age=15");
-    const { address } = context.req.valid("param");
-    return context.json(await deps.cache.getOrLoad(`accounts:stats:${address}`, 10_000, () => accountStats(deps, address)), 200);
-  });
-  app.openapi(exportRoute, async (context) => {
-    const { address } = context.req.valid("param");
-    const { type, from, to } = context.req.valid("query");
-    const result = await accountExport(deps, address, type, from, to);
-    return context.body(result.csv, 200, {
-      "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="lemniscate-${address.slice(2, 8)}-${from ?? "start"}-${to ?? "today"}.csv"`,
-      "Cache-Control": "private, no-store",
-      "X-Lemniscate-History-Complete": String(result.historyComplete),
-      "X-Lemniscate-Truncated": String(result.truncated),
+    const now = await apiNow(deps);
+    const [rows, queued] = await Promise.all([accountPositions(deps, address), openQueuedSells(deps, address)]);
+    const contexts = new Map<string, NameContext | null>();
+    for (const name of new Set(rows.flatMap((row) => (row.name ? [row.name] : [])))) {
+      contexts.set(name, await loadNameContext(deps, name, now));
+    }
+
+    let totalValue = 0n;
+    let totalDaily = 0n;
+    let totalCost = 0n;
+    let totalPnl = 0n;
+    const positions = rows.map((row) => {
+      const cost = usdgMicro(row.boughtUsdg);
+      const proceeds = usdgMicro(row.soldUsdg);
+      const ctx = row.name ? contexts.get(row.name) ?? null : null;
+      const unitsWad = looseWad(row.units);
+      const quote = ctx && unitsWad > 0n
+        ? quoteUnits(
+          { isCall: row.isCall, speed: row.speed, strike: Number(row.strike), buyable: row.buyable, archived: row.archived },
+          marketInputs(ctx, { id: row.seriesId, speed: row.speed }), unitsWad, false)
+        : null;
+      totalCost += cost;
+      if (quote) {
+        totalValue += quote.usdg;
+        totalDaily += quote.dailyCostUsdg;
+        totalPnl += quote.usdg + proceeds - cost;
+      }
+      return {
+        seriesId: row.seriesId, name: row.name, isCall: row.isCall, speed: row.speed, strike: trimDecimal(row.strike), token: row.token,
+        balance: trimDecimal(row.balance), norm: trimDecimal(row.norm), units: trimDecimal(row.units),
+        valueAtBidUsdg: quote ? usdgText(quote.usdg) : null,
+        dailyCostUsdg: quote ? usdgText(quote.dailyCostUsdg) : null,
+        displayCost: quote ? displayCost(quote.dailyCostUsdg) : null,
+        costBasisUsdg: usdgText(cost),
+        proceedsUsdg: usdgText(proceeds),
+        pnlUsdg: quote ? usdgText(quote.usdg + proceeds - cost) : null,
+        session: quote ? quote.session : null,
+        sellQueued: quote?.sellQueued ?? false,
+      };
     });
+    return context.json({
+      account: address,
+      asOf: now.toISOString(),
+      positions,
+      totals: {
+        valueAtBidUsdg: usdgText(totalValue), dailyCostUsdg: usdgText(totalDaily),
+        costBasisUsdg: usdgText(totalCost), pnlUsdg: usdgText(totalPnl),
+      },
+      queuedSells: queued.map((item) => ({ ticket: item.ticket, seriesId: item.seriesId, tokens: trimDecimal(item.tokens), queuedAt: item.queuedAt })),
+    }, 200);
   });
 }

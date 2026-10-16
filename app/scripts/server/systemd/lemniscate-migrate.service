@@ -1,0 +1,26 @@
+# Applies the Drizzle migrations (app/drizzle) to the database in /etc/lemniscate/db.env. deploy.sh starts it after
+# switching /opt/lemniscate/current and before restarting any service; it is not part of the target.
+[Unit]
+Description=Lemniscate database migrations
+Documentation=file:/opt/lemniscate/current/app/scripts/server/README.md
+After=network-online.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=oneshot
+User=lemniscate
+Group=lemniscate
+WorkingDirectory=/opt/lemniscate/current/app
+Environment=HOME=/var/lib/lemniscate
+EnvironmentFile=/etc/lemniscate/lemniscate.env
+EnvironmentFile=/etc/lemniscate/db.env
+ExecStart=/usr/local/bin/bun src/bin/migrate.ts
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lemniscate-migrate
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lemniscate

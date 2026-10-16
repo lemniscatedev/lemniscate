@@ -1,0 +1,43 @@
+# Lemniscate vol-engine: signs volatility posts for the vol oracle (Python)
+# Installed to /etc/systemd/system by provision.sh and deploy.sh; restarted and stopped with lemniscate.target.
+# VOL_SEND=0 in lemniscate.env: posts are recorded as dry runs and nothing is sent until VOL_SEND=1.
+[Unit]
+Description=Lemniscate vol-engine, signs volatility posts for the vol oracle
+Documentation=file:/opt/lemniscate/current/app/scripts/server/README.md
+PartOf=lemniscate.target
+After=network-online.target postgresql.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=lemniscate
+Group=lemniscate
+WorkingDirectory=/opt/lemniscate/current/app
+Environment=HOME=/var/lib/lemniscate
+Environment=VOL_SIGNER_KEYSTORE=/etc/lemniscate/keys/vol-signer.json
+Environment=VOL_SIGNER_KEYSTORE_PASSWORD_FILE=/etc/lemniscate/keys/vol-signer.password
+EnvironmentFile=/etc/lemniscate/lemniscate.env
+EnvironmentFile=/etc/lemniscate/db.env
+EnvironmentFile=-/etc/lemniscate/vol-engine.env
+ExecStart=/opt/lemniscate/current/vol-engine/.venv/bin/vol-engine post --loop --interval ${VOL_INTERVAL_SECONDS}
+Restart=always
+RestartSec=30
+TimeoutStopSec=30
+MemoryMax=512M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lemniscate-vol-engine
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lemniscate
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=lemniscate.target

@@ -7,12 +7,17 @@
   "scripts": {
     "api": "bun run src/bin/api.ts",
     "smoke": "bun run scripts/smoke.ts",
-    "fixtures": "bun run scripts/fixtures.ts",
     "indexer": "bun run src/bin/indexer.ts",
     "keeper": "bun run src/bin/keeper.ts",
+    "mcp": "bun run src/bin/mcp.ts",
+    "mcp:http": "bun run src/bin/mcp.ts --http",
     "migrate": "bun run src/bin/migrate.ts",
+    "seed-vol-history": "bun run scripts/seed-vol-history.ts",
+    "sync-abi": "bun run scripts/sync-abi.ts",
+    "sync-abi:check": "bun run scripts/sync-abi.ts --check",
     "db:generate": "drizzle-kit generate",
     "typecheck": "tsc --noEmit",
+    "lint:copy": "bun run scripts/lint-copy.ts",
     "rpc-pool:check": "bun run src/chain/rpc-pool.check.ts"
   },
   "dependencies": {

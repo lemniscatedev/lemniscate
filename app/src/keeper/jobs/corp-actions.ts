@@ -1,4 +1,5 @@
-import { formatUnits, parseAbi, type Address } from "viem";
+import { encodeFunctionData, formatUnits, parseAbi, type Address } from "viem";
+import { PriceGuardAbi } from "../../abi";
 import { safeErrorSummary } from "../../log";
 import type { KeeperContext } from "../context";
 
@@ -63,78 +64,135 @@ async function fetchJson(url: string): Promise<unknown> {
   return response.json();
 }
 
+/** Issuer HTTP feeds are informational and rate-limited: asked at most this often. The on-chain reads run every time. */
+const HTTP_EVERY_MS = 3_600_000;
+/** PriceGuard is poked from this long before a multiplier change takes effect until this long after it. */
+const POKE_BEFORE_SECONDS = 3_600;
+const POKE_AFTER_SECONDS = 2 * 3_600;
+const POKE_EVERY_MS = 1_800_000;
+
+interface StockRef { symbol: string; stock: Address }
+
+/** What a stock token says about its multiplier right now. */
+export interface MultiplierReading { current: bigint; pending: bigint; effectiveAt: bigint }
+
+/** True while a staged multiplier change is close enough to its effective time that PriceGuard should be poked so it
+ * records the new baseline (it pauses buys and checks continuity by itself; the poke only advances its stored state). */
+export function pokeDue(reading: MultiplierReading, nowSeconds: bigint): boolean {
+  if (reading.pending === 0n || reading.pending === reading.current) {
+    // A change that just took effect (the token may already report it as current): keep poking for a while.
+    return reading.effectiveAt !== 0n && nowSeconds >= reading.effectiveAt && nowSeconds - reading.effectiveAt <= BigInt(POKE_AFTER_SECONDS);
+  }
+  if (reading.effectiveAt === 0n) return false;
+  return nowSeconds + BigInt(POKE_BEFORE_SECONDS) >= reading.effectiveAt && nowSeconds <= reading.effectiveAt + BigInt(POKE_AFTER_SECONDS);
+}
+
+/** R4: records issuer corporate actions and staged multiplier changes, checks index continuity after they take
+ * effect, and pokes PriceGuard around the effective time. It never changes a price or a series itself: PriceGuard
+ * reacts on chain (pauses buys around a split-class change), the keeper informs and pokes. */
 export async function updateCorporateActions(context: KeeperContext): Promise<Record<string, unknown>> {
   const metadata = await context.metadata();
   const now = context.now(metadata);
-  const markets = Object.values(metadata.marketsById ?? {});
-  if (!markets.length) throw new Error("Waiting for indexed market registry before corporate-action checks");
-  const responses = await Promise.allSettled([
-    fetchJson("https://api.robinhood.com/rhj/assets"),
-    fetchJson("https://api.robinhood.com/rhj/corporate-actions"),
-  ]);
-  let stored = 0;
+  const nowSeconds = BigInt(Math.floor(now.getTime() / 1000));
+  const markets: StockRef[] = context.deployment.stocks.map((entry) => ({ symbol: entry.name, stock: entry.stock as Address }));
+  if (!markets.length) throw new Error("Deployment lists no stocks");
   const failures: string[] = [];
-  for (const response of responses) if (response.status === "rejected") {
-    const error = safeErrorSummary(response.reason);
-    failures.push(error.message);
-    context.logger.warn({ err: error }, "Corporate-action HTTP source unavailable");
-  }
-  const assets = responses[0]!;
-  if (assets.status === "fulfilled") for (const value of array(object(assets.value).assets)) {
-    const row = object(value);
-    const market = markets.find((candidate) => matches(row, candidate.stock));
-    const current = decimal(row.currentMultiplier);
-    const pending = decimal(row.pendingMultiplier);
-    if (!market || !pending || !current || pending === current) continue;
-    const effective = typeof row.pendingMultiplierEffectiveTime === "string" ? new Date(row.pendingMultiplierEffectiveTime) : null;
-    const effectiveAt = effective && Number.isFinite(effective.getTime()) ? effective : null;
-    await upsert(context, {
-      id: `pending:${market.stock}:${effectiveAt?.toISOString() ?? pending}`, symbol: market.symbol,
-      kind: "multiplier", status: "scheduled", processDate: null, effectiveAt,
-      oldMult: current, newMult: pending, details: {}, source: "robinhood",
-    });
-    stored++;
-  }
-  const actions = responses[1]!;
-  if (actions.status === "fulfilled") for (const action of normalizeCorporateActions(actions.value, markets)) {
-    await upsert(context, action); stored++;
-  }
+  let stored = 0;
 
   const status = await context.sql<{ meta: Record<string, unknown> }[]>`select meta from keeper_status where job='corp-actions'`;
-  const today = now.toISOString().slice(0, 10);
-  let multiplierCheckDate = String(status[0]?.meta.multiplierCheckDate ?? "");
-  if (multiplierCheckDate !== today) {
-    const calls = markets.flatMap((market) => (["uiMultiplier", "newUIMultiplier", "effectiveAt"] as const)
-      .map((functionName) => ({ address: market.stock as Address, abi: multiplierAbi, functionName })));
-    const result = await context.clients.stateClient.multicall({ contracts: calls, allowFailure: true });
-    for (let i = 0; i < markets.length; i++) {
-      const values = result.slice(i * 3, i * 3 + 3);
-      if (values.some((value) => value.status !== "success")) {
-        failures.push(`Multiplier read failed for ${markets[i]!.symbol}`); continue;
-      }
-      const [current, pending, effective] = values.map((value) => value.result as bigint);
-      if (current === undefined || pending === undefined || effective === undefined || pending === 0n || pending === current || effective <= BigInt(Math.floor(now.getTime() / 1000))) continue;
+  const prior = status[0]?.meta ?? {};
+  const lastHttpAt = Date.parse(String(prior.lastHttpAt ?? ""));
+  let httpAt = String(prior.lastHttpAt ?? "");
+  if (!Number.isFinite(lastHttpAt) || Date.now() - lastHttpAt >= HTTP_EVERY_MS) {
+    const responses = await Promise.allSettled([
+      fetchJson("https://api.robinhood.com/rhj/assets"),
+      fetchJson("https://api.robinhood.com/rhj/corporate-actions"),
+    ]);
+    for (const response of responses) if (response.status === "rejected") {
+      const error = safeErrorSummary(response.reason);
+      failures.push(error.message);
+      context.logger.warn({ err: error }, "Corporate-action HTTP source unavailable");
+    }
+    const assets = responses[0]!;
+    if (assets.status === "fulfilled") for (const value of array(object(assets.value).assets)) {
+      const row = object(value);
+      const market = markets.find((candidate) => matches(row, candidate.stock));
+      const current = decimal(row.currentMultiplier);
+      const pending = decimal(row.pendingMultiplier);
+      if (!market || !pending || !current || pending === current) continue;
+      const effective = typeof row.pendingMultiplierEffectiveTime === "string" ? new Date(row.pendingMultiplierEffectiveTime) : null;
+      const effectiveAt = effective && Number.isFinite(effective.getTime()) ? effective : null;
       await upsert(context, {
-        id: `multiplier:${markets[i]!.stock}:${effective}`, symbol: markets[i]!.symbol, kind: "multiplier",
+        id: `pending:${market.stock}:${effectiveAt?.toISOString() ?? pending}`, symbol: market.symbol,
+        kind: "multiplier", status: "scheduled", processDate: null, effectiveAt,
+        oldMult: current, newMult: pending, details: {}, source: "robinhood",
+      });
+      stored++;
+    }
+    const actions = responses[1]!;
+    if (actions.status === "fulfilled") for (const action of normalizeCorporateActions(actions.value, markets)) {
+      await upsert(context, action); stored++;
+    }
+    httpAt = new Date().toISOString();
+  }
+
+  // On-chain multiplier state of every launch stock, every run.
+  const calls = markets.flatMap((market) => (["uiMultiplier", "newUIMultiplier", "effectiveAt"] as const)
+    .map((functionName) => ({ address: market.stock, abi: multiplierAbi, functionName })));
+  const result = await context.clients.stateClient.multicall({ contracts: calls, allowFailure: true });
+  const pokes: Address[] = [];
+  const pokedAt = (typeof prior.pokedAt === "object" && prior.pokedAt ? prior.pokedAt : {}) as Record<string, number>;
+  for (let i = 0; i < markets.length; i++) {
+    const market = markets[i]!;
+    const values = result.slice(i * 3, i * 3 + 3);
+    if (values.some((value) => value.status !== "success")) {
+      failures.push(`Multiplier read failed for ${market.symbol}`); continue;
+    }
+    const [current, pending, effective] = values.map((value) => value.result as bigint) as [bigint, bigint, bigint];
+    if (pending !== 0n && pending !== current && effective > nowSeconds) {
+      await upsert(context, {
+        id: `multiplier:${market.stock}:${effective}`, symbol: market.symbol, kind: "multiplier",
         status: "scheduled", processDate: null, effectiveAt: new Date(Number(effective) * 1000),
         oldMult: formatUnits(current, 18), newMult: formatUnits(pending, 18), details: {}, source: "onchain",
       });
       stored++;
     }
-    multiplierCheckDate = today;
+    if (pokeDue({ current, pending, effectiveAt: effective }, nowSeconds) && Date.now() - (pokedAt[market.stock] ?? 0) >= POKE_EVERY_MS) {
+      pokes.push(market.stock);
+    }
   }
 
-  const pending = await context.sql<{ id: string; market_id: number; effective_at: Date | string }[]>`
-    select a.id,m.id as market_id,a.effective_at from corp_actions a join markets m on a.symbol=m.symbol
-    where a.effective_at <= ${new Date(now.getTime() - 3600000).toISOString()} and a.verified_continuity is null`;
+  const poked: string[] = [];
+  for (const stock of pokes) {
+    try {
+      const sent = await context.tx.submit({
+        label: "corp-actions:poke", to: context.deployment.contracts.priceGuard as Address,
+        data: encodeFunctionData({ abi: PriceGuardAbi, functionName: "poke", args: [stock] }),
+      });
+      if (!sent.simulated) pokedAt[stock] = Date.now();
+      poked.push(stock);
+    } catch (error) {
+      const summary = safeErrorSummary(error);
+      failures.push(`Poke failed: ${summary.message}`);
+      context.logger.warn({ stock, err: summary }, "PriceGuard poke failed");
+    }
+  }
+
+  // Index continuity an hour after a change took effect: the spot (multiplier embedded in the feed) must not jump.
+  const stockOf = new Map(markets.map((market) => [market.symbol, market.stock]));
+  const pending = await context.sql<{ id: string; symbol: string; effective_at: Date | string }[]>`
+    select id, symbol, effective_at from corp_actions
+    where effective_at <= ${new Date(now.getTime() - 3600000).toISOString()} and verified_continuity is null`;
   for (const action of pending) {
+    const stockToken = stockOf.get(action.symbol);
+    if (!stockToken) continue;
     const effectiveAt = new Date(action.effective_at);
     const from = new Date(effectiveAt.getTime() - 3600000);
     const to = new Date(effectiveAt.getTime() + 3600000);
     const rows = await context.sql<{ before: string | null; after: string | null }[]>`
-      select avg("index") filter(where ts < ${effectiveAt.toISOString()}) as before,
-        avg("index") filter(where ts >= ${effectiveAt.toISOString()}) as after
-      from ticks where market_id=${action.market_id} and ts between ${from.toISOString()} and ${to.toISOString()}`;
+      select avg(spot) filter(where ts < ${effectiveAt.toISOString()}) as before,
+        avg(spot) filter(where ts >= ${effectiveAt.toISOString()}) as after
+      from ticks where stock_token=${stockToken} and ts between ${from.toISOString()} and ${to.toISOString()}`;
     const before = Number(rows[0]?.before ?? 0);
     const after = Number(rows[0]?.after ?? 0);
     if (!(before > 0 && after > 0)) continue;
@@ -142,5 +200,5 @@ export async function updateCorporateActions(context: KeeperContext): Promise<Re
     await context.sql`update corp_actions set verified_continuity=${verified},status='completed',updated_at=now() where id=${action.id}`;
     if (!verified) context.logger.warn({ action: action.id }, "Corporate-action index continuity differs by more than 2%");
   }
-  return { stored, failures, multiplierCheckDate };
+  return { stored, failures, poked, pokedAt, lastHttpAt: httpAt };
 }

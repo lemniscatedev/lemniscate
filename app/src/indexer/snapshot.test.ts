@@ -1,93 +1,84 @@
-// Regression for the snapshot fan-out report: thousands of queued accounts
-// (e.g. from dust transfers) used to be read in one allowFailure:false
-// multicall fanned out in parallel, so a provider throttle failed the whole
-// snapshot and cooled every RPC endpoint.
-import { expect, test } from "bun:test";
-import { decodeFunctionData, encodeFunctionResult, parseAbi, type Hex } from "viem";
-import { loadConfig } from "../config";
-import { createRpcPool } from "../chain/rpc-pool";
-import { createClients } from "../chain/clients";
-import { createLogger } from "../log";
-import { ACCOUNT_CHUNK_SIZE, MAX_ACCOUNTS_PER_SNAPSHOT, takeSnapshot, type SnapshotRuntime } from "./snapshot";
+import { describe, expect, test } from "bun:test";
+import type { ServiceClients } from "../chain/clients";
+import { ADDR, b32, testDeployment } from "./test-support";
+import { createRpcSnapshotReader } from "./snapshot";
 
-const config = loadConfig({
-  DATABASE_URL: "postgres://u:p@localhost/db", POSTGRES_PASSWORD: "x", ALCHEMY_API_KEYS: "k1,k2", NETWORK: "mainnet",
-});
-const a = (n: number) => `0x${n.toString(16).padStart(40, "0")}` as Hex;
-const deployment = { chainId: 4663, network: "mainnet", deployBlock: 1, deployer: a(1), admin: a(1), keeper: a(1),
-  contracts: { engine: a(2), vault: a(3), marketHours: a(4), lens: a(5), hedgeAdapter: a(6), usdg: a(7),
-    engineImpl: a(8), vaultImpl: a(9), marketHoursImpl: a(10) }, markets: [] };
-const aggregate3 = parseAbi(["function aggregate3((address,bool,bytes)[]) returns ((bool,bytes)[])"]);
-// Sixteen zero words decode as an empty array, a zeroed struct or false/0.
-const ZERO_WORD = `0x${"0".repeat(64 * 16)}` as Hex;
+const WAD = 10n ** 18n;
 
-async function run(accounts: number, ethCallLimit: number, failing = new Set<string>()) {
-  let ethCalls = 0;
-  let largestBatch = 0;
-  const pool = createRpcPool(config, { requestFactory: (endpoint) => async (request) => {
-    if (request.method === "eth_getBlockByNumber") return { timestamp: "0x6700000" };
-    if (request.method === "eth_call") {
-      ethCalls++;
-      if (ethCalls > ethCallLimit) {
-        throw Object.assign(new Error(`HTTP request failed. Status: 429 (${endpoint.id})`), { status: 429 });
-      }
-      const data = (request.params as [{ data: Hex }])[0].data;
-      const calls = decodeFunctionData({ abi: aggregate3, data }).args[0] as readonly (readonly [Hex, boolean, Hex])[];
-      largestBatch = Math.max(largestBatch, calls.length);
-      const results = calls.map(([, , callData]) => {
-        const account = callData.length === 74 ? `0x${callData.slice(34)}`.toLowerCase() : undefined;
-        if (account && failing.has(account)) return [false, "0x"] as const;
-        return [true, ZERO_WORD] as const;
+interface Call { address: string; functionName: string; args?: readonly unknown[] }
+
+/** A viem-shaped client whose multicall answers from a script, recording every batch. */
+function fakeClients(answer: (call: Call) => unknown) {
+  const batches: { size: number; blockNumber: bigint }[] = [];
+  const stateClient = {
+    multicall: async ({ contracts, blockNumber }: { contracts: Call[]; allowFailure: boolean; blockNumber: bigint }) => {
+      batches.push({ size: contracts.length, blockNumber });
+      return contracts.map((call) => {
+        try {
+          return { status: "success", result: answer(call) };
+        } catch {
+          return { status: "failure", error: new Error("reverted") };
+        }
       });
-      return encodeFunctionResult({ abi: aggregate3, functionName: "aggregate3", result: results as never });
-    }
-    if (request.method === "eth_getLogs") return [];
-    throw new Error(`unexpected ${request.method}`);
-  } });
-  const clients = createClients(config, pool);
-  const written: string[] = [];
-  const tx = Object.assign(async (strings: TemplateStringsArray, ...values: unknown[]) => {
-    if (strings.join("?").includes("INSERT INTO vault_account_state")) written.push(String(values[0]));
-    return [];
-  }, { notify: async () => undefined });
-  const sql = { begin: async (fn: (transaction: typeof tx) => Promise<unknown>) => fn(tx) };
-  const queued = new Set(Array.from({ length: accounts }, (_, i) => a(0x1000 + i).toLowerCase()));
-  const runtime = { clients, sql, deployment, marketsById: new Map(), marketStatesById: new Map(),
-    globalConfig: {}, vaultConfig: {}, marketHours: {}, logger: createLogger("silent") } as unknown as SnapshotRuntime;
-  const result = await takeSnapshot(runtime, 100n, queued).then((value) => value, (error: Error) => error);
-  const logs = await pool.requestBatch("logs", [{ method: "eth_getLogs", params: [{}] }])
-    .then(() => "logs ok", (error: Error) => error.message);
-  return { ethCalls, largestBatch, result, written, logs,
-    cooling: pool.stats().endpoints.filter((endpoint) => endpoint.cooling).length };
+    },
+  };
+  return { clients: { stateClient } as unknown as ServiceClients, batches };
 }
 
-test("a dust-transfer account backlog is chunked, capped and carried over instead of failing the snapshot", async () => {
-  const outcome = await run(5_000, 300);
-  expect(outcome.result).not.toBeInstanceOf(Error);
-  expect(outcome.logs).toBe("logs ok");
-  expect(outcome.cooling).toBe(0);
-  // One core read plus one eth_call per chunk of accounts, capped per snapshot.
-  expect(outcome.ethCalls).toBe(1 + MAX_ACCOUNTS_PER_SNAPSHOT / ACCOUNT_CHUNK_SIZE);
-  expect(outcome.largestBatch).toBeLessThanOrEqual(ACCOUNT_CHUNK_SIZE * 2);
-  expect(outcome.written.length).toBe(MAX_ACCOUNTS_PER_SNAPSHOT);
-  const processed = (outcome.result as Awaited<ReturnType<typeof takeSnapshot>>).processedAccounts;
-  expect(processed.size).toBe(MAX_ACCOUNTS_PER_SNAPSHOT);
-});
+describe("snapshot reader", () => {
+  test("reads the pool in the units the interfaces document", async () => {
+    const { clients, batches } = fakeClients((call) => {
+      switch (call.functionName) {
+        case "balanceOf": return call.args?.[0] === ADDR.pool ? 1_500_000_000n : 75_000_000n;
+        case "hedgeEquity": return [250_000_000n, 1_790_000_000n];
+        case "totalLiability": return 400n * WAD;
+        case "nav": return -5n * WAD;
+        case "navPerShare": return 1_050_000_000_000_000_000n;
+        default: throw new Error(call.functionName);
+      }
+    });
+    const reader = createRpcSnapshotReader(clients, testDeployment());
+    const pool = await reader.readPool(77n);
+    expect(pool).toEqual({
+      usdgBalance: 1_500_000_000n, hedgeEquity: 250_000_000n, liabilityWad: 400n * WAD, navWad: -5n * WAD,
+      navPerShareWad: 1_050_000_000_000_000_000n, reserveUsdg: 75_000_000n,
+    });
+    expect(batches).toEqual([{ size: 6, blockNumber: 77n }]);
+  });
 
-test("failed account reads stay queued while the snapshot itself succeeds", async () => {
-  const bad = a(0x1000 + 3).toLowerCase();
-  const outcome = await run(10, 1e9, new Set([bad]));
-  expect(outcome.result).not.toBeInstanceOf(Error);
-  const processed = (outcome.result as Awaited<ReturnType<typeof takeSnapshot>>).processedAccounts;
-  expect(processed.size).toBe(9);
-  expect(processed.has(bad)).toBe(false);
-  expect(outcome.written).not.toContain(bad);
-});
+  test("a core pool read that fails fails the snapshot instead of storing a guess", async () => {
+    const { clients } = fakeClients((call) => {
+      if (call.functionName === "nav") throw new Error("revert");
+      return [1n, 2n];
+    });
+    await expect(createRpcSnapshotReader(clients, testDeployment()).readPool(1n)).rejects.toThrow(/pool.nav/);
+  });
 
-test("a throttled account chunk leaves the remaining accounts queued without failing the snapshot", async () => {
-  // The core read and two account chunks succeed, then the provider throttles.
-  const outcome = await run(1_000, 3);
-  expect(outcome.result).not.toBeInstanceOf(Error);
-  const processed = (outcome.result as Awaited<ReturnType<typeof takeSnapshot>>).processedAccounts;
-  expect(processed.size).toBe(2 * ACCOUNT_CHUNK_SIZE);
+  test("stocks: price, both vol speeds and net greeks; a missing vol post is undefined, not an error", async () => {
+    const { clients } = fakeClients((call) => {
+      if (call.functionName === "read" && call.address === ADDR.priceGuard) {
+        return { s: 120n * WAD, session: 1, fresh: true, buysPaused: false, updatedAt: 1_790_000_000n };
+      }
+      if (call.functionName === "read" && call.address === ADDR.volOracle) {
+        if (call.args?.[1] === 1) throw new Error("no post");
+        return { sigmaBps: 5200n, stale: true };
+      }
+      if (call.functionName === "netGreeks") return [-2n * WAD, WAD / 10n, 5n * WAD];
+      throw new Error(call.functionName);
+    });
+    const [nvda] = await createRpcSnapshotReader(clients, testDeployment()).readStocks([ADDR.nvda], 10n);
+    expect(nvda).toMatchObject({
+      stock: ADDR.nvda, spotWad: 120n * WAD, session: 1, fresh: true, buysPaused: false, updatedAt: 1_790_000_000n,
+      volDaily: { sigmaBps: 5200, stale: true }, volWeekly: undefined, deltaWad: -2n * WAD, gammaWad: WAD / 10n, vegaWad: 5n * WAD,
+    });
+  });
+
+  test("series are read in chunks of at most 150 calls", async () => {
+    const ids = Array.from({ length: 320 }, (_, i) => b32(i + 1));
+    const { clients, batches } = fakeClients(() => ({ norm: WAD - 5n, lastAccrual: 1_790_000_000n, buyable: true, archived: false }));
+    const readings = await createRpcSnapshotReader(clients, testDeployment()).readSeries(ids, 5n);
+    expect(readings).toHaveLength(320);
+    expect(readings[0]).toEqual({ id: b32(1), norm: WAD - 5n, lastAccrual: 1_790_000_000n, buyable: true, archived: false });
+    expect(batches.map((batch) => batch.size)).toEqual([150, 150, 20]);
+  });
 });

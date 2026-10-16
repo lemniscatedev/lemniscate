@@ -1,9 +1,16 @@
+import { knownSecrets } from "./keys";
 import pino, { type Logger } from "pino";
 
 const redactPaths = [
   "DATABASE_URL",
   "ALCHEMY_API_KEYS",
   "KEEPER_PRIVATE_KEY",
+  "HEDGER_PRIVATE_KEY",
+  "VOL_SIGNER_KEY",
+  "VOL_SENDER_KEY",
+  "PAYMASTER_SIGNER_KEY",
+  "X402_SETTLER_KEY",
+  "AGENT_KEY",
   "FORK_RPC_URL",
   "RPC_URL_OVERRIDE",
   "*.url",
@@ -44,6 +51,7 @@ export function safeErrorSummary(error: unknown): { name: string; message: strin
     ...(process.env.ALCHEMY_API_KEYS ?? "").split(","),
     process.env.DATABASE_URL ?? "",
     process.env.KEEPER_PRIVATE_KEY ?? "",
+    ...knownSecrets(),
     process.env.FORK_RPC_URL ?? "",
     process.env.RPC_URL_OVERRIDE ?? "",
   ].filter((value) => value.length > 0);

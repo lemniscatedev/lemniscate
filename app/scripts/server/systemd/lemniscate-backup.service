@@ -1,0 +1,16 @@
+# Nightly pg_dump of the Lemniscate database into /var/backups/lemniscate, 14 days kept (backup.sh, installed by
+# provision.sh and deploy.sh as /usr/local/sbin/lemniscate-backup). Run by lemniscate-backup.timer; by hand:
+#   systemctl start lemniscate-backup.service && journalctl -u lemniscate-backup -n 20
+[Unit]
+Description=Lemniscate database backup
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/lemniscate-backup
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lemniscate-backup

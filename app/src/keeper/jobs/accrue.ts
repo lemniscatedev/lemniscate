@@ -1,65 +1,85 @@
-import { encodeFunctionData } from "viem";
-import { LemniscateEngineAbi as engineAbi } from "../../abi/LemniscateEngine";
-import type { IndexerMetadata, KeeperContext } from "../context";
+import { encodeFunctionData, type Address, type Hex } from "viem";
+import { OptionEngineAbi, OptionTokenAbi } from "../../abi";
+import { safeErrorSummary } from "../../log";
+import type { KeeperContext } from "../context";
+import { chunkedMulticall, createSeriesReader, type ChainSeries } from "../series";
 
-function hasNoPositions(context: KeeperContext, metadata: IndexerMetadata): boolean {
-  // Only a complete, caught-up observation can justify suppressing a write.
-  // Missing/failed/stale indexer data retains the previous accrual behavior.
-  const age = Date.now() - Date.parse(metadata.indexerLastOk ?? "");
-  const lag = Number(metadata.lagBlocks);
-  if (!(age >= 0 && age <= 120_000) || metadata.indexerLastError !== null
-    || !Number.isFinite(lag) || lag < 0 || lag > 60
-    || metadata.pendingSnapshot !== false || metadata.registrySyncPending !== false) return false;
-  const markets = metadata.marketsById ?? {};
-  if (!Object.keys(markets).every((id, index) => id === String(index))) return false;
-  if (!context.deployment.markets.length || !context.deployment.markets.every(({ id, token }) =>
-    markets[String(id)]?.token?.toLowerCase() === token.toLowerCase())) return false;
-  return Object.values(markets).every((market) =>
-    typeof market.state?.vaultShort === "string" && /^0+$/.test(market.state.vaultShort));
+/** At a session boundary every series with supply is accrued if anything at all has elapsed since its last accrual. */
+const BOUNDARY_MIN_ELAPSED_SECONDS = 30n;
+
+/** Splits `ids` into engine.accrueMany transactions of at most `batchSize`. When a transaction fails (one series that
+ * reverts, or a batch that does not fit the gas limit) the batch is halved and retried, so a single bad series
+ * cannot stop the others from being accrued. Returns what was accrued and what could not be. */
+export async function accrueInBatches(
+  context: Pick<KeeperContext, "tx" | "deployment" | "logger">,
+  ids: readonly Hex[],
+  batchSize: number,
+): Promise<{ accrued: Hex[]; failed: { id: Hex; error: string }[]; transactions: number; simulated: boolean }> {
+  const engine = context.deployment.contracts.engine as Address;
+  const accrued: Hex[] = [];
+  const failed: { id: Hex; error: string }[] = [];
+  let transactions = 0;
+  let simulated = false;
+  const queue: Hex[][] = [];
+  for (let i = 0; i < ids.length; i += batchSize) queue.push(ids.slice(i, i + batchSize));
+  while (queue.length) {
+    const batch = queue.shift()!;
+    try {
+      const result = await context.tx.submit({
+        label: "accrue", to: engine,
+        data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "accrueMany", args: [batch] }),
+      });
+      transactions++;
+      simulated ||= result.simulated;
+      accrued.push(...batch);
+    } catch (error) {
+      const summary = safeErrorSummary(error);
+      // A held nonce or a missing signer is not the batch's fault: splitting would only repeat the failure.
+      if (/nonce .* (is held|is unresolved|remains held)|local signer is not configured|existing pending transaction/i.test(summary.message)) throw error;
+      if (batch.length === 1) {
+        failed.push({ id: batch[0]!, error: summary.message });
+        context.logger.warn({ id: batch[0], err: summary }, "Accrual of one series failed; the others continue");
+        continue;
+      }
+      const half = Math.ceil(batch.length / 2);
+      queue.unshift(batch.slice(0, half), batch.slice(half));
+    }
+  }
+  return { accrued, failed, transactions, simulated };
 }
 
-async function confirmBoundaryIdle(context: KeeperContext, metadata: IndexerMetadata): Promise<boolean> {
-  // A buy just before a boundary may not be confirmed/indexed yet. Verify at
-  // the current head before suppressing a forced poke, without adding another
-  // periodic RPC poller. An unknown result retains the existing boundary write.
-  const ids = Object.keys(metadata.marketsById ?? {}).map(Number);
-  if (!ids.every((id, index) => id === index)) return false;
-  try {
-    const contracts = [
-      { address: context.deployment.contracts.engine, abi: engineAbi, functionName: "marketCount" as const },
-      ...ids.map((id) => ({ address: context.deployment.contracts.engine, abi: engineAbi,
-        functionName: "getState" as const, args: [id] as const })),
-    ];
-    const [count, ...states] = await context.clients.stateClient.multicall({
-      allowFailure: false,
-      contracts,
-    });
-    return Number(count) === ids.length && states.length === ids.length
-      && states.every((state) => typeof state === "object" && state !== null
-        && "vaultShort" in state && state.vaultShort === 0n);
-  } catch {
-    return false;
-  }
-}
+/** R2: accrues every series with outstanding supply whose last accrual is older than KEEPER_ACCRUE_MAX_AGE_SECONDS
+ * (default one hour). Due-ness comes from the chain's own `lastAccrual`, so an hour that was skipped (keeper down, RPC
+ * outage, failed batch) is caught up by the next run, and nothing is sent when nothing is due. `force` is the session
+ * boundary poke: it accrues whatever has any time elapsed, so funding is settled at the old regime before the new one. */
+export function createAccrueJob(context: KeeperContext) {
+  const reader = createSeriesReader(context);
+  return async (force = false): Promise<Record<string, unknown>> => {
+    const metadata = await context.metadata();
+    const nowSeconds = BigInt(Math.floor(context.now(metadata).getTime() / 1000));
+    const maxAge = BigInt(context.config.KEEPER_ACCRUE_MAX_AGE_SECONDS);
+    const threshold = force ? BOUNDARY_MIN_ELAPSED_SECONDS : maxAge;
+    const all = await reader.readAll();
+    const aged = all.filter((series) => nowSeconds - series.lastAccrual >= threshold);
+    if (!aged.length) return { series: all.length, due: 0, accrued: 0, idle: true };
 
-export async function accrueStale(context: KeeperContext, force = false): Promise<Record<string, unknown>> {
-  const metadata = await context.metadata();
-  const states = Object.values(metadata.marketsById ?? {});
-  if (!states.length) throw new Error("Waiting for indexed market state");
-  if (states.some((market) => !/^\d+$/.test(market.state?.lastAccrual ?? ""))) {
-    throw new Error("Waiting for complete indexed accrual state");
-  }
-  const now = context.now(metadata).getTime() / 1000;
-  const maxAge = context.config.KEEPER_ACCRUE_MAX_AGE_SECONDS;
-  const stale = states.some((market) => now - Number(market.state.lastAccrual) >= maxAge);
-  // Trades accrue in the engine before minting/burning. Keep hedging enabled
-  // independently: the last seller may leave a hedge that needs unwinding.
-  if (hasNoPositions(context, metadata)
-    && (!force || await confirmBoundaryIdle(context, metadata))) return { stale, idle: true };
-  if (!force && !stale) return { stale: false, idle: false };
-  const result = await context.tx.submit({
-    label: "accrue", to: context.deployment.contracts.engine,
-    data: encodeFunctionData({ abi: engineAbi, functionName: "accrueAll" }),
-  });
-  return { stale, idle: false, dryRun: result.simulated, lastAccruedAt: context.now(metadata).toISOString() };
+    // Only series somebody holds can change: a zero-supply series has nothing to shrink.
+    const supplies = await chunkedMulticall(context, aged.map((series: ChainSeries) => ({
+      address: series.token, abi: OptionTokenAbi, functionName: "totalSupply",
+    }))) as bigint[];
+    const due = aged.filter((_, index) => BigInt(supplies[index]!) > 0n);
+    if (!due.length) return { series: all.length, due: 0, accrued: 0, idle: true };
+
+    const result = await accrueInBatches(context, due.map((series) => series.id), context.config.KEEPER_ACCRUE_BATCH);
+    const summary = {
+      series: all.length, due: due.length, accrued: result.accrued.length, transactions: result.transactions,
+      failed: result.failed.length, dryRun: result.simulated, idle: false, forced: force,
+      lastAccruedAt: new Date(Number(nowSeconds) * 1000).toISOString(),
+    };
+    if (result.failed.length) {
+      // Reported through the job's error path so the scheduler retries soon and the health route shows it.
+      throw new Error(`Accrual failed for ${result.failed.length} of ${due.length} series: ${result.failed[0]!.error}`);
+    }
+    return summary;
+  };
 }

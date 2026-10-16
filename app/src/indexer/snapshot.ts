@@ -1,365 +1,279 @@
-import type { TransactionSql } from "postgres";
-import type { Sql } from "postgres";
-import type { Address } from "viem";
-import { WriterPoolAbi, LemniscateLensAbi, LemniscateEngineAbi } from "../abi";
-import { LEMNISCATE_EVENTS_CHANNEL } from "../db/notify";
-import type { ServiceClients } from "../chain/clients";
-import type { Deployment } from "../chain/deployment";
 import type { Logger } from "pino";
-import type { MarketInfo } from "./types";
-import { toMarketState, type MarketStateSnapshot } from "./markets-sync";
-import { asAddress, asBigInt, asNumber, writerPool, parseChainTimestamp, parseUsdg, power, usdg, wad } from "./units";
-import { timestampAtBlock } from "./rpc";
-import { safeErrorSummary } from "../log";
+import type { Sql, TransactionSql } from "postgres";
+import type { Address } from "viem";
+import { OptionEngineAbi, PoolAbi, PriceGuardAbi, SeriesRegistryAbi, VolOracleAbi, Erc20Abi } from "../abi";
+import type { ServiceClients } from "../chain/clients";
+import type { OptionDeployment } from "../chain/deployment";
+import { stressLossBps } from "./stress";
+import { asAddress, asBigInt, asNumber, sessionName, signedWad, usdg, wad } from "./units";
+
+/** State read from the contracts at one block. */
+export interface PoolReading {
+  /** USDG held by the pool, 6 dp. */
+  readonly usdgBalance: bigint;
+  /** Hedge equity as last posted, USDG 6 dp. */
+  readonly hedgeEquity: bigint;
+  /** engine.totalLiability(), WAD USDG. */
+  readonly liabilityWad: bigint;
+  /** pool.nav(), WAD USDG (can be negative). */
+  readonly navWad: bigint;
+  /** pool.navPerShare(), WAD. */
+  readonly navPerShareWad: bigint;
+  /** USDG held by the reserve, 6 dp (0 when no reserve is configured). */
+  readonly reserveUsdg: bigint;
+}
+
+export interface VolSnapshot {
+  readonly sigmaBps: number;
+  readonly stale: boolean;
+}
+
+export interface StockReading {
+  readonly stock: string;
+  readonly spotWad: bigint;
+  readonly session: number;
+  readonly fresh: boolean;
+  readonly buysPaused: boolean;
+  readonly updatedAt: bigint;
+  readonly volDaily: VolSnapshot | undefined;
+  readonly volWeekly: VolSnapshot | undefined;
+  /** engine.netGreeks: the OUTSTANDING OPTIONS' Greeks, the holders' long side (decision 21). The pool is short these. */
+  readonly deltaWad: bigint;
+  readonly gammaWad: bigint;
+  readonly vegaWad: bigint;
+}
+
+export interface SeriesReading {
+  readonly id: string;
+  readonly norm: bigint;
+  readonly lastAccrual: bigint;
+  readonly buyable: boolean;
+  readonly archived: boolean;
+}
+
+export interface SnapshotReader {
+  readPool(block: bigint): Promise<PoolReading>;
+  readStocks(stocks: readonly string[], block: bigint): Promise<StockReading[]>;
+  readSeries(ids: readonly string[], block: bigint): Promise<SeriesReading[]>;
+}
+
+const MULTICALL_CHUNK = 150;
+
+interface Settled<T> {
+  readonly status: "success" | "failure";
+  readonly result?: T;
+}
+
+function must<T>(entry: Settled<T> | undefined, label: string): T {
+  if (!entry || entry.status !== "success" || entry.result === undefined) throw new Error(`Snapshot read failed: ${label}`);
+  return entry.result;
+}
+
+/** Reads through viem multicall at an explicit block, in chunks, so one snapshot is a handful of RPC calls. */
+export function createRpcSnapshotReader(clients: ServiceClients, deployment: OptionDeployment): SnapshotReader {
+  const { contracts } = deployment;
+  const client = clients.stateClient;
+  const multicall = async (calls: readonly unknown[], block: bigint): Promise<Settled<unknown>[]> => {
+    const results: Settled<unknown>[] = [];
+    for (let offset = 0; offset < calls.length; offset += MULTICALL_CHUNK) {
+      const chunk = calls.slice(offset, offset + MULTICALL_CHUNK);
+      const part = await client.multicall({ contracts: chunk as never, allowFailure: true, blockNumber: block });
+      results.push(...(part as unknown as Settled<unknown>[]));
+    }
+    return results;
+  };
+  const engine = contracts.engine as Address;
+  const pool = contracts.pool as Address;
+  const usdgToken = contracts.usdg as Address;
+
+  return {
+    async readPool(block) {
+      const calls: unknown[] = [
+        { address: usdgToken, abi: Erc20Abi, functionName: "balanceOf", args: [pool] },
+        { address: pool, abi: PoolAbi, functionName: "hedgeEquity" },
+        { address: engine, abi: OptionEngineAbi, functionName: "totalLiability" },
+        { address: pool, abi: PoolAbi, functionName: "nav" },
+        { address: pool, abi: PoolAbi, functionName: "navPerShare" },
+      ];
+      if (contracts.reserve) calls.push({ address: usdgToken, abi: Erc20Abi, functionName: "balanceOf", args: [contracts.reserve as Address] });
+      const r = await multicall(calls, block);
+      const hedge = must(r[1], "pool.hedgeEquity") as readonly [bigint, bigint] | { equityUsdg: bigint };
+      return {
+        usdgBalance: asBigInt(must(r[0], "usdg.balanceOf(pool)")),
+        hedgeEquity: Array.isArray(hedge) ? asBigInt(hedge[0]) : asBigInt((hedge as { equityUsdg: bigint }).equityUsdg),
+        liabilityWad: asBigInt(must(r[2], "engine.totalLiability")),
+        navWad: BigInt(must(r[3], "pool.nav") as bigint),
+        navPerShareWad: asBigInt(must(r[4], "pool.navPerShare")),
+        reserveUsdg: contracts.reserve ? asBigInt(must(r[5], "usdg.balanceOf(reserve)")) : 0n,
+      };
+    },
+
+    async readStocks(stocks, block) {
+      const calls: unknown[] = [];
+      for (const stock of stocks) {
+        calls.push(
+          { address: contracts.priceGuard as Address, abi: PriceGuardAbi, functionName: "read", args: [stock as Address] },
+          { address: contracts.volOracle as Address, abi: VolOracleAbi, functionName: "read", args: [stock as Address, 0] },
+          { address: contracts.volOracle as Address, abi: VolOracleAbi, functionName: "read", args: [stock as Address, 1] },
+          { address: engine, abi: OptionEngineAbi, functionName: "netGreeks", args: [stock as Address] },
+        );
+      }
+      const r = await multicall(calls, block);
+      const readings: StockReading[] = [];
+      stocks.forEach((stock, index) => {
+        const base = index * 4;
+        const price = must(r[base], `priceGuard.read(${stock})`) as {
+          s: bigint; session: number; fresh: boolean; buysPaused: boolean; updatedAt: bigint;
+        };
+        const vol = (entry: Settled<unknown> | undefined): VolSnapshot | undefined => {
+          if (!entry || entry.status !== "success" || !entry.result) return undefined;
+          const value = entry.result as { sigmaBps: bigint; stale: boolean };
+          return { sigmaBps: Number(value.sigmaBps), stale: Boolean(value.stale) };
+        };
+        const greeks = must(r[base + 3], `engine.netGreeks(${stock})`) as readonly [bigint, bigint, bigint];
+        readings.push({
+          stock,
+          spotWad: asBigInt(price.s),
+          session: asNumber(price.session),
+          fresh: Boolean(price.fresh),
+          buysPaused: Boolean(price.buysPaused),
+          updatedAt: asBigInt(price.updatedAt),
+          volDaily: vol(r[base + 1]),
+          volWeekly: vol(r[base + 2]),
+          deltaWad: BigInt(greeks[0]),
+          gammaWad: BigInt(greeks[1]),
+          vegaWad: BigInt(greeks[2]),
+        });
+      });
+      return readings;
+    },
+
+    async readSeries(ids, block) {
+      const calls = ids.map((id) => ({
+        address: contracts.registry as Address,
+        abi: SeriesRegistryAbi,
+        functionName: "seriesOf",
+        args: [id as `0x${string}`],
+      }));
+      const r = await multicall(calls, block);
+      return ids.map((id, index) => {
+        const value = must(r[index], `registry.seriesOf(${id})`) as {
+          norm: bigint; lastAccrual: bigint; buyable: boolean; archived: boolean;
+        };
+        return {
+          id,
+          norm: asBigInt(value.norm),
+          lastAccrual: asBigInt(value.lastAccrual),
+          buyable: Boolean(value.buyable),
+          archived: Boolean(value.archived),
+        };
+      });
+    },
+  };
+}
+
+export interface SnapshotInput {
+  readonly block: bigint;
+  /** Timestamp of `block`. */
+  readonly ts: Date;
+  readonly pool: PoolReading;
+  readonly stocks: readonly StockReading[];
+  readonly series: readonly SeriesReading[];
+}
+
+/** Writes one snapshot: pool_nav, ticks and limits_state rows keyed by the block time, and brings the cached series
+ * state (norm, buyable, archived) in line with the chain. Re-running it for the same block rewrites the same rows. */
+export async function writeSnapshot(
+  tx: TransactionSql,
+  deployment: OptionDeployment,
+  input: SnapshotInput,
+): Promise<void> {
+  const names = new Map<string, string>(deployment.stocks.map((entry) => [entry.stock, entry.name]));
+  const ts = input.ts.toISOString();
+  const block = input.block.toString();
+  const { pool } = input;
+  await tx`
+    INSERT INTO pool_nav (ts, block, usdg, hedge_equity, option_liability, reserve, nav, nav_per_share)
+    VALUES (
+      ${ts}, ${block}, ${usdg(pool.usdgBalance)}, ${usdg(pool.hedgeEquity)}, ${wad(pool.liabilityWad)},
+      ${usdg(pool.reserveUsdg)}, ${signedWad(pool.navWad)}, ${wad(pool.navPerShareWad)}
+    )
+    ON CONFLICT (ts) DO UPDATE SET
+      block = EXCLUDED.block, usdg = EXCLUDED.usdg, hedge_equity = EXCLUDED.hedge_equity,
+      option_liability = EXCLUDED.option_liability, reserve = EXCLUDED.reserve, nav = EXCLUDED.nav,
+      nav_per_share = EXCLUDED.nav_per_share
+  `;
+
+  for (const reading of input.stocks) {
+    const name = names.get(reading.stock) ?? null;
+    await tx`
+      INSERT INTO ticks (stock_token, name, ts, block, spot, session, fresh, buys_paused, price_updated_at,
+                         sigma_daily_bps, sigma_weekly_bps, vol_stale)
+      VALUES (
+        ${reading.stock}, ${name}, ${ts}, ${block}, ${wad(reading.spotWad)}, ${sessionName(reading.session)},
+        ${reading.fresh}, ${reading.buysPaused},
+        ${reading.updatedAt > 0n ? new Date(Number(reading.updatedAt) * 1_000).toISOString() : null},
+        ${reading.volDaily?.sigmaBps ?? null}, ${reading.volWeekly?.sigmaBps ?? null},
+        ${reading.volDaily || reading.volWeekly ? Boolean(reading.volDaily?.stale || reading.volWeekly?.stale) : null}
+      )
+      ON CONFLICT (stock_token, ts) DO UPDATE SET
+        name = EXCLUDED.name, block = EXCLUDED.block, spot = EXCLUDED.spot, session = EXCLUDED.session, fresh = EXCLUDED.fresh,
+        buys_paused = EXCLUDED.buys_paused, price_updated_at = EXCLUDED.price_updated_at,
+        sigma_daily_bps = EXCLUDED.sigma_daily_bps, sigma_weekly_bps = EXCLUDED.sigma_weekly_bps, vol_stale = EXCLUDED.vol_stale
+    `;
+    if (name) {
+      // engine.netGreeks is the holders' long side (decision 21); the pool is short exactly that.
+      const stress = stressLossBps({
+        deltaWad: -reading.deltaWad,
+        gammaWad: -reading.gammaWad,
+        spotWad: reading.spotWad,
+        navWad: pool.navWad,
+      });
+      await tx`
+        INSERT INTO limits_state (name, ts, block, stock_token, net_delta, net_gamma, net_vega, stress_loss_bps)
+        VALUES (
+          ${name}, ${ts}, ${block}, ${reading.stock}, ${signedWad(reading.deltaWad)}, ${signedWad(reading.gammaWad)},
+          ${signedWad(reading.vegaWad)}, ${stress}
+        )
+        ON CONFLICT (name, ts) DO UPDATE SET
+          block = EXCLUDED.block, stock_token = EXCLUDED.stock_token, net_delta = EXCLUDED.net_delta,
+          net_gamma = EXCLUDED.net_gamma, net_vega = EXCLUDED.net_vega, stress_loss_bps = EXCLUDED.stress_loss_bps
+      `;
+    }
+  }
+
+  for (const reading of input.series) {
+    await tx`
+      UPDATE series SET
+        norm = ${wad(reading.norm)},
+        last_accrual = ${new Date(Number(reading.lastAccrual) * 1_000).toISOString()},
+        buyable = ${reading.buyable},
+        archived = ${reading.archived}
+      WHERE id = ${reading.id}
+    `;
+  }
+}
 
 export interface SnapshotRuntime {
-  readonly clients: ServiceClients;
   readonly sql: Sql;
-  readonly deployment: Deployment;
-  readonly marketsById: Map<number, MarketInfo>;
-  readonly marketStatesById: Map<number, Record<string, unknown>>;
-  readonly globalConfig: Record<string, unknown>;
-  readonly vaultConfig: Record<string, unknown>;
-  readonly marketHours: Record<string, unknown>;
+  readonly deployment: OptionDeployment;
+  readonly reader: SnapshotReader;
   readonly logger: Logger;
 }
 
-export interface SnapshotResult {
-  readonly block: bigint;
-  readonly chainTimestamp: string;
-  readonly observedAt: string;
-  readonly snapshotAt: Date;
-  /** Queued accounts whose vault state was read and stored by this snapshot. */
-  readonly processedAccounts: ReadonlySet<string>;
-}
-
-interface TickInsertRow {
-  marketId: number;
-  ts: string;
-  block: string;
-  spot: string;
-  index: string;
-  normFactor: string;
-  price: string;
-  bid: string;
-  ask: string;
-  carryWad: string;
-  regime: number;
-  buysPaused: boolean;
-  vaultShort: string;
-  liability: string;
-  hedgeUnits: string;
-  hedgeTarget: string;
-  oracleUpdatedAt: string;
-}
-
-function objectField(value: unknown, key: string, index: number): unknown {
-  if (Array.isArray(value)) return value[index];
-  if (value && typeof value === "object") return (value as Record<string, unknown>)[key];
-  return undefined;
-}
-
-function storedMarketMetadata(
-  markets: ReadonlyMap<number, MarketInfo>,
-  states: ReadonlyMap<number, Record<string, unknown>>,
-): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const [id, market] of markets) {
-    result[String(id)] = {
-      id,
-      symbol: market.symbol,
-      token: market.token.toLowerCase(),
-      stock: market.stock.toLowerCase(),
-      feed: market.feed.toLowerCase(),
-      scale: market.scale.toString(),
-      poolFee: market.poolFee,
-      config: market.config,
-      ...(states.get(id) ? { state: states.get(id) } : {}),
-    };
-  }
-  return result;
-}
-
-async function storeSnapshotStatus(
-  tx: TransactionSql,
-  runtime: SnapshotRuntime,
-  block: bigint,
-  chainTimestamp: string,
-  observedAt: string,
-  snapshotAt: Date,
-  globalBuysPaused: boolean,
-  vaultView: unknown,
-  remainingAccounts: readonly string[],
-): Promise<void> {
-  runtime.globalConfig.globalBuysPaused = globalBuysPaused;
-  runtime.globalConfig.maxGlobalExposureBps = asNumber(objectField(vaultView, "maxGlobalExposureBps", 6));
-  runtime.vaultConfig.publicDeposits = Boolean(objectField(vaultView, "publicDeposits", 7));
-  const patch = {
-    globalConfig: runtime.globalConfig,
-    vaultConfig: runtime.vaultConfig,
-    marketHours: runtime.marketHours,
-    marketsById: storedMarketMetadata(runtime.marketsById, runtime.marketStatesById),
-    lastSnapshotAt: snapshotAt.toISOString(),
-    lastSnapshotBlock: block.toString(),
-    chainTimestamp,
-    chainTimeObservedAt: observedAt,
-    pendingSnapshot: false,
-    registrySyncPending: false,
-    pendingAccountSnapshots: remainingAccounts,
-    rpc: runtime.clients.pool.stats(),
-  };
-  await tx`
-    INSERT INTO keeper_status (job, last_run, last_ok, last_error, meta)
-    VALUES ('indexer', NOW(), NOW(), NULL, ${JSON.stringify(patch)}::jsonb)
-    ON CONFLICT (job) DO UPDATE SET
-      last_run = NOW(),
-      last_ok = NOW(),
-      last_error = NULL,
-      meta = keeper_status.meta || EXCLUDED.meta
-  `;
-}
-
-/** Accounts read per multicall, and the cap on account reads per snapshot.
- * Accounts beyond the cap (or whose reads failed) stay queued for the next
- * snapshot, so a burst of dust transfers cannot inflate one snapshot. */
-export const ACCOUNT_CHUNK_SIZE = 200;
-export const MAX_ACCOUNTS_PER_SNAPSHOT = 1_000;
-
-interface AccountVaultState {
-  readonly account: Address;
-  readonly isDepositor: boolean;
-  readonly unlockTime: bigint;
-}
-
-async function readAccountStates(
-  runtime: SnapshotRuntime,
-  block: bigint,
-  accounts: readonly Address[],
-): Promise<AccountVaultState[]> {
-  const results: AccountVaultState[] = [];
-  for (let start = 0; start < accounts.length; start += ACCOUNT_CHUNK_SIZE) {
-    const chunk = accounts.slice(start, start + ACCOUNT_CHUNK_SIZE);
-    const contracts = chunk.flatMap((account) => [
-      { address: runtime.deployment.contracts.vault, abi: WriterPoolAbi, functionName: "isDepositor", args: [account] },
-      { address: runtime.deployment.contracts.vault, abi: WriterPoolAbi, functionName: "unlockTime", args: [account] },
-    ]);
-    let values: { status: "success" | "failure"; result?: unknown }[];
-    try {
-      // batchSize 0: one eth_call per chunk, chunks run one after another.
-      values = (await runtime.clients.stateClient.multicall({
-        contracts: contracts as never,
-        allowFailure: true,
-        batchSize: 0,
-        blockNumber: block,
-      } as never)) as typeof values;
-    } catch (error) {
-      runtime.logger.warn({ err: safeErrorSummary(error), remaining: accounts.length - start },
-        "Account snapshot chunk failed; remaining accounts stay queued");
-      break;
-    }
-    let failed = 0;
-    for (const [index, account] of chunk.entries()) {
-      const isDepositor = values[index * 2];
-      const unlockTime = values[index * 2 + 1];
-      if (isDepositor?.status !== "success" || unlockTime?.status !== "success") { failed++; continue; }
-      results.push({ account, isDepositor: Boolean(isDepositor.result), unlockTime: asBigInt(unlockTime.result) });
-    }
-    if (failed > 0) runtime.logger.warn({ failed }, "Some account snapshot reads failed; those accounts stay queued");
-  }
-  return results;
-}
-
-export async function takeSnapshot(
-  runtime: SnapshotRuntime,
-  block: bigint,
-  touchedAccounts: ReadonlySet<string>,
-): Promise<SnapshotResult> {
-  const blockTime = await timestampAtBlock(runtime.clients.pool, block);
-  const observedAt = new Date().toISOString();
-  const queuedAccounts = [...new Set([...touchedAccounts].map((address) => address.toLowerCase()))].sort();
-  const marketIds = [...runtime.marketsById.keys()].sort((a, b) => a - b);
-  const contracts: unknown[] = [
-    { address: runtime.deployment.contracts.lens, abi: LemniscateLensAbi, functionName: "markets", args: [runtime.deployment.contracts.engine] },
-    { address: runtime.deployment.contracts.lens, abi: LemniscateLensAbi, functionName: "vault", args: [runtime.deployment.contracts.engine] },
-    { address: runtime.deployment.contracts.engine, abi: LemniscateEngineAbi, functionName: "globalBuysPaused" },
-  ];
-  for (const id of marketIds) {
-    contracts.push({ address: runtime.deployment.contracts.engine, abi: LemniscateEngineAbi, functionName: "getState", args: [id] });
-  }
-  const values = (await runtime.clients.stateClient.multicall({
-    contracts: contracts as never,
-    allowFailure: false,
-    blockNumber: block,
-  } as never)) as unknown[];
-  const accountStates = await readAccountStates(
-    runtime, block, queuedAccounts.slice(0, MAX_ACCOUNTS_PER_SNAPSHOT) as Address[]);
-  const processed = new Set<string>(accountStates.map((state) => state.account));
-  const remainingAccounts = queuedAccounts.filter((account) => !processed.has(account));
-  const marketViews = (Array.isArray(values[0]) ? values[0] : []) as Record<string, unknown>[];
-  const vaultView = values[1] as Record<string, unknown>;
-  const globalBuysPaused = Boolean(values[2]);
-  const marketById = new Map(marketViews.map((market) => [asNumber(objectField(market, "id", 0)), market]));
-  const snapshotAt = new Date();
-  const chainDate = blockTime;
-  const tickRows: TickInsertRow[] = [];
-
-  for (const [index, id] of marketIds.entries()) {
-    const marketView = marketById.get(id);
-    if (!marketView) continue;
-    const market = runtime.marketsById.get(id);
-    if (!market) continue;
-    const localBuysPaused = Boolean(objectField(marketView, "buysPaused", 6));
-    const state = toMarketState(values[3 + index]);
-    const hedgeUnitsRaw = objectField(marketView, "hedgeUnits", 16);
-    const hedgeTargetRaw = objectField(marketView, "hedgeTarget", 17);
-    const stateWithLens = {
-      ...state,
-      hedgeUnits: asBigInt(hedgeUnitsRaw).toString(),
-      hedgeTarget: asBigInt(hedgeTargetRaw).toString(),
-    } satisfies MarketStateSnapshot & Record<string, unknown>;
-    runtime.marketStatesById.set(id, stateWithLens);
-
-    const spotUpdatedAt = parseChainTimestamp(objectField(marketView, "spotUpdatedAt", 8)) ?? chainDate;
-    tickRows.push({
-      marketId: id,
-      ts: chainDate.toISOString(),
-      block: block.toString(),
-      spot: wad(objectField(marketView, "spot", 7)),
-      index: wad(objectField(marketView, "index", 9)),
-      normFactor: wad(objectField(marketView, "normFactor", 10)),
-      price: wad(objectField(marketView, "price", 11)),
-      bid: wad(objectField(marketView, "bidPrice1", 18)),
-      ask: wad(objectField(marketView, "askPrice1", 19)),
-      carryWad: wad(objectField(marketView, "carryWad", 12)),
-      regime: asNumber(objectField(marketView, "regime", 5)),
-      buysPaused: localBuysPaused || globalBuysPaused,
-      vaultShort: power(objectField(marketView, "vaultShort", 13)),
-      liability: wad(objectField(marketView, "liability", 14)),
-      hedgeUnits: power(hedgeUnitsRaw),
-      hedgeTarget: power(hedgeTargetRaw),
-      oracleUpdatedAt: spotUpdatedAt.toISOString(),
-    });
-  }
-
-  const maxTotalDeposits =
-    typeof runtime.vaultConfig.maxTotalDeposits === "string"
-      ? parseUsdg(runtime.vaultConfig.maxTotalDeposits)
-      : 0n;
-  const totalAssetsRaw = asBigInt(objectField(vaultView, "totalAssets", 1));
-  const depositCapRemaining = usdg(maxTotalDeposits > totalAssetsRaw ? maxTotalDeposits - totalAssetsRaw : 0n);
-  const vaultTick = {
-    ts: chainDate.toISOString(),
-    block: block.toString(),
-    nav: wad(objectField(vaultView, "nav", 0)),
-    totalAssets: usdg(totalAssetsRaw),
-    totalSupply: writerPool(objectField(vaultView, "totalSupply", 2)),
-    navPerShare: wad(objectField(vaultView, "navPerShare", 3)),
-    usdg: usdg(objectField(vaultView, "usdgBalance", 4)),
-    totalLiability: wad(objectField(vaultView, "totalLiability", 5)),
-    maxGlobalExposureBps: asNumber(objectField(vaultView, "maxGlobalExposureBps", 6)),
-    publicDeposits: Boolean(objectField(vaultView, "publicDeposits", 7)),
-    depositCapRemaining,
-  };
-
+/** Reads the chain at `block` and stores the snapshot. Reads happen before the transaction opens, so a slow RPC never
+ * holds a database transaction. */
+export async function takeSnapshot(runtime: SnapshotRuntime, block: bigint, blockTime: Date): Promise<SnapshotInput> {
+  const stocks = runtime.deployment.stocks.map((entry) => asAddress(entry.stock));
+  const activeSeries = (await runtime.sql`SELECT id FROM series WHERE archived = false AND listed_block <= ${block.toString()} ORDER BY id`) as unknown as { id: string }[];
+  const [pool, stockReadings, seriesReadings] = await Promise.all([
+    runtime.reader.readPool(block),
+    runtime.reader.readStocks(stocks, block),
+    runtime.reader.readSeries(activeSeries.map((row) => row.id), block),
+  ]);
+  const input: SnapshotInput = { block, ts: blockTime, pool, stocks: stockReadings, series: seriesReadings };
   await runtime.sql.begin(async (tx) => {
-    for (const row of tickRows) {
-      await tx`
-        INSERT INTO ticks (
-          market_id, ts, block, spot, "index", norm_factor, price, bid, ask, carry_wad, regime,
-          buys_paused, vault_short, liability, hedge_units, hedge_target, oracle_updated_at
-        )
-        VALUES (
-          ${row.marketId}, ${row.ts}, ${row.block}, ${row.spot}, ${row.index}, ${row.normFactor},
-          ${row.price}, ${row.bid}, ${row.ask}, ${row.carryWad}, ${row.regime}, ${row.buysPaused},
-          ${row.vaultShort}, ${row.liability}, ${row.hedgeUnits}, ${row.hedgeTarget}, ${row.oracleUpdatedAt}
-        )
-        ON CONFLICT (market_id, ts) DO UPDATE SET
-          block = EXCLUDED.block,
-          spot = EXCLUDED.spot,
-          "index" = EXCLUDED."index",
-          norm_factor = EXCLUDED.norm_factor,
-          price = EXCLUDED.price,
-          bid = EXCLUDED.bid,
-          ask = EXCLUDED.ask,
-          carry_wad = EXCLUDED.carry_wad,
-          regime = EXCLUDED.regime,
-          buys_paused = EXCLUDED.buys_paused,
-          vault_short = EXCLUDED.vault_short,
-          liability = EXCLUDED.liability,
-          hedge_units = EXCLUDED.hedge_units,
-          hedge_target = EXCLUDED.hedge_target,
-          oracle_updated_at = EXCLUDED.oracle_updated_at
-      `;
-    }
-    await tx`
-      INSERT INTO vault_ticks (
-        ts, block, nav, total_assets, total_supply, nav_per_share, usdg, total_liability,
-        max_global_exposure_bps, public_deposits, deposit_cap_remaining
-      )
-      VALUES (
-        ${vaultTick.ts}, ${vaultTick.block}, ${vaultTick.nav}, ${vaultTick.totalAssets},
-        ${vaultTick.totalSupply}, ${vaultTick.navPerShare}, ${vaultTick.usdg}, ${vaultTick.totalLiability},
-        ${vaultTick.maxGlobalExposureBps}, ${vaultTick.publicDeposits}, ${vaultTick.depositCapRemaining}
-      )
-      ON CONFLICT (ts) DO UPDATE SET
-        block = EXCLUDED.block,
-        nav = EXCLUDED.nav,
-        total_assets = EXCLUDED.total_assets,
-        total_supply = EXCLUDED.total_supply,
-        nav_per_share = EXCLUDED.nav_per_share,
-        usdg = EXCLUDED.usdg,
-        total_liability = EXCLUDED.total_liability,
-        max_global_exposure_bps = EXCLUDED.max_global_exposure_bps,
-        public_deposits = EXCLUDED.public_deposits,
-        deposit_cap_remaining = EXCLUDED.deposit_cap_remaining
-    `;
-
-    for (const { account, isDepositor, unlockTime } of accountStates) {
-      await tx`
-        INSERT INTO vault_account_state (account, is_depositor, unlock_time, updated_block, updated_at)
-        VALUES (
-          ${account}, ${isDepositor},
-          ${unlockTime === 0n ? null : new Date(Number(unlockTime) * 1_000).toISOString()},
-          ${block.toString()}, NOW()
-        )
-        ON CONFLICT (account) DO UPDATE SET
-          is_depositor = EXCLUDED.is_depositor,
-          unlock_time = EXCLUDED.unlock_time,
-          updated_block = GREATEST(vault_account_state.updated_block, EXCLUDED.updated_block),
-          updated_at = NOW()
-      `;
-    }
-    await storeSnapshotStatus(
-      tx,
-      runtime,
-      block,
-      chainTimestampFromDate(blockTime),
-      observedAt,
-      snapshotAt,
-      globalBuysPaused,
-      vaultView,
-      remainingAccounts,
-    );
-    await tx.notify(
-      LEMNISCATE_EVENTS_CHANNEL,
-      JSON.stringify({
-        block: block.toString(),
-        markets: marketIds,
-        kinds: ["snapshot"],
-        logCount: 0,
-      }),
-    );
+    await writeSnapshot(tx, runtime.deployment, input);
   });
-
-  return {
-    block,
-    chainTimestamp: Math.floor(blockTime.getTime() / 1_000).toString(),
-    observedAt,
-    snapshotAt,
-    processedAccounts: processed,
-  };
-}
-
-function chainTimestampFromDate(value: Date): string {
-  return Math.floor(value.getTime() / 1_000).toString();
+  return input;
 }

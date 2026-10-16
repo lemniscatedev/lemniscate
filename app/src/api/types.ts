@@ -1,15 +1,18 @@
 import type { Logger } from "pino";
 import type { Sql } from "postgres";
 import type { RuntimeConfig } from "../config";
-import type { Deployment } from "../chain/deployment";
+import type { OptionDeployment } from "../chain/deployment";
 import type { TtlCache } from "./cache";
+import type { X402Gate } from "../x402/gate";
 
 export interface ApiDependencies {
   readonly sql: Sql;
   readonly config: RuntimeConfig;
-  readonly deployment: Deployment;
+  readonly deployment: OptionDeployment;
   readonly logger: Logger;
   readonly cache: TtlCache;
+  /** Pay-per-call gate for the paid data routes (todo 17). Absent = every route is free. */
+  readonly x402?: X402Gate;
 }
 
 export type DbRow = Record<string, unknown>;

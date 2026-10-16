@@ -57,6 +57,27 @@
       "when": 1790780000006,
       "tag": "0007_earnings",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790780000007,
+      "tag": "0008_option_system",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1790780000008,
+      "tag": "0009_vol_engine",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790780000009,
+      "tag": "0010_agent_policies",
+      "breakpoints": true
     }
   ]
 }

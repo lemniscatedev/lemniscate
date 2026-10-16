@@ -14,6 +14,8 @@ for(const route of routes){
   const ref=match[1];if(ref.startsWith('/')&&!ref.startsWith('//'))references.add(ref.split(/[?#]/)[0]);
  }
  if(html.includes('data-framer-bundle=')&&!html.includes(plan.entry))errors.push('Runtime entry mismatch: '+route);
+ if(!html.includes('src="/config.js'))errors.push('Missing /config.js: '+route);
+ if(/chatgpt\.site/.test(html))errors.push('Hosting-wrapper URL in head: '+route);
 }
 for(const ref of references){
  if(!ref||ref==='/')continue;

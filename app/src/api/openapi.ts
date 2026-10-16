@@ -10,12 +10,12 @@ export const openApiDocument = {
   info: {
     title: "Lemniscate API",
     version: packageMetadata.version ?? "0.1.0",
-    description: "Read-only market, account and vault data for Lemniscate.",
+    description: "Chains, quotes, unsigned transaction intents, pool, volatility and positions for Lemniscate everlasting options. Reads only Postgres.",
   },
   tags: [
     { name: "system", description: "Runtime configuration and service health" },
-    { name: "markets", description: "Market prices, candles, carry and activity" },
-    { name: "accounts", description: "Wallet portfolio and activity" },
-    { name: "vault", description: "Writer Pool vault state and history" },
+    { name: "markets", description: "Option chains, quotes, intents, series and volatility" },
+    { name: "accounts", description: "Wallet positions, activity, agent policies and smart account" },
+    { name: "vault", description: "Writer Pool state" },
   ],
 };

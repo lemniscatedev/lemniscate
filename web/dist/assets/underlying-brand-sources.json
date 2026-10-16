@@ -29,9 +29,9 @@
   },
   {
     "slot": "eTpMDTXkfIdP529bLnlvED2bYGE",
-    "brand": "robinhood",
-    "ticker": "HOOD",
-    "label": "Robinhood",
-    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/develop/icons/robinhood.svg"
+    "brand": "none",
+    "ticker": "AAPL",
+    "label": "Apple",
+    "source": "local monogram drawn for Lemniscate (no third-party logo); the previous file in this slot was the Robinhood mark for HOOD, dropped from the launch names"
   }
 ]

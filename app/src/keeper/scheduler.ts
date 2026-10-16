@@ -10,13 +10,23 @@ export interface KeeperJob {
   run: () => Promise<Record<string, unknown> | void>;
 }
 
-/** Event triggers and timer triggers share the same non-overlapping job slot. */
+/** Delay before retrying a job that failed `failures` times in a row: 15 s, 30 s, 60 s ... doubling to 10 minutes, and
+ * never longer than the job's own interval. An RPC outage therefore backs off instead of hammering the endpoint, and
+ * recovers within one interval once it is back. */
+export function retryDelayMs(failures: number, everyMs: number): number {
+  const delay = Math.min(15_000 * 2 ** Math.max(0, Math.min(failures - 1, 6)), 600_000);
+  return Math.min(everyMs, delay);
+}
+
+/** Event triggers and timer triggers share the same non-overlapping job slot. A job that throws is logged and retried
+ * with backoff; it never stops the other jobs (each has its own slot, timer and failure count). */
 export function createScheduler(sql: LemniscateDbClient["sql"], logger: Logger) {
   const jobs = new Map<string, {
     definition: KeeperJob;
     timer?: ReturnType<typeof setTimeout>;
     running?: Promise<void>;
     pending: boolean;
+    failures: number;
   }>();
   let stopping = false;
 
@@ -48,8 +58,10 @@ export function createScheduler(sql: LemniscateDbClient["sql"], logger: Logger) 
         const meta = JSON.stringify(result);
         await sql`update keeper_status set last_ok = now(), last_error = null,
           meta = meta || ${meta}::jsonb where job = ${name}`;
+        state.failures = 0;
       } catch (error) {
         failed = true;
+        state.failures++;
         const summary = safeErrorSummary(error);
         logger.error({ job: name, err: summary }, "Keeper job failed; next trigger will retry");
         try {
@@ -61,9 +73,10 @@ export function createScheduler(sql: LemniscateDbClient["sql"], logger: Logger) 
       } finally {
         delete state.running;
         // An hourly job can start before the first indexer snapshot exists, or
-        // encounter a short RPC outage. Retry it within a minute rather than
-        // leaving sessions/corporate-action state stale for the full interval.
-        const nextInterval = failed ? Math.min(definition.everyMs, 60000) : retryAfterMs ?? definition.everyMs;
+        // encounter a short RPC outage. Retry it soon rather than leaving
+        // sessions/corporate-action state stale for the full interval, but back
+        // off while it keeps failing.
+        const nextInterval = failed ? retryDelayMs(state.failures, definition.everyMs) : retryAfterMs ?? definition.everyMs;
         const delay = state.pending ? 0 : nextInterval + Math.floor(Math.random() * (definition.jitterMs ?? 0));
         state.pending = false;
         schedule(name, delay);
@@ -76,7 +89,7 @@ export function createScheduler(sql: LemniscateDbClient["sql"], logger: Logger) 
   return {
     add(job: KeeperJob) {
       if (jobs.has(job.name) || job.everyMs <= 0) throw new Error(`Invalid or duplicate keeper job: ${job.name}`);
-      jobs.set(job.name, { definition: job, pending: false });
+      jobs.set(job.name, { definition: job, pending: false, failures: 0 });
       schedule(job.name, job.initialDelayMs ?? 0);
     },
     trigger,
