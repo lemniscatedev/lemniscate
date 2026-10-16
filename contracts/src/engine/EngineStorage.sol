@@ -21,6 +21,8 @@ library EngineStorage {
         bool known;
         address token;
         uint64 lastAccrual;
+        /// @dev 1-based position in `live[stock]` (0 = no tokens outstanding), packed with lastAccrual (todo 07b R2).
+        uint32 liveIdx;
         uint128 strike;
         uint128 norm;
     }
@@ -89,6 +91,8 @@ library EngineStorage {
         /// @dev Daily NAV/share peaks: (day << 224) | navPerShare, ring of 31 slots.
         mapping(uint256 slot => uint256) navPeaks;
         address[] stocks;
+        /// @dev Series with a non-zero token supply, per stock (todo 07b R2): the only series any loop visits.
+        mapping(address stock => bytes32[]) live;
     }
 
     /// @dev keccak256(abi.encode(uint256(keccak256("lemniscate.storage.Engine")) - 1)) & ~bytes32(uint256(0xff))

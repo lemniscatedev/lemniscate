@@ -132,6 +132,7 @@ library EngineCore {
             known: true,
             token: s.token,
             lastAccrual: s.lastAccrual,
+            liveIdx: 0,
             strike: s.strike,
             norm: s.norm
         });
@@ -486,6 +487,31 @@ library EngineCore {
 
     function sellable(Ctx memory c) internal pure returns (bool) {
         return c.priced && c.session != SessionKind.HALTED;
+    }
+
+    // ------------------------------------------------------------------------------------------- live series
+
+    /// @dev Adds a series to its stock's live list (after a mint). Supply only changes through the engine's own mint
+    /// and burn, so this list is exactly the series with tokens outstanding (escrowed tokens included).
+    function markLive(bytes32 id, address stock) internal {
+        EngineStorage.Layout storage $ = EngineStorage.layout();
+        EngineStorage.SeriesInfo storage si = $.info[id];
+        if (si.liveIdx != 0) return;
+        $.live[stock].push(id);
+        si.liveIdx = uint32($.live[stock].length);
+    }
+
+    /// @dev Drops a series from its stock's live list once its supply is zero (after a burn).
+    function dropIfEmpty(bytes32 id, address stock, address token) internal {
+        EngineStorage.Layout storage $ = EngineStorage.layout();
+        uint32 idx = $.info[id].liveIdx;
+        if (idx == 0 || IERC20(token).totalSupply() != 0) return;
+        bytes32[] storage list = $.live[stock];
+        bytes32 last = list[list.length - 1];
+        list[idx - 1] = last;
+        $.info[last].liveIdx = idx;
+        list.pop();
+        $.info[id].liveIdx = 0;
     }
 
     // -------------------------------------------------------------------------------------------------- misc

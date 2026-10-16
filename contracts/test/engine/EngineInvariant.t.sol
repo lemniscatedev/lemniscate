@@ -45,6 +45,25 @@ contract EngineInvariantTest is EngineBase {
         r = [int256(uint256(s.value)), s.delta, int256(uint256(s.gamma)), int256(uint256(s.vega)), s.sc0, s.sc1, s.sc2, s.sc3, 0];
     }
 
+    /// 16 (todo 07b R2). The live list of each stock is exactly its series with tokens outstanding, and each live
+    /// series' packed index points back at it.
+    function invariant_liveSetIsNonZeroSupply() public view {
+        address[] memory ss = engine.stocks();
+        for (uint256 s; s < ss.length; ++s) {
+            bytes32[] memory live = engine.liveSeries(ss[s]);
+            for (uint256 j; j < live.length; ++j) {
+                assertEq(engine.seriesInfo(live[j]).liveIdx, j + 1, "index points back");
+                assertGt(_token(live[j]).totalSupply(), 0, "live has supply");
+            }
+            bytes32[] memory all = engine.seriesOfStock(ss[s]);
+            uint256 withSupply;
+            for (uint256 j; j < all.length; ++j) {
+                if (_token(all[j]).totalSupply() != 0) ++withSupply;
+            }
+            assertEq(live.length, withSupply, "every series with supply is live");
+        }
+    }
+
     /// 1. norm never rises
     function invariant_normMonotone() public view {
         assertFalse(handler.normRose());

@@ -47,6 +47,7 @@ library EngineTradeLib {
         $.usdg.safeTransferFrom(msg.sender, address($.pool), cost);
         $.pool.onSale(id, cost, spread);
         IOptionToken(c.token).mint(recipient, tokens);
+        EngineCore.markLive(id, c.stock);
         EngineCore.storeBook(c, b);
         emit IOptionEngine.Bought(id, msg.sender, recipient, units, tokens, cost, q.vMarkWad, q.sigmaBps, c.session);
     }
@@ -74,6 +75,7 @@ library EngineTradeLib {
         if (proceeds < minProceeds) revert IOptionEngine.Slippage(proceeds, minProceeds);
         try $.pool.pay(recipient, proceeds, spread) {
             IOptionToken(c.token).burn(msg.sender, tokens);
+            EngineCore.dropIfEmpty(id, c.stock, c.token);
             EngineCore.storeBook(c, b);
             emit IOptionEngine.Sold(id, msg.sender, recipient, units, tokens, proceeds, q.vMarkWad, q.sigmaBps, c.session);
             EngineCore.recheck(h, false);
@@ -117,17 +119,30 @@ library EngineTradeLib {
         emit IOptionEngine.SellQueued(ticket, c.id, seller, recipient, tokens.toUint128(), uint64(block.timestamp));
     }
 
-    /// @dev Largest buyable WEEKLY Down strike <= target.
-    function pickShield(address stock, uint256 target) private view returns (bytes32 best) {
+    /// @dev Largest buyable WEEKLY Down strike <= target. Candidates are filtered on the engine's own strike copy (one
+    /// SLOAD per entry); an archived candidate is removed from the list (swap and pop), and `pruneShieldList` lets
+    /// anyone remove the rest, so the list tracks the strikes that can still be bought, not every series ever listed.
+    function pickShield(address stock, uint256 target) private returns (bytes32 best) {
         EngineStorage.Layout storage $ = EngineStorage.layout();
         bytes32[] storage ids = $.weeklyPuts[stock];
         uint256 bestK;
-        for (uint256 i; i < ids.length; ++i) {
-            uint256 k = $.info[ids[i]].strike;
-            if (k > target || k <= bestK) continue;
-            Series memory s = $.registry.seriesOf(ids[i]);
-            if (!s.buyable || s.archived) continue;
-            best = ids[i];
+        uint256 i;
+        while (i < ids.length) {
+            bytes32 id = ids[i];
+            uint256 k = $.info[id].strike;
+            if (k > target || k <= bestK) {
+                ++i;
+                continue;
+            }
+            Series memory s = $.registry.seriesOf(id);
+            if (s.archived) {
+                ids[i] = ids[ids.length - 1];
+                ids.pop();
+                continue;
+            }
+            ++i;
+            if (!s.buyable) continue;
+            best = id;
             bestK = k;
         }
         if (best == bytes32(0)) revert IOptionEngine.SeriesNotBuyable(bytes32(0));

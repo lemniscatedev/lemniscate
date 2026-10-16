@@ -227,6 +227,16 @@ contract LemniscateEngine is
         EngineOpsLib.syncSeries(maxCount);
     }
 
+    /// @notice Removes up to `maxCount` archived series from `stock`'s shield candidate list (permissionless; the
+    /// keeper calls it after archiving). Shield also drops archived candidates it meets.
+    function pruneShieldList(address stock, uint256 maxCount) external returns (uint256 removed) {
+        return EngineOpsLib.pruneShieldList(stock, maxCount);
+    }
+
+    function shieldList(address stock) external view returns (bytes32[] memory) {
+        return EngineStorage.layout().weeklyPuts[stock];
+    }
+
     // ---------------------------------------------------------------------------------------------------- views
 
     /// @inheritdoc IOptionEngine
@@ -304,8 +314,20 @@ contract LemniscateEngine is
         return EngineStorage.layout().hedgeDepthCapWad[stock];
     }
 
+    /// @inheritdoc IOptionEngine
     function bookValue() external view returns (uint256) {
         return EngineStorage.layout().bookValue;
+    }
+
+    /// @inheritdoc IOptionEngine
+    function capBps() external view returns (uint16 totalCapNavBps, uint16 nameCapNavBps) {
+        EngineHelper.Params storage p = EngineStorage.layout().p;
+        return (p.totalCapNavBps, p.nameCapNavBps);
+    }
+
+    /// @notice Series of `stock` with outstanding tokens (what the keeper accrues; zero-supply series are skipped).
+    function liveSeries(address stock) external view returns (bytes32[] memory) {
+        return EngineStorage.layout().live[stock];
     }
 
     function ticketCount() external view returns (uint256) {

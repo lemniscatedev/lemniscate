@@ -403,6 +403,7 @@ contract WriterPoolTest is PoolFixture {
 
     // ------------------------------------------------------------------ R8
 
+    /// @dev Todo 07b: the engine's parameters are the one source of truth; the pool only mirrors `engine.capBps()`.
     function test_R8_capsExposedToEngine() public {
         assertEq(pool.maxOutstandingBps(), 3_500);
         assertEq(pool.maxPerNameBps(), 800);
@@ -411,16 +412,11 @@ contract WriterPoolTest is PoolFixture {
         assertEq(total, 90_000e18 * 3_500 / 10_000);
         assertEq(perName, 90_000e18 * 800 / 10_000);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, guardian, bytes32(0))
-        );
-        vm.prank(guardian);
-        pool.setCaps(5_000, 1_000);
-        vm.expectRevert(WriterPool.InvalidParams.selector);
-        pool.setCaps(3_000, 3_001);
-        pool.setCaps(2_000, 500);
+        engine.setCapBps(2_000, 500); // an engine parameter change shows through, nothing to set on the pool
         assertEq(pool.maxOutstandingBps(), 2_000);
         assertEq(pool.maxPerNameBps(), 500);
+        (total, perName) = pool.capsFor(10_000e18);
+        assertEq(total, 90_000e18 * 2_000 / 10_000);
         engine.setLiability(200_000e18);
         (total, perName) = pool.capsFor(200_000e18);
         assertEq(total + perName, 0);

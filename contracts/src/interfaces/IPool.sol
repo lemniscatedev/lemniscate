@@ -14,7 +14,7 @@ interface IPool {
     function pay(address to, uint256 usdgOut, uint256 spreadUsdg) external;
 
     /// @dev NAV in WAD USDG = usdg cash + hedgeEquity - sum(outstanding units * V_mark) + reserve share. liability comes
-    /// from the engine (engine.totalLiability()).
+    /// from the engine's O(1) engine.bookValue() (decision 26; totalLiability() is monitoring only).
     function nav() external view returns (int256 navWad);
     function navPerShare() external view returns (uint256);
     function navFor(uint256 liabilityWad) external view returns (int256 navWad);
@@ -46,7 +46,8 @@ interface IPool {
     function onFunding(bytes32 seriesId, uint256 fundingUsdg) external;
     /// @dev true when a perp equity post exists and is older than 2h. The engine pauses buys while it is true.
     function hedgeStale() external view returns (bool);
-    /// @dev Caps in bps of NAV the engine enforces on buys (defaults 3500 and 800). Admin (timelock) only to change.
+    /// @dev Caps in bps of NAV the engine enforces on buys (defaults 3500 and 800). Mirrors of the engine's
+    /// `capBps()` (todo 07b: the engine's parameters are the one source of truth, changed by its timelocked admin).
     function maxOutstandingBps() external view returns (uint16);
     function maxPerNameBps() external view returns (uint16);
     /// @dev The two caps in WAD USDG for an engine-supplied liability (no callback into the engine).

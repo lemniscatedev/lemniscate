@@ -46,7 +46,7 @@ contract SeriesRegistryTest is Test {
 
     function test_R1_seriesIdDeterministic() public {
         bytes32 id = _list(true, 110e18, WEEKLY);
-        assertEq(id, keccak256(abi.encode(nvda, true, uint128(110e18), WEEKLY)));
+        assertEq(id, keccak256(abi.encode(nvda, true, uint128(110e18), WEEKLY, uint32(0))), "epoch 0 id");
         assertEq(id, registry.idOf(nvda, true, 110e18, WEEKLY));
         assertEq(registry.seriesCount(), 1);
         assertEq(registry.seriesIdAt(0), id);
@@ -61,8 +61,84 @@ contract SeriesRegistryTest is Test {
         assertEq(registry.seriesCount(), 4);
     }
 
-    function testFuzz_R1_idMatchesAbiEncode(address stock, bool isCall, uint128 strike, uint32 tau) public view {
-        assertEq(registry.idOf(stock, isCall, strike, tau), keccak256(abi.encode(stock, isCall, strike, tau)));
+    function testFuzz_R1_idMatchesAbiEncode(address stock, bool isCall, uint128 strike, uint32 tau, uint32 epoch)
+        public
+        view
+    {
+        assertEq(registry.idOf(stock, isCall, strike, tau), keccak256(abi.encode(stock, isCall, strike, tau, uint32(0))));
+        assertEq(
+            registry.idOfEpoch(stock, isCall, strike, tau, epoch), keccak256(abi.encode(stock, isCall, strike, tau, epoch))
+        );
+    }
+
+    // ------------------------------------------------------------------------------------------- 07b R3 epochs
+
+    function _decay(bytes32 id, uint128 norm) internal {
+        vm.prank(address(engine));
+        registry.storeAccrual(id, norm, uint64(block.timestamp));
+    }
+
+    function test_R3_seriesEpochs() public {
+        bytes32 e0 = _list(true, 110e18, DAILY);
+        assertEq(registry.currentEpoch(nvda, true, 110e18, DAILY), 0);
+        assertEq(registry.epochOf(e0), 0);
+        assertEq(registry.relistNormThreshold(), 1e15);
+        vm.prank(lister);
+        registry.setBuyable(e0, true);
+
+        // Not due while the norm is at or above 0.001.
+        _decay(e0, 1e15);
+        vm.expectRevert(abi.encodeWithSelector(ISeriesRegistry.SeriesExists.selector, e0));
+        _list(true, 110e18, DAILY);
+
+        // Below the threshold: the keeper lists epoch 1, epoch 0 is archived (sell-only).
+        _decay(e0, 1e15 - 1);
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit ISeriesRegistry.EpochListed(registry.idOfEpoch(nvda, true, 110e18, DAILY, 1), e0, 1);
+        bytes32 e1 = _list(true, 110e18, DAILY);
+        assertEq(e1, keccak256(abi.encode(nvda, true, uint128(110e18), DAILY, uint32(1))));
+        assertEq(registry.idOf(nvda, true, 110e18, DAILY), e1, "idOf follows the current epoch");
+        assertEq(registry.idOfEpoch(nvda, true, 110e18, DAILY, 0), e0);
+        assertEq(registry.currentEpoch(nvda, true, 110e18, DAILY), 1);
+        assertEq(registry.epochOf(e1), 1);
+        Series memory old = registry.seriesOf(e0);
+        assertTrue(old.archived && !old.buyable, "old epoch archived");
+        assertTrue(old.token != address(0), "old epoch keeps its token: holders can sell");
+        Series memory cur = registry.seriesOf(e1);
+        assertEq(cur.norm, 1e18, "fresh norm");
+        assertFalse(cur.buyable, "listed non-buyable");
+        assertTrue(cur.token != old.token);
+        assertEq(IERC20Metadata(cur.token).symbol(), "eNVDA-C-110-D.1");
+        assertEq(IERC20Metadata(cur.token).name(), "Lemniscate NVDA Up 110 Daily #1");
+
+        // An archived current epoch can be relisted whatever its norm.
+        vm.prank(lister);
+        registry.archive(e1);
+        bytes32 e2 = _list(true, 110e18, DAILY);
+        assertEq(IERC20Metadata(registry.seriesOf(e2).token).symbol(), "eNVDA-C-110-D.2");
+        assertEq(registry.seriesCount(), 3);
+
+        // Other strikes are untouched.
+        assertEq(registry.currentEpoch(nvda, true, 120e18, DAILY), 0);
+    }
+
+    function test_R3_relistThresholdAdminOnlyAndBounded() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, lister, bytes32(0))
+        );
+        vm.prank(lister);
+        registry.setRelistNormThreshold(1e16);
+        vm.startPrank(admin);
+        vm.expectRevert(abi.encodeWithSelector(SeriesRegistry.ThresholdInvalid.selector, uint128(0)));
+        registry.setRelistNormThreshold(0);
+        vm.expectRevert(abi.encodeWithSelector(SeriesRegistry.ThresholdInvalid.selector, uint128(1e17 + 1)));
+        registry.setRelistNormThreshold(1e17 + 1);
+        registry.setRelistNormThreshold(1e16);
+        vm.stopPrank();
+        assertEq(registry.relistNormThreshold(), 1e16);
+        bytes32 e0 = _list(false, 90e18, WEEKLY);
+        _decay(e0, 1e16 - 1);
+        assertTrue(_list(false, 90e18, WEEKLY) != e0);
     }
 
     function test_R1_listingStoresSeriesAndToken() public {

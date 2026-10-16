@@ -32,6 +32,23 @@ contract MockPoolEngine {
         gammaOf[stock] = gamma;
     }
 
+    /// @dev The pool reads only the O(1) book value (decision 26); the mock keeps one number for both.
+    function bookValue() external view returns (uint256) {
+        return totalLiability;
+    }
+
+    uint16 public capTotalBps = 3_500;
+    uint16 public capNameBps = 800;
+
+    function setCapBps(uint16 total, uint16 perName) external {
+        capTotalBps = total;
+        capNameBps = perName;
+    }
+
+    function capBps() external view returns (uint16, uint16) {
+        return (capTotalBps, capNameBps);
+    }
+
     function netGreeks(address stock) external view returns (int256, int256, int256) {
         return (deltaOf[stock], gammaOf[stock], 0);
     }

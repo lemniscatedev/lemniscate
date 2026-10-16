@@ -83,4 +83,16 @@ interface IOptionEngine {
     function fillQueued(uint256 ticket) external returns (uint256 usdgOut);
     /// @dev The seller takes the escrowed tokens back before the ticket is filled.
     function cancelQueued(uint256 ticket) external;
+
+    // ---- added by todo 07b (O(1) liability, decision 26; one source of truth for the outstanding caps)
+
+    /// @dev Sum of every series' liability at its last touch (supply x norm x V_mark at the price and vol of that
+    /// buy, sell or accrual), WAD USDG, kept incrementally. The pool's NAV, deposits, claims, payouts and the engine's
+    /// caps use it (O(1)); `totalLiability()` is the full recomputation, for monitoring and tests only. Staleness bound:
+    /// every live series is re-marked by the keeper's accrueMany at least hourly, so it lags the exact liability by at
+    /// most one hour of price and vol moves (the pool's NAV guard band covers the first part of that move).
+    function bookValue() external view returns (uint256 bookValueWad);
+    /// @dev The outstanding-value caps the engine enforces on buys, in bps of NAV (total, per name). The engine's
+    /// parameters are the only source; the pool's `maxOutstandingBps` / `maxPerNameBps` / `capsFor` read these.
+    function capBps() external view returns (uint16 totalCapNavBps, uint16 nameCapNavBps);
 }

@@ -25,7 +25,14 @@ import {Roles} from "./libs/Roles.sol";
 /// @title WriterPool
 /// @notice USDG Writer Pool (spec 2.5): the counterparty of every option the engine sells. LPs deposit USDG at NAV per
 /// share plus 10 bps and leave through a 72h queue paid at NAV at claim time. NAV = USDG cash + spot hedges at the
-/// PriceGuard price + fresh perp equity - engine.totalLiability() + reserve share - fees owed.
+/// PriceGuard price + fresh perp equity - engine.bookValue() + reserve share - fees owed.
+/// Liability (decision 26, todo 07b): every path (NAV, deposits, claims, payouts, caps) uses the engine's O(1)
+/// `bookValue()`, each series valued at its last touch; the keeper re-marks every live series at least hourly, so NAV
+/// lags the exact liability by at most about one hour of price and vol moves. The NAV guard band (entries at the high
+/// edge, exits at the low edge, from the engine's net greeks) absorbs the first part of such a move. The exact
+/// `engine.totalLiability()` is never read on chain by the pool (monitoring only).
+/// Caps: the engine's parameters are the one source of truth for the 35% / 8% outstanding caps (`engine.capBps()`);
+/// `maxOutstandingBps`, `maxPerNameBps` and `capsFor` only mirror them.
 /// @dev Kept from the reference vault: ERC-4626 shares with a 6-decimal offset (12-decimal shares), virtual shares,
 /// deposit allowlist and self-received 24h deposit lock, NAV guard band (entries at the high edge, exits at the low
 /// edge, from the engine's net greeks), pool-held spot hedges on Uniswap v3 routes with TWAP-floored minimum outputs,
@@ -60,7 +67,6 @@ contract WriterPool is
     event DepositsPausedSet(bool paused);
     event ParamsUpdated(uint32 lockSeconds, uint16 cashBufferBps, uint16 maxHedgeSlippageBps, uint128 maxTotalDeposits);
     event NavGuardUpdated(uint16 openBps, uint16 closedBps);
-    event CapsUpdated(uint16 maxOutstandingBps, uint16 maxPerNameBps);
     event HedgeRouteUpdated(address indexed stock, address indexed adapter, uint24 poolFee);
     event HedgeUnitsSynced(address indexed stock, uint256 units);
     event ModulesSet(address engine, address reserve, address feeRouter, address priceReference);
@@ -112,8 +118,6 @@ contract WriterPool is
     uint16 public maxHedgeSlippageBps;
     uint16 public navGuardOpenBps;
     uint16 public navGuardClosedBps;
-    uint16 public override maxOutstandingBps;
-    uint16 public override maxPerNameBps;
     uint128 public maxTotalDeposits;
 
     mapping(address account => bool allowed) public isDepositor;
@@ -164,8 +168,6 @@ contract WriterPool is
         maxHedgeSlippageBps = 100;
         navGuardOpenBps = 50;
         navGuardClosedBps = 300;
-        maxOutstandingBps = 3_500;
-        maxPerNameBps = 800;
         maxTotalDeposits = 2_000_000e6;
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }
@@ -407,13 +409,6 @@ contract WriterPool is
         emit NavGuardUpdated(openBps, closedBps);
     }
 
-    function setCaps(uint16 maxOutstandingBps_, uint16 maxPerNameBps_) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (maxOutstandingBps_ > BPS || maxPerNameBps_ > maxOutstandingBps_) revert InvalidParams();
-        maxOutstandingBps = maxOutstandingBps_;
-        maxPerNameBps = maxPerNameBps_;
-        emit CapsUpdated(maxOutstandingBps_, maxPerNameBps_);
-    }
-
     /// @notice Adds or replaces the Uniswap v3 route of a stock. Every listed stock needs one: the NAV guard and NAV
     /// iterate these stocks.
     function setHedgeRoute(address stock, IHedgeAdapter adapter, uint24 poolFee) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -472,10 +467,22 @@ contract WriterPool is
     }
 
     /// @inheritdoc IPool
+    /// @dev Mirrors the engine's `capBps()` (the only source; 0 while no engine is set).
+    function maxOutstandingBps() public view override returns (uint16 bps) {
+        (bps,) = _capBps();
+    }
+
+    /// @inheritdoc IPool
+    function maxPerNameBps() public view override returns (uint16 bps) {
+        (, bps) = _capBps();
+    }
+
+    /// @inheritdoc IPool
     function capsFor(uint256 liabilityWad) external view override returns (uint256, uint256) {
         int256 n = navFor(liabilityWad);
         if (n <= 0) return (0, 0);
-        return (uint256(n) * maxOutstandingBps / BPS, uint256(n) * maxPerNameBps / BPS);
+        (uint16 total, uint16 perName) = _capBps();
+        return (uint256(n) * total / BPS, uint256(n) * perName / BPS);
     }
 
     /// @inheritdoc IPool
@@ -542,9 +549,16 @@ contract WriterPool is
 
     // ---------------------------------------------------------------- internals: valuation
 
+    /// @dev The engine's O(1) book value (decision 26), never the O(series) `totalLiability()`.
     function _liability() private view returns (uint256) {
         IOptionEngine e = engine;
-        return address(e) == address(0) ? 0 : e.totalLiability();
+        return address(e) == address(0) ? 0 : e.bookValue();
+    }
+
+    function _capBps() private view returns (uint16, uint16) {
+        IOptionEngine e = engine;
+        if (address(e) == address(0)) return (0, 0);
+        return e.capBps();
     }
 
     /// @dev One pass over the tracked stocks. With `guard`, also the NAV change for an adverse feed move of
