@@ -6,7 +6,7 @@ import { createRpcPool } from "../chain/rpc-pool";
 import { loadConfig, optionalEnv, stripKeeperSecrets } from "../config";
 import { createDbClient } from "../db/client";
 import {
-  acquireHedgerLock, ApiPerpVenue, assertHedgerKeyDistinct, createChainSpotPort, createPoolSpotPort, hedgerSettings, loadBook,
+  acquireHedgerLock, ApiPerpVenue, assertHedgerKeyDistinct, createChainSpotPort, createPoolSpotPort, hedgerSettings, lastEquityPostAsOf, loadBook,
   loadHedgerSigningKey, newHedgerState, PoolSpotVenue, postHedgeEquityOnce, resolveRoutes, runHedgeCycle, type IHedgeVenue,
 } from "../hedger";
 import { createScheduler } from "../keeper/scheduler";
@@ -84,8 +84,7 @@ scheduler.add({
 scheduler.add({
   name: "hedger-equity", everyMs: 300_000, jitterMs: 2000,
   run: async () => {
-    const [row] = await sql<{ as_of: Date | null }[]>`select max(as_of) as as_of from hedge_equity_posts`;
-    const lastPostedAsOf = Math.max(lastEquityAsOf, row?.as_of ? Math.floor(row.as_of.getTime() / 1000) : 0);
+    const lastPostedAsOf = Math.max(lastEquityAsOf, await lastEquityPostAsOf(sql));
     const outcome = await postHedgeEquityOnce({
       venues, stocks: [...routes.keys()], nowSeconds: Math.floor(Date.now() / 1000), lastPostedAsOf,
       intervalSeconds: settings.equityIntervalSeconds, dryRun: settings.dryRun,

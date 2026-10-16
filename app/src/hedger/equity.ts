@@ -1,3 +1,4 @@
+import type { Sql } from "postgres";
 import { keccak256, stringToHex, type Address, type Hex } from "viem";
 import { type IHedgeVenue } from "./types";
 
@@ -51,4 +52,11 @@ export async function postHedgeEquityOnce(input: EquityDeps): Promise<EquityOutc
   if (deps.dryRun) return { posted: false, reason: "dry_run", equityUsdg, ref };
   const { hash } = await deps.post(equityUsdg, BigInt(deps.nowSeconds), ref);
   return { posted: true, equityUsdg, ref, hash };
+}
+
+/** Unix seconds of the newest indexed hedge-equity post (0 when none). Epoch is computed in SQL: the services' client is
+ * wrapped by drizzle, which makes timestamps come back as strings, so `.getTime()` on the row crashed the equity job. */
+export async function lastEquityPostAsOf(sql: Sql): Promise<number> {
+  const [row] = await sql<{ as_of: string | null }[]>`select extract(epoch from max(as_of))::bigint::text as as_of from hedge_equity_posts`;
+  return row?.as_of ? Number(row.as_of) : 0;
 }
