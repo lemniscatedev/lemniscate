@@ -4,12 +4,15 @@
 //   bun run scripts/gen-pricing-vectors.ts
 //
 // Every number is a decimal string. S, K, call, put and u are WAD (value x 1e18, rounded to the nearest integer);
-// sigmaBps is basis points (5000 = 50%); tauSeconds is 86400 (Daily) or 604800 (Weekly). The reference runs in double
+// sigmaBps is basis points (5000 = 50%); tauSeconds is 86400 (Daily) or 604800 (Weekly). delta, gamma and vega are the
+// call Greeks (todo 03) in WAD: delta per unit, gamma per 1 USDG move, vega per vol point (1% = 100 bps); put Greeks follow
+// by parity (delta - 1, same gamma and vega). Fields are only ever added at the end, so existing values keep their
+// bytes. The reference runs in double
 // precision, so each WAD value carries about 15 significant digits; compare with a relative tolerance, not exactly.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TAU, YEAR_S, callValue, putValue, uOf } from "../src/pricing";
+import { TAU, YEAR_S, callGreeks, callValue, putValue, uOf } from "../src/pricing";
 
 export const VECTOR_SEED = 0x4c4d4e53; // "LMNS"
 export const VECTOR_COUNT = 2000;
@@ -23,6 +26,9 @@ export interface PricingVector {
   call: string;
   put: string;
   u: string;
+  delta: string;
+  gamma: string;
+  vega: string;
 }
 
 /** mulberry32: small, fixed, platform-independent 32-bit PRNG. */
@@ -50,6 +56,7 @@ function vector(sCents: number, kCents: number, sigmaBps: number, tauSeconds: nu
   const K = kCents / 100;
   const sigma = sigmaBps / 10_000;
   const tau = tauSeconds / YEAR_S;
+  const g = callGreeks(S, K, sigma, tau);
   return {
     S: (BigInt(sCents) * CENT_WAD).toString(),
     K: (BigInt(kCents) * CENT_WAD).toString(),
@@ -58,6 +65,9 @@ function vector(sCents: number, kCents: number, sigmaBps: number, tauSeconds: nu
     call: toWad(callValue(S, K, sigma, tau)),
     put: toWad(putValue(S, K, sigma, tau)),
     u: toWad(uOf(sigma, tau)),
+    delta: toWad(g.delta),
+    gamma: toWad(g.gamma),
+    vega: toWad(g.vega),
   };
 }
 
@@ -92,7 +102,7 @@ export function renderPricingVectors(seed = VECTOR_SEED, count = VECTOR_COUNT): 
   const cases = buildPricingVectors(seed, count).map((v) => `    ${JSON.stringify(v)}`);
   return [
     "{",
-    `  "description": "Everlasting option values (r = 0) from app/src/pricing. S, K, call, put, u are WAD decimal strings; sigmaBps in bps; tauSeconds 86400 or 604800. Double-precision reference: compare with a relative tolerance.",`,
+    `  "description": "Everlasting option values (r = 0) from app/src/pricing. S, K, call, put, u are WAD decimal strings; sigmaBps in bps; tauSeconds 86400 or 604800; delta, gamma, vega are the call Greeks in WAD (gamma per 1 USDG move, vega per vol point). Double-precision reference: compare with a relative tolerance.",`,
     `  "generator": "app/scripts/gen-pricing-vectors.ts",`,
     `  "seed": ${seed},`,
     `  "count": ${count},`,

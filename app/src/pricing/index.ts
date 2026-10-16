@@ -13,4 +13,5 @@ export {
   type NumericOptions,
   type QuadratureOptions,
 } from "./everlasting";
+export { callGreeks, putGreeks, dVdu, dudSigma, VOL_POINT, type Greeks } from "./greeks";
 export { fundingStep, fundingRate } from "./funding";
