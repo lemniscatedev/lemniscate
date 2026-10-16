@@ -87,9 +87,17 @@ export function createListerJob(context: KeeperContext) {
   const registry = context.deployment.contracts.registry as Address;
   const priceGuard = context.deployment.contracts.priceGuard as Address;
 
-  async function listedState(id: Hex): Promise<ChainSeries | undefined> {
-    const all = await reader.readAll();
-    return all.find((series) => series.id === id);
+  /** The series right after its listing, read at the listing's own block. A `latest` read can be served from the RPC
+   * pool's short eth_call cache and miss a series listed a moment ago (todo 23: the second step was then skipped). */
+  async function listedState(id: Hex, blockNumber?: bigint): Promise<{ buyable: boolean; archived: boolean } | undefined> {
+    try {
+      const row = await context.clients.stateClient.readContract({
+        address: registry, abi: SeriesRegistryAbi, functionName: "seriesOf", args: [id], ...(blockNumber !== undefined ? { blockNumber } : {}),
+      }) as { token: Address; buyable: boolean; archived: boolean };
+      return /^0x0{40}$/i.test(row.token) ? undefined : row;
+    } catch {
+      return undefined;
+    }
   }
 
   return async (options: { force?: boolean } = {}): Promise<Record<string, unknown>> => {
@@ -131,12 +139,14 @@ export function createListerJob(context: KeeperContext) {
     let remaining = 0;
 
     type Outcome = "sent" | "simulated" | "failed" | "capped";
+    let lastBlock: bigint | undefined;
     const send = async (label: string, data: Hex): Promise<Outcome> => {
       if (sent >= limit) { remaining++; return "capped"; }
       sent++;
       try {
         const result = await context.tx.submit({ label, to: registry, data });
         dryRun ||= result.simulated;
+        lastBlock = result.receipt?.blockNumber;
         return result.simulated ? "simulated" : "sent";
       } catch (error) {
         const summary = safeErrorSummary(error);
@@ -155,8 +165,12 @@ export function createListerJob(context: KeeperContext) {
       if (outcome === "sent" || outcome === "simulated") listed.push(item.id);
       if (outcome !== "sent") continue;
       // Whatever a fresh listing's default is, grid series must end up buyable.
-      const state = await listedState(item.id);
-      if (state && !state.buyable && !state.archived) {
+      const state = await listedState(item.id, lastBlock);
+      if (!state) {
+        failures.push(`lister:list: ${item.id} not readable after its listing; retrying`);
+        continue;
+      }
+      if (!state.buyable && !state.archived) {
         await send("lister:buyable", encodeFunctionData({ abi: SeriesRegistryAbi, functionName: "setBuyable", args: [item.id, true] }));
       }
     }

@@ -37,6 +37,10 @@ export class FakeChain {
   /** Make a named call (or `${name}:${id}`) revert. */
   failing = new Set<string>();
   listDefaultBuyable = true;
+  /** Model the RPC pool's short eth_call cache at "latest": the first seriesCount read is served again afterwards. Reads
+   * pinned to a block number are always fresh. */
+  staleLatest = false;
+  private cachedCount: bigint | undefined;
   multicalls = 0;
 
   /** Epochs per (stock, isCall, strike, tau), as SeriesRegistry keeps them (todo 07b): ids carry the epoch. */
@@ -56,8 +60,12 @@ export class FakeChain {
     return series;
   }
 
-  private call(target: Address, functionName: string, args: readonly unknown[] = []): unknown {
-    if (functionName === "seriesCount") return BigInt(this.order.length);
+  private call(target: Address, functionName: string, args: readonly unknown[] = [], pinned = false): unknown {
+    if (functionName === "seriesCount") {
+      if (!this.staleLatest || pinned) return BigInt(this.order.length);
+      this.cachedCount ??= BigInt(this.order.length);
+      return this.cachedCount;
+    }
     if (functionName === "seriesIdAt") return this.order[Number(args[0])];
     if (functionName === "seriesOf") {
       const s = this.series.get(args[0] as Hex);
@@ -80,7 +88,7 @@ export class FakeChain {
   clients() {
     return {
       stateClient: {
-        readContract: async (p: { address: Address; functionName: string; args?: readonly unknown[] }) => this.call(p.address, p.functionName, p.args),
+        readContract: async (p: { address: Address; functionName: string; args?: readonly unknown[]; blockNumber?: bigint }) => this.call(p.address, p.functionName, p.args, p.blockNumber !== undefined),
         multicall: async (p: { contracts: { address: Address; functionName: string; args?: readonly unknown[] }[]; allowFailure?: boolean }) => {
           this.multicalls++;
           return p.contracts.map((c) => {
@@ -128,7 +136,7 @@ export class FakeChain {
         } else if (name === "setBuyable") this.series.get(args[0] as Hex)!.buyable = args[1] as boolean;
         else if (name === "archive") { const s = this.series.get(args[0] as Hex)!; s.archived = true; s.buyable = false; }
         else if (name === "accrueMany") for (const id of args[0] as Hex[]) this.series.get(id)!.lastAccrual = this.nowSeconds;
-        return { simulated: false };
+        return { simulated: false, hash: keccak256(t.data), receipt: { status: "success", blockNumber: BigInt(this.sent.length) } };
       },
     };
   }

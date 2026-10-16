@@ -136,3 +136,15 @@ describe("lister and series epochs (todo 23 fork bug: ids carry the epoch since 
     expect(next.id).not.toBe(first.id);
   });
 });
+
+describe("lister follow-up reads (todo 23 fork bug: 10 of 100 listings stayed non-buyable)", () => {
+  test("a listing read back through a cached 'latest' still gets setBuyable (the read is pinned to the receipt block)", async () => {
+    const chain = chainWith();
+    chain.listDefaultBuyable = false;
+    chain.staleLatest = true;
+    const result = await createListerJob(chain.context())({ force: true });
+    expect(result.listed).toBe(40);
+    expect([...chain.series.values()].filter((s) => !s.buyable).length).toBe(0);
+  });
+});
+
