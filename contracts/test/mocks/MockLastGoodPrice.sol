@@ -40,4 +40,10 @@ contract MockLastGoodPrice is IPriceGuard {
     function poke(address stock) external view returns (PriceReading memory) {
         return read(stock);
     }
+
+    function setTwapSource(address, address, uint32, uint16) external pure {}
+
+    function twapCheck(address) external pure returns (uint256 twap, bool ok) {
+        return (0, true);
+    }
 }
