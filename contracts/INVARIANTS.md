@@ -62,10 +62,43 @@ Expected reverts are swallowed; a Panic is recorded and fails `invariant_noPanic
 | R19 one PriceGuard read per stock per transaction; readLite == read minus TWAP | `EngineAccrue.t.sol::test_R19_*`, `PriceGuardTwap.t.sol::test_R19_*` |
 | R20 stress re-checked on accrue and sells; auto-pause and auto-resume | `EngineAccrue.t.sol::test_R20_*` |
 
-## 3. Notes
+## 3. Writer Pool invariants (stateful)
+
+Handler: `test/pool/PoolInvariant.t.sol::PoolHandler` (LP deposit / request / claim / share transfer, engine buy / sell /
+accrual through `MockPoolEngine`, hedger rebalance, price moves of at most 10%, warps, fee distribution, checkpoints)
+over the real `WriterPool` (ERC1967 proxy), `Reserve`, `FeeRouter` and `UniswapV3HedgeAdapter`. 64 runs x 120 calls.
+
+| # | Invariant | Test |
+|---|-----------|------|
+| W1 | Share supply == sum of holders (LPs + the pool's queue escrow); escrow == `queuedShares` == open ticket shares | `test/pool/PoolInvariant.t.sol::invariant_R12_sharesSupplyEqualsHolders` |
+| W2 | USDG conserved: everything minted sits with a known holder; engine and adapter hold none | `test/pool/PoolInvariant.t.sol::invariant_R12_usdgConserved` |
+| W3 | No allowance left from the pool to the adapter or from the adapter to the router | `test/pool/PoolInvariant.t.sol::invariant_R12_noDanglingApprovals` |
+| W4 | Tracked hedge units <= Stock Tokens held (no phantom hedge) | `test/pool/PoolInvariant.t.sol::invariant_R12_hedgeUnitsBackedByStock` |
+| W5 | NAV == cash + hedge x S + fresh perp equity - fees owed - liability + reserve share; reserve share <= reserve; navLow <= nav <= navHigh | `test/pool/PoolInvariant.t.sol::invariant_R12_navMatchesRecomputation` |
+
+## 4. WriterPool, Reserve, FeeRouter rules (todo 08)
+
+| # | Property | Test |
+|---|----------|------|
+| R1 | Shares minted at NAV (guard high edge) x 1.001; 12-decimal shares; first deposit >= 1 USDG; a donation cannot capture a later deposit | `test/pool/WriterPool.t.sol::test_R1_depositMintsAtNavPlus10Bps`, `::test_R1_firstDepositorCannotInflate` |
+| R2 | Allowlist or public (admin switch); self-received deposits; 24h lock blocks transfers and queue requests | `test/pool/WriterPool.t.sol::test_R2_depositAllowlistOrPublic`, `::test_R2_depositLock24hAndSelfReceiver` |
+| R3 | 72h queue paid at claim-time NAV (guard low edge); cash raised from hedges; pro rata when liquid assets cannot pay every queued share, rest of the ticket stays claimable; the queue is the only exit | `test/pool/WriterPool.t.sol::test_R3_withdrawalQueue72h`, `::test_R3_claimRaisesCashFromHedges`, `::test_R3_massExitProRataNeverLost`, `::test_R3_queueIsTheOnlyExit` |
+| R4 | NAV formula equals an independent recomputation; readLite preferred; NAV guard band from the engine's net greeks (gamma only when hedged, wider when closed) | `test/pool/PoolFuzz.t.sol::testFuzz_R4_navFormula`, `test/pool/WriterPool.t.sol::test_R4_navFormula`, `::test_R4_navPrefersReadLite`, `::test_R4_navGuardBandFromNetGreeks` |
+| R5 | Perp equity: HEDGER only, asOf not in the future and increasing, <= 10%/h move without a fill ref, stale after 2h (excluded from NAV) | `test/pool/WriterPool.t.sol::test_R5_hedgeEquityPosts` |
+| R6 | Reserve takes 15% of spread up to 5% of NAV; losses below the high-water mark are covered by the reserve before LP NAV; exits and payouts draw only the reserve share | `test/pool/WriterPool.t.sol::test_R6_reserveAbsorbsFirst`, `::test_R6_payDrawsReserveOnlyUpToItsShare`, `test/pool/FeeRouter.t.sol::test_R6_reserveCoverIsPoolOnly` |
+| R7 | Protocol fee 10% of spread and funding; owed when cash is short; weekly 80/10/5/5 split (workers: pool/keepers/hedger), unset buckets held, dust stays | `test/pool/WriterPool.t.sol::test_R7_protocolFeeOnSpreadAndFunding`, `::test_R7_feeOwedWhenCashIsShort`, `test/pool/FeeRouter.t.sol::test_R7_feeRouterSplit`, `::test_R7_roundingDustStaysInRouter`, `::test_R7_splitsAreAdminOnlyAndSumToOne` |
+| R8 | Caps 3500 / 800 bps exposed (`capsFor`), admin only | `test/pool/WriterPool.t.sol::test_R8_capsExposedToEngine` |
+| R9 | onSale / onFunding / pay engine only; pay raises cash from hedges, then the reserve share, else reverts Insolvent | `test/pool/WriterPool.t.sol::test_R9_engineOnly`, `::test_R9_payRaisesCashThenRevertsInsolvent` |
+| R10 | Deposit then request + claim at an unchanged mark never returns more than deposited | `test/pool/PoolFuzz.t.sol::testFuzz_R10_navRoundTripNeverProfits`, `test/pool/WriterPool.t.sol::test_R10_navRoundTripNeverProfits` |
+| R11 | Guardian can pause deposits only (not unpause, not params); claims and pay-outs keep working | `test/pool/WriterPool.t.sol::test_R11_guardianPausesDepositsOnly` |
+| R12 | See section 3 (W1-W5) | `test/pool/PoolInvariant.t.sol` |
+| R13 | Pool holds the spot hedge: HEDGER-only rebalance, TWAP-floored both ways, caller bound, fresh price, cash buffer, exact approvals cleared | `test/pool/WriterPool.t.sol::test_R13_poolHoldsSpotHedges`, `::test_R13_rebalanceIsTwapFlooredAndCallerBounded`, `::test_R13_rebalanceNeedsFreshPriceRouteAndCash`, `::test_R13_routeAndSyncAdminOnly` |
+| - | Upgrades admin only; initializers locked; engine set once | `test/pool/WriterPool.t.sol::test_upgradeAdminOnlyAndInitLocked` |
+
+
+## 5. Notes
 
 - The stress book stores, per series, the value change in each scenario (S x 0.75, 0.9, 1.1, 1.25) from a full
   revaluation at the series' last touch, not a delta-gamma approximation: for Daily options a delta-gamma estimate of a
   25% gap overstates the loss about four times. The book is exact at the prices it was refreshed at and within 5% after
   a 0.5% move (`testFuzz_R4_stressWithin5PctAfterHalfPctMoves`); the keeper's hourly `accrueMany` refreshes it.
-- `test/WriterPool.t.sol` covers the legacy vault, which stays until the Writer Pool rewrite lands.

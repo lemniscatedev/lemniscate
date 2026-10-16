@@ -23,7 +23,10 @@ app/         Bun services: API, indexer, keeper, migrations
 | `OptionToken` | ERC-20 clone per series. Only the engine can mint/burn; every transfer accrues funding first |
 | `OptionTokenFactory` | Deploys an `OptionToken` clone per series for the registry |
 | `PriceGuard`, `VolOracle` | The underlying price with session and freshness, and the signed volatility posts |
-| `WriterPool` | ERC-4626 vault over USDG. Counterparty for all trades, holds the hedges |
+| `WriterPool` | USDG Writer Pool (ERC-4626 shares, 12 decimals). Counterparty for all trades, holds the spot hedges; deposits at NAV + 10 bps, withdrawals through a 72h queue paid at NAV |
+| `Reserve` | First-loss layer of the pool: covers losses before LP NAV, funded from a share of the spread |
+| `FeeRouter` | Collects the protocol fee and splits it weekly (pool writers, keepers, hedger, treasury, stakers, burn) |
+| `PoolHedging` | External library linked into `WriterPool`: hedge valuation, TWAP-floored swaps, cash raising |
 | `MarketHours` | Market session calendar, pushed by the keeper |
 | `UniswapV3HedgeAdapter` | Swaps through Uniswap v3 `SwapRouter02` for hedging |
 | `UniswapV3TwapReference` | Pool TWAP that floors the pool's forced hedge sales |
