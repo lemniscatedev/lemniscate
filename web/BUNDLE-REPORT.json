@@ -1,0 +1,245 @@
+{
+  "entry": "/assets/app/lemniscate-TEWHNZQM.js",
+  "outputs": [
+    {
+      "file": "dist/assets/app/chunk-6MXF3PQN.js",
+      "bytes": 28738,
+      "imports": 7
+    },
+    {
+      "file": "dist/assets/app/chunk-H2RXIK6K.js",
+      "bytes": 217,
+      "imports": 3
+    },
+    {
+      "file": "dist/assets/app/chunk-6AJXXFQH.js",
+      "bytes": 21106,
+      "imports": 2
+    },
+    {
+      "file": "dist/assets/app/chunk-UWOFXZV6.js",
+      "bytes": 217,
+      "imports": 3
+    },
+    {
+      "file": "dist/assets/app/chunk-Z2NNYWJ4.js",
+      "bytes": 43742,
+      "imports": 11
+    },
+    {
+      "file": "dist/assets/app/chunk-HOJNYJPN.js",
+      "bytes": 13096,
+      "imports": 7
+    },
+    {
+      "file": "dist/assets/app/chunk-SYP63ZWK.js",
+      "bytes": 47609,
+      "imports": 8
+    },
+    {
+      "file": "dist/assets/app/chunk-CQCSOIPV.js",
+      "bytes": 100776,
+      "imports": 16
+    },
+    {
+      "file": "dist/assets/app/chunk-DZ72VXFQ.js",
+      "bytes": 14050,
+      "imports": 6
+    },
+    {
+      "file": "dist/assets/app/chunk-MXCFBVK7.js",
+      "bytes": 46722,
+      "imports": 10
+    },
+    {
+      "file": "dist/assets/app/chunk-PN7N7A45.js",
+      "bytes": 48222,
+      "imports": 10
+    },
+    {
+      "file": "dist/assets/app/chunk-S6OHAQQ4.js",
+      "bytes": 5099,
+      "imports": 3
+    },
+    {
+      "file": "dist/assets/app/chunk-WGYCDPH3.js",
+      "bytes": 38702,
+      "imports": 9
+    },
+    {
+      "file": "dist/assets/app/lemniscate-TEWHNZQM.js",
+      "bytes": 157251,
+      "imports": 31
+    },
+    {
+      "file": "dist/assets/app/chunk-5FKD76F4.js",
+      "bytes": 6528,
+      "imports": 2
+    },
+    {
+      "file": "dist/assets/app/chunk-7TXETQ3X.js",
+      "bytes": 12667,
+      "imports": 4
+    },
+    {
+      "file": "dist/assets/app/chunk-Z6FDWRU4.js",
+      "bytes": 9023,
+      "imports": 2
+    },
+    {
+      "file": "dist/assets/app/chunk-B4PVCCLE.js",
+      "bytes": 12003,
+      "imports": 6
+    },
+    {
+      "file": "dist/assets/app/chunk-DPBZAK2L.js",
+      "bytes": 624,
+      "imports": 1
+    },
+    {
+      "file": "dist/assets/app/chunk-UA2EIDTK.js",
+      "bytes": 16124,
+      "imports": 4
+    },
+    {
+      "file": "dist/assets/app/chunk-LSEIFINO.js",
+      "bytes": 8897,
+      "imports": 2
+    },
+    {
+      "file": "dist/assets/app/chunk-5D4H4ISI.js",
+      "bytes": 153575,
+      "imports": 21
+    },
+    {
+      "file": "dist/assets/app/chunk-EFB3UVXL.js",
+      "bytes": 20642,
+      "imports": 5
+    },
+    {
+      "file": "dist/assets/app/chunk-FQ6QIWH2.js",
+      "bytes": 41721,
+      "imports": 2
+    },
+    {
+      "file": "dist/assets/app/chunk-D7NHWAKU.js",
+      "bytes": 95817,
+      "imports": 6
+    },
+    {
+      "file": "dist/assets/app/chunk-FKXRGVHV.js",
+      "bytes": 31861,
+      "imports": 17
+    },
+    {
+      "file": "dist/assets/app/chunk-FMBEJCFH.js",
+      "bytes": 2918,
+      "imports": 2
+    },
+    {
+      "file": "dist/assets/app/chunk-4Z3WFTQM.js",
+      "bytes": 75274,
+      "imports": 8
+    },
+    {
+      "file": "dist/assets/app/chunk-UCKEHBGX.js",
+      "bytes": 76796,
+      "imports": 8
+    },
+    {
+      "file": "dist/assets/app/chunk-MW7OWLSH.js",
+      "bytes": 6532,
+      "imports": 2
+    },
+    {
+      "file": "dist/assets/app/chunk-GAGU2XAA.js",
+      "bytes": 40675,
+      "imports": 6
+    },
+    {
+      "file": "dist/assets/app/chunk-G5ZFTVUQ.js",
+      "bytes": 8897,
+      "imports": 2
+    },
+    {
+      "file": "dist/assets/app/chunk-VTVPCCPP.js",
+      "bytes": 6530,
+      "imports": 2
+    },
+    {
+      "file": "dist/assets/app/chunk-WMJ24C2Q.js",
+      "bytes": 23048,
+      "imports": 9
+    },
+    {
+      "file": "dist/assets/app/chunk-3APMKAQU.js",
+      "bytes": 22824,
+      "imports": 7
+    },
+    {
+      "file": "dist/assets/app/chunk-V2SPVEJJ.js",
+      "bytes": 42831,
+      "imports": 3
+    },
+    {
+      "file": "dist/assets/app/chunk-74I7GK4P.js",
+      "bytes": 4545,
+      "imports": 2
+    },
+    {
+      "file": "dist/assets/app/chunk-TXVPMCQF.js",
+      "bytes": 102870,
+      "imports": 10
+    },
+    {
+      "file": "dist/assets/app/chunk-KEV67PWK.js",
+      "bytes": 8899,
+      "imports": 2
+    },
+    {
+      "file": "dist/assets/app/chunk-EZUKICF4.js",
+      "bytes": 3843,
+      "imports": 2
+    },
+    {
+      "file": "dist/assets/app/chunk-SLVS5RRP.js",
+      "bytes": 6528,
+      "imports": 2
+    },
+    {
+      "file": "dist/assets/app/chunk-5Y6U3P52.js",
+      "bytes": 15005,
+      "imports": 4
+    },
+    {
+      "file": "dist/assets/app/chunk-L2OSYEU4.js",
+      "bytes": 6532,
+      "imports": 2
+    },
+    {
+      "file": "dist/assets/app/chunk-M7DJHXAP.js",
+      "bytes": 2077,
+      "imports": 2
+    },
+    {
+      "file": "dist/assets/app/chunk-QRWIHCGJ.js",
+      "bytes": 6530,
+      "imports": 2
+    },
+    {
+      "file": "dist/assets/app/chunk-2SOPS7JQ.js",
+      "bytes": 24870,
+      "imports": 2
+    },
+    {
+      "file": "dist/assets/app/chunk-MUZOTPIG.js",
+      "bytes": 779493,
+      "imports": 1
+    },
+    {
+      "file": "dist/assets/app/chunk-JC6BBVYT.js",
+      "bytes": 1430,
+      "imports": 0
+    }
+  ]
+}

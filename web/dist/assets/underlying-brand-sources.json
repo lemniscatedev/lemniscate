@@ -1,0 +1,37 @@
+[
+  {
+    "slot": "prCes9oaidK35fDMfOOUxQsAHCM",
+    "brand": "nvidia",
+    "ticker": "NVDA",
+    "label": "NVIDIA",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/develop/icons/nvidia.svg"
+  },
+  {
+    "slot": "0AwtEmgx6SM5WkothpysVeZORL4",
+    "brand": "tesla",
+    "ticker": "TSLA",
+    "label": "Tesla",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/develop/icons/tesla.svg"
+  },
+  {
+    "slot": "W2j7P007WypU7srPcJKNTGRTgE",
+    "brand": "spdr",
+    "ticker": "SPY",
+    "label": "SPDR S&P 500",
+    "source": "https://www.ssga.com/library-content/images/site/state-street-investment-management-logo.svg"
+  },
+  {
+    "slot": "g0SeyN4a2Nzx32mfNvkL6agosak",
+    "brand": "qqq",
+    "ticker": "QQQ",
+    "label": "Invesco QQQ",
+    "source": "https://www.invesco.com/content/dam/invesco/qqq-etf/en/logo/QQQ.svg"
+  },
+  {
+    "slot": "eTpMDTXkfIdP529bLnlvED2bYGE",
+    "brand": "robinhood",
+    "ticker": "HOOD",
+    "label": "Robinhood",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/develop/icons/robinhood.svg"
+  }
+]

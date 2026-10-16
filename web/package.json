@@ -1,0 +1,18 @@
+{
+  "name": "lemniscate-website",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node serve.mjs",
+    "start": "node serve.mjs",
+    "check": "node --check dist/lemniscate.js && node --check dist/dashboard.js && node --check dist/assets/asset-loader.js && node --check serve.mjs && node scripts/verify-site.mjs",
+    "build": "node build-runtime.mjs && npm run check"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

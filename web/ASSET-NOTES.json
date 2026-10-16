@@ -1,0 +1,48 @@
+{
+  "brand": "Lemniscate",
+  "transparent_logo": {
+    "file": "dist/assets/lemniscate-mark-v2.png",
+    "source": "Previously extracted supplied Lemniscate mark",
+    "method": "Built-in ImageGen",
+    "transparent_background": true,
+    "prompt": "Use case: precise-object-edit. Edit target: supplied transparent Lemniscate brand mark. Website asset. Preserve the exact double-line gold infinity ribbon, its cream center band, right cream four-point star, proportions and orientation. Make the existing star more legible on an off-white webpage by adding a crisp fine warm gold outline around the star, about the same weight as one sixth of the gold ribbon stroke. Keep the star cream-white, with its existing silhouette and place. Remove tiny speckle artifacts around the mark and internal negative spaces. Tight landscape crop around the complete infinity and star with a small 3% transparent margin. All background and negative spaces genuinely transparent. Clean precision edges. No new symbols, text, glow, shadows or background. This is the same logo with improved star contrast, not a redesign."
+  },
+  "photography": {
+    "manifest": "dist/assets/photo-sources.json",
+    "count": 61,
+    "style": "Real stock photographs with warmth and saturation styling. Decorative content illustrations removed; lighter reading gradients preserve photographs.",
+    "reuse": "Each stock photo has one page and image-slot assignment. Brand marks and interface icons are excluded from this restriction.",
+    "fallbacks": "Photo slots contain real stock photography as compatibility fallbacks. Old blue graphic panels have been removed.",
+    "delivery": "WebP photographs with 1400 px desktop and 768 px phone variants, prepared and decoded before the view is revealed."
+  },
+  "reference": {
+    "site": "https://marketinglab.framer.ai/",
+    "recording": "User supplied Screen Recording 2026-10-13 at 4.09.55 PM.mov",
+    "animation": "Adapted native Framer modules; footer rotation uses the original ten-second linear looping motion."
+  },
+  "icons": {
+    "method": "Code-native SVG",
+    "count": 24,
+    "style": "Paired gold ribbon rails with cream centers and four-point star accents",
+    "directory": "dist/assets/icons"
+  },
+  "v5_changes": [
+    "Solid cream reading surfaces and stronger dark-section contrast",
+    "Lifecycle section replaces the pricing grid",
+    "Equal Shield and Stock Token guide card dimensions",
+    "Full dashboard logo uses contain sizing"
+  ],
+  "carousel": "Five existing issuer / ETF identity marks restyled in gold and cream. Source URLs: dist/assets/underlying-brand-sources.json.",
+  "favicon": "Actual Lemniscate infinity and star on transparent SVG, PNG, and ICO canvases.",
+  "loading": "No minimum loading delays. Warm views transition directly. Initial views and uncached assets use the animated brand loader until ready.",
+  "performance": {
+    "original_photo_bytes": 13509432,
+    "optimized_photo_bytes": 6268684,
+    "photo_reduction_percent": 53.6,
+    "logo_before_bytes": 536802,
+    "logo_after_bytes": 50296,
+    "mobile_photo_bytes": 2636450
+  },
+  "navigation": "Dashboard mounts within the existing document. Browser-local workspace records are preserved; route handlers are disposed before remounting.",
+  "guides": "Explore the mechanics replaces the subscription block. Email subscription controls have been removed."
+}
