@@ -31,7 +31,7 @@ let receipts=DEMO?[]:load(RECEIPTS_KEY,[]);
 try{localStorage.removeItem('lemniscate.policies.v2')}catch{}// old browser-local policy list, no longer a source of truth
 
 // ---------------------------------------------------------------- data from the API
-const data={config:null,names:[],chains:{},vol:{},corp:{},pool:null,positions:null,account:{},activity:null,agents:null,smart:null,error:null,loading:true};
+const data={config:null,names:[],chains:{},vol:{},corp:{},pool:null,positions:null,account:{},activity:null,agents:null,smart:null,invites:{required:false,approved:null},error:null,loading:true};
 let region={status:'pending'};
 let selected=params.get('name')||'NVDA',side='call',speed='WEEKLY',strike=null,units='10',shieldName=null,shieldUnits='',shieldStrike=null,poolMode='deposit';
 let quoteState={key:'',result:null,error:null,loading:false};let quoteTimer=null;
@@ -100,6 +100,7 @@ async function loadAgents(){
  try{data.agents=await api.agents(w)}catch(error){data.agents={error:plainError(error)}}
 }
 async function loadAccount(){
+ await loadInvites();
  await loadSmart();
  const who=owner();
  if(!who||MODE==='offline'){data.positions=null;data.account={};data.activity=null;data.agents=null;return}
@@ -176,7 +177,7 @@ function trade(){
  const list=names().map(n=>`<button class="dash-instrument ${n===selected?'active':''}" data-action="market" data-market="${esc(n)}"><strong>${esc(n)}</strong><span>${esc(meta(n).name)}</span><small>${chainOf(n)?money(num(chainOf(n).spot)):'—'}</small></button>`).join('');
  const table=rows.length?`<div class="dash-table-scroll"><table class="dash-chain-table"><thead><tr><th>Strike</th><th>Up call</th><th>Down put</th><th>${speed==='WEEKLY'?'Weekly':'Daily'} cost / day</th><th></th></tr></thead><tbody>${rows.map(r=>{const o=optionAt(r,side==='call');return `<tr class="${r.strike===strike?'selected':''}"><td data-label="Strike">${money(num(r.strike))} ${Math.abs(r.moneynessPct)<.5?'<small style="color:#9b772f">ATM</small>':`<small>${r.moneynessPct>0?'+':''}${fmt(r.moneynessPct,1)}%</small>`}</td><td data-label="Up call">${r.call?money(num(r.call.ask)):'—'}</td><td data-label="Down put">${r.put?money(num(r.put.ask)):'—'}</td><td data-label="Cost / day">${o?esc(o.displayCost.replace('costs about ','')):'—'}</td><td data-label=""><button data-action="strike" data-strike="${esc(r.strike)}" aria-label="Select strike ${money(num(r.strike))}">Select ${window.LM_ICON_SVGS.arrow}</button></td></tr>`}).join('')}</tbody></table></div>`
   :`<p class="dash-muted" style="margin:24px 0">${MODE==='offline'?'The option chain appears here when the site is connected to the Lemniscate service.':data.loading?'Loading the option chain…':'No options are listed on this name right now.'}</p>`;
- return heading('A view, without the deadline.','Choose an underlying, direction, strike, and pace.',button('Understand costs '+icons.arrow,'cost-help','ghost'))
+ return inviteBar()+heading('A view, without the deadline.','Choose an underlying, direction, strike, and pace.',button('Understand costs '+icons.arrow,'cost-help','ghost'))
  +`<div class="dash-trade-layout"><section class="glass dash-chain"><div class="dash-search"><span>${names().length} underlyings</span></div><div class="dash-instruments" id="market-results">${list}</div><div class="dash-chain-head"><div><h2>${esc(meta(selected).name)}</h2><p>${esc(selected)} · Underlying ${c?money(num(c.spot)):'—'}${c?.priceUpdatedAt?` · price ${fmtTime(Date.parse(c.priceUpdatedAt))}`:''}</p></div>${sessionPill(selected)}</div>${blockNotes(selected).map(t=>notice(t,'warn')).join('')}${notice(sessionNote(selected))}${chart(payoffShape(selected,side==='call',num(row?.strike)),'#b8873d','option-value')}<div class="dash-chart-caption"><span>${side==='call'?'Up call':'Down put'} payoff at the strike, before costs</span><span>75% of today’s price → 125%</span></div><div class="lm-segmented" aria-label="Pricing speed" style="margin:18px 0 6px"><button class="${speed==='DAILY'?'selected':''}" data-action="speed" data-speed="DAILY">Daily</button><button class="${speed==='WEEKLY'?'selected':''}" data-action="speed" data-speed="WEEKLY">Weekly</button></div>${table}</section>${ticket(row,opt)}</div>`;
 }
 function ticket(row,opt){
@@ -227,7 +228,7 @@ function shield(){
  if(rows.length&&!rows.some(r=>r.row.strike===shieldStrike))shieldStrike=rows.reduce((a,b)=>Math.abs(b.pct-10)<Math.abs(a.pct-10)?b:a).row.strike;
  const pick=rows.find(r=>r.row.strike===shieldStrike);
  const stock=data.config?.stocks?.find(s=>s.name===name);
- return heading('A little protection.<br>A little more peace of mind.','Protect a Stock Token holding with an everlasting Weekly Down option.')
+ return inviteBar()+heading('A little protection.<br>A little more peace of mind.','Protect a Stock Token holding with an everlasting Weekly Down option.')
  +`<div class="dash-shield-layout"><section class="glass dash-shield-visual"><span class="lm-eyebrow">Shield / ${esc(name)}</span><h2>Keep your holding.<br>Add a floor below the strike.</h2><p>A Down option gains value below its strike. Choose how many Stock Token units to cover and a listed protection strike, then review the cost before you add Shield.</p>${chart(payoffShape(name,false,num(pick?.row.strike)),'#b8873d','shield')}<div class="dash-shield-legend"><span><i></i>Down payoff at the protection strike, before premium, funding and spread</span></div>${blockNotes(name).map(t=>notice(t,'warn')).join('')}${notice(sessionNote(name))}</section>
  <aside class="glass dash-ticket"><div class="dash-ticket-head"><h2>Add your Shield</h2><span>Weekly Down</span></div><label class="dash-label" for="shield-market">Stock Token</label><select class="dash-field" id="shield-market">${names().map(n=>`<option value="${esc(n)}" ${n===name?'selected':''}>${esc(n)} · ${esc(meta(n).name)}</option>`).join('')}</select><label class="dash-label" for="shield-units">Stock Token units to protect${stock&&data.account.stockBalance?.[name]!==undefined?`<small>You hold ${fmt(Number(fromRaw(data.account.stockBalance[name],18,4)),4)}</small>`:''}</label><input class="dash-field" id="shield-units" inputmode="decimal" value="${esc(shieldUnits||'1')}"><div class="dash-label">Protection strike (listed Weekly strikes)</div><div class="dash-strikes">${rows.map(r=>`<button class="${r.row.strike===shieldStrike?'active':''}" data-action="shield-level" data-strike="${esc(r.row.strike)}">${money(num(r.row.strike))}<small> · ${fmt(r.pct,1)}% below</small></button>`).join('')||'<span class="dash-muted">No listed protection strikes right now.</span>'}</div><div id="shield-summary">${shieldSummary(name,pick)}</div></aside></div>`;
 }
@@ -275,6 +276,7 @@ function pool(){
 
 function agents(){
  const router=data.config?.contracts?.agentRouter;
+ const nameChips=list=>{const items=(list||[]).map(x=>{const cfg=(data.config?.stocks||[]).find(c=>String(c.stock).toLowerCase()===String(x.stock).toLowerCase());return x.name||cfg?.name||short(x.stock)});return items.length?`<div class="dash-policy-names" aria-label="Allowed names">${items.map(n=>`<span class="dash-name-chip">${esc(n)}</span>`).join('')}</div>`:''};
  const head=heading('Permission, with a boundary.','Budgets, expiry, and allowed names belong beside every agent.',button('Export policies ↓','export-policies','ghost'));
  const banner=`<section class="glass dash-agent-banner"><div><span class="lm-eyebrow">Your agent desk</span><h2 style="margin-top:16px">Let a policy<br>hold the boundaries.</h2><p>An agent key can buy, sell or Shield for you only inside a budget, a per-trade limit, an expiry and the names you allow. Setting and revoking a policy are transactions you sign.</p></div>${button('Create a policy +','create-policy','gold',router&&!DEMO&&canTrade()?'':'disabled')}</section>`;
  if(MODE==='offline')return head+banner+empty('Agent policies need live data.','The agent router address comes from the Lemniscate service, which is not connected on this site yet.','','');
@@ -283,7 +285,7 @@ function agents(){
  if(!W.wallet().address)return head+banner+empty('Connect a wallet to manage policies.','Policies belong to your wallet address.','connect','Connect wallet','');
  const ag=data.agents;
  const rows=ag?.agents||[];
- const list=ag?.error?notice(ag.error,'warn'):ag===null?'<p class="dash-muted" style="margin:24px 0">Loading your policies…</p>':rows.length?`<div class="dash-policy-grid">${rows.map(p=>{const status=p.revoked?'Revoked':p.expired?'Expired':'Active';return `<article class="glass dash-policy"><span class="dash-policy-status ${p.active?'':'revoked'}">${status}</span><h3>${esc(short(p.agent))}</h3>${line('Budget',money(num(p.budgetUsdg)))}${line('Spent',money(num(p.spentUsdg)))}${line('Left to spend',money(num(p.remainingBudgetUsdg)))}${line('Per trade',money(num(p.maxPerTradeUsdg)))}${line('Expires',fmtTime(Date.parse(p.expiresAt)))}${line('May sell / Shield',(p.canSell?'Yes':'No')+' / '+(p.canShield?'Yes':'No'))}${line('Trades',String(p.tradeCount))}<div class="dash-policy-actions">${!p.revoked?button('Revoke','revoke-policy','ghost small',`data-agent="${esc(p.agent)}"`):''}</div></article>`}).join('')}</div>`:empty('Your boundaries start here.','Create a policy with a budget, allowed names, and an expiry.','create-policy','Create a policy',' ');
+ const list=ag?.error?notice(ag.error,'warn'):ag===null?'<p class="dash-muted" style="margin:24px 0">Loading your policies…</p>':rows.length?`<div class="dash-policy-grid">${rows.map(p=>{const status=p.revoked?'Revoked':p.expired?'Expired':'Active';return `<article class="glass dash-policy"><span class="dash-policy-status ${p.active?'':'revoked'}">${status}</span><h3>${esc(short(p.agent))}</h3>${line('Budget',money(num(p.budgetUsdg)))}${line('Spent',money(num(p.spentUsdg)))}${line('Left to spend',money(num(p.remainingBudgetUsdg)))}${line('Per trade',money(num(p.maxPerTradeUsdg)))}${line('Expires',fmtTime(Date.parse(p.expiresAt)))}${line('May sell / Shield',(p.canSell?'Yes':'No')+' / '+(p.canShield?'Yes':'No'))}${line('Trades',String(p.tradeCount))}${nameChips(p.allowedStocks)}<div class="dash-policy-actions">${!p.revoked?button('Revoke','revoke-policy','ghost small',`data-agent="${esc(p.agent)}"`):''}</div></article>`}).join('')}</div>`:empty('Your boundaries start here.','Create a policy with a budget, allowed names, and an expiry.','create-policy','Create a policy',' ');
  const trades=ag?.error||!ag?null:rows.flatMap(p=>p.recentTrades||[]).sort((a,b)=>Date.parse(b.ts)-Date.parse(a.ts)).slice(0,50);
  const tradeList=`<section class="glass dash-activity" style="margin-top:22px"><div class="dash-panel-title"><h2>Agent trades</h2>${button('Refresh','agent-trades','ghost small')}</div>${trades===null?'<p class="dash-muted">Agent trades appear here once your policies load.</p>':trades.length?trades.map(t=>`<div class="dash-activity-row"><span class="action-icon">${window.LM_ICON_SVGS.agents||window.LM_ICON_SVGS.activity}</span><div><strong>${t.side==='buy'?'Buy':'Sell'} by ${esc(short(t.agent))}</strong><small>${fmtTime(Date.parse(t.ts))}${t.name?' · '+esc(optionLabel(t)):''}</small></div><span>${esc(t.name||'—')}</span><span style="text-align:right">${money(num(t.usdg))}</span><a class="receipt" href="${esc(explorerTx(t.txHash))}" target="_blank" rel="noopener">Explorer ${window.LM_ICON_SVGS.arrow}</a></div>`).join(''):'<p class="dash-muted">No agent trades yet.</p>'}</section>`;
  return head+banner+list+tradeList;
@@ -371,6 +373,57 @@ async function connect(){
  });
 }
 
+// ---------------------------------------------------------------- invite codes (closed beta, website and API only)
+async function loadInvites(){
+ if(DEMO||MODE!=='live')return;
+ try{const r=await api.invitesStatus(W.wallet().address||'');data.invites={required:r.required===true,approved:r.approved===null||r.approved===undefined?null:r.approved===true}}
+ catch{/* the service enforces the gate either way; keep the last known state */}
+}
+const needsInvite=()=>!DEMO&&MODE==='live'&&data.invites.required&&data.invites.approved!==true;
+function inviteBar(){
+ if(!needsInvite())return '';
+ return `<div class="glass dash-invite" role="status"><div><strong>Invite-only for now.</strong><span>Enter your invite code to start buying. Selling is always open.</span></div>${button('Enter invite code','invite','gold')}</div>`;
+}
+const INVITE_ALPHABET=/^[A-Z2-9]{12}$/;
+async function sha256Hex(text){const d=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));return Array.from(new Uint8Array(d),b=>b.toString(16).padStart(2,'0')).join('')}
+async function redeemInvite(rawCode){
+ const code=String(rawCode).toUpperCase().replace(/[^A-Z0-9]/g,'');
+ if(!INVITE_ALPHABET.test(code))throw Object.assign(new Error('That code is not valid or has already been used.'),{status:403,code:'INVALID_CODE'});
+ const address=W.wallet().address.toLowerCase();
+ const nonce=Array.from(crypto.getRandomValues(new Uint8Array(12)),b=>b.toString(16).padStart(2,'0')).join('');
+ const issued=new Date(Date.now()-1000).toISOString(),expires=new Date(Date.now()+5*60_000).toISOString();
+ const payload=await sha256Hex(JSON.stringify({code}));
+ const message=['Lemniscate wants you to sign this message.','','Action: invites.redeem',`Address: ${address}`,`Payload: ${payload}`,`Nonce: ${nonce}`,`Issued: ${issued}`,`Expires: ${expires}`,'Chain: 4663'].join('\n');
+ const signature=await W.signMessage(message);
+ return api.inviteRedeem({address,nonce,issued,expires,signature,code});
+}
+/** Resolves true once this wallet is approved, false if the person closes the sheet. */
+function inviteModal(){
+ return new Promise(async resolve=>{
+  if(!W.wallet().address){await connect();if(!W.wallet().address)return resolve(false)}
+  let done=false;const finish=v=>{if(!done){done=true;resolve(v)}};
+  const d=modal('Enter your invite code',`<p>Lemniscate is invite-only for now. Paste the code you were given.</p><label class="dash-label" for="invite-code">Invite code</label><input class="dash-field" id="invite-code" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX" maxlength="24"><p id="invite-error" class="dash-error" role="alert" hidden></p><div class="dash-actions" style="margin-top:18px">${button('Redeem code','invite-redeem','gold')}${button('Cancel','modal-cancel','ghost')}</div><p class="dash-muted" style="margin-top:14px">Your wallet asks you to sign a short message. It sends no transaction and costs no gas. Invite codes only gate this website; the contracts stay open to everyone.</p>`);
+  const input=d.querySelector('#invite-code'),err=d.querySelector('#invite-error'),go=d.querySelector('[data-action="invite-redeem"]');
+  d.querySelector('[data-action="modal-cancel"]').onclick=()=>{closeModal();finish(false)};
+  const submit=async()=>{
+   err.hidden=true;go.disabled=true;
+   try{
+    await redeemInvite(input.value);
+    data.invites={required:true,approved:true};closeModal();toast('You are in. Buying is open for this wallet.');render();finish(true);
+   }catch(error){
+    err.textContent=error.status!==undefined&&error.code?error.message:W.walletErrorText(error);err.hidden=false;go.disabled=false;
+   }
+  };
+  go.onclick=submit;input.addEventListener('keydown',e=>{if(e.key==='Enter')submit()});
+  input.focus();
+ });
+}
+async function ensureInvite(){
+ await loadInvites();
+ if(!needsInvite())return true;
+ return inviteModal();
+}
+
 // ---------------------------------------------------------------- transactions
 function progress(title,steps){
  const d=modal(title,`<ol class="dash-steps">${steps.map((s,i)=>`<li data-step="${i}">${esc(s)}</li>`).join('')}</ol><p class="dash-transaction-note" id="tx-status">Check your wallet.</p>`);
@@ -399,6 +452,7 @@ async function runIntent(kind,body,label,nameForReceipt){
   return;
  }
  if(!W.wallet().address){await connect();if(!W.wallet().address)return}
+ if(kind!=='sell'&&!await ensureInvite())return;
  const oneTap=CFG.oneTap&&!!smartAddress();
  const ui=progress(label,oneTap?['Prepare the one-tap operation','Sign in your wallet','Wait for the network']:['Prepare the transaction','Approve USDG if needed','Confirm in your wallet','Wait for the network']);
  try{
@@ -426,6 +480,7 @@ async function runIntent(kind,body,label,nameForReceipt){
   toast(kind==='sell'?(intent.queued?'Your sell is queued for a fresh price.':'Your sale is complete.'):kind==='shield'?'Your Shield is in place.':'Your option position is open.');
   await afterTrade();
  }catch(error){
+  if(error.code==='INVITE_REQUIRED'){data.invites={required:true,approved:false};closeModal();render();if(await inviteModal())toast('Your wallet is approved. Open your option again.');return}
   const msg=error.reason?(BLOCK_REASON[error.reason]||error.message):(error.status!==undefined&&error.code?error.message:W.walletErrorText(error));
   ui.status(`<span class="dash-error" role="alert">${esc(msg)}</span>`);
  }
@@ -548,6 +603,7 @@ listen('click',async e=>{const b=e.target.closest('[data-action]');if(!b||b.disa
  if(a==='tab')changeTab(b.dataset.tab);
  else if(a==='mobile-menu')mobileMenu();
  else if(a==='connect')connect();
+ else if(a==='invite'){if(await inviteModal())await loadAccount()}
  else if(a==='disconnect'){W.disconnect();toast('Wallet disconnected.')}
  else if(a==='retry'){data.loading=true;render();await loadMarkets();await loadAccount();render();requestQuote()}
  else if(a==='region-ok'){declare(false);region={status:'allowed',source:'declaration'};render();start()}

@@ -11,6 +11,7 @@ import {
   displayCost, parseWad, quoteUnits, usdgText, wadText, type BuyBlock, type EngineQuote, type SessionName,
 } from "../quote/model";
 import { OptionEngineAbi } from "../../abi";
+import { inviteGate } from "./invites";
 import { getSeries, listSeries, type SeriesView } from "../../db/queries/series";
 
 const WAD = 10n ** 18n;
@@ -83,6 +84,7 @@ const intentResponses = {
   409: { description: "Buys are blocked right now", content: { "application/json": { schema: apiErrorSchema } } },
   422: { description: "Amount out of range", content: { "application/json": { schema: apiErrorSchema } } },
   503: { description: "No price or volatility indexed yet", content: { "application/json": { schema: apiErrorSchema } } },
+  403: { description: "Invites are required and this wallet has not redeemed a code (buy and shield only; sells are never gated)", content: { "application/json": { schema: apiErrorSchema } } },
 };
 const jsonBody = <T extends import("zod").ZodType>(schema: T) => ({ required: true, content: { "application/json": { schema } } });
 const buyRoute = createRoute({ method: "post", path: "/v1/intent/buy", tags: ["markets"], request: { body: jsonBody(buyIntentBodySchema) }, responses: intentResponses });
@@ -119,6 +121,8 @@ export function registerQuoteRoutes(app: OpenAPIHono, deps: ApiDependencies): vo
   app.openapi(buyRoute, async (context) => {
     context.header("Cache-Control", "no-store");
     const body = context.req.valid("json");
+    const gated = await inviteGate(deps, [body.account, body.owner]);
+    if (gated) return context.json(gated, 403);
     const unitsWad = parseWad(body.units);
     if (!unitsWad || unitsWad > UINT128_MAX) return context.json({ error: "BAD_REQUEST", message: "Units must be a positive number." }, 422);
     const prepared = await prepare(deps, await getSeries(deps, body.series));
@@ -178,6 +182,8 @@ export function registerQuoteRoutes(app: OpenAPIHono, deps: ApiDependencies): vo
   app.openapi(shieldRoute, async (context) => {
     context.header("Cache-Control", "no-store");
     const body = context.req.valid("json");
+    const gated = await inviteGate(deps, [body.account, body.owner]);
+    if (gated) return context.json(gated, 403);
     const stockEntry = deps.deployment.stocks.find((entry) => entry.name === body.name);
     if (!stockEntry) return context.json({ error: "NOT_FOUND", message: `Unknown name: ${body.name}` }, 404);
     const tokenUnits = parseWad(body.tokenUnits);

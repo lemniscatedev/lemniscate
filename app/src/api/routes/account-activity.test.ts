@@ -58,6 +58,17 @@ suite("account activity, agents and smart account (todo 15b)", () => {
     ]);
     chain.mine([ev.policySet(ADDR.alice, ADDR.agent, 60_000_000n, 25_000_000n, FAR, true, true)]);
     chain.mine([ev.policyRevoked(ADDR.alice, OTHER_AGENT)]);
+    // 17b: PolicyStocks replaces the list on every setPolicy; a router sell is queued by the engine with the router as seller.
+    chain.mine([
+      ev.policyStocks(ADDR.alice, ADDR.agent, [ADDR.nvda]),
+      ev.policyStocks(ADDR.alice, OTHER_AGENT, [ADDR.nvda]),
+      ev.policyStocks(ADDR.bob, ADDR.agent, [ADDR.nvda]),
+    ]);
+    chain.mine([ev.policyStocks(ADDR.alice, ADDR.agent, [ADDR.nvda, ADDR.tsla])]);
+    chain.mine([
+      ev.sellQueued(9n, SERIES_CALL, ADDR.agentRouter, ADDR.agentRouter, WAD, 1_790_000_200n),
+      ev.queuedSellFor(9n, ADDR.alice, ADDR.agent, SERIES_CALL),
+    ]);
     const reader = new FakeReader();
     reader.series[SERIES_CALL] = { norm: WAD, lastAccrual: 1_790_000_000n };
     const { state } = await makeIndexer(db.sql, chain, { reader });
@@ -84,7 +95,7 @@ suite("account activity, agents and smart account (todo 15b)", () => {
     ]));
     const times = body.items.map((item: any) => Date.parse(item.ts));
     expect([...times].sort((x: number, y: number) => y - x)).toEqual(times);
-    expect(body.items.filter((item: any) => item.kind === "sell_queued")).toHaveLength(2); // bob's ticket is not alice's
+    expect(body.items.filter((item: any) => item.kind === "sell_queued")).toHaveLength(3); // alice two own plus one router ticket; bob ticket is not hers
     expect(body.nextCursor).toBeNull();
     const buy = body.items.find((item: any) => item.kind === "buy");
     expect(buy).toMatchObject({ name: "NVDA", isCall: true, speed: "WEEKLY", strike: "110", usdg: "10", amount: "4", seriesId: SERIES_CALL });
@@ -133,6 +144,25 @@ suite("account activity, agents and smart account (todo 15b)", () => {
     const other = body.agents.find((row: any) => row.agent === OTHER_AGENT);
     expect(other).toMatchObject({ revoked: true, expired: true, active: false, spentUsdg: "2", remainingBudgetUsdg: "28", tradeCount: 1 });
     expect(other.revokedAt).not.toBeNull();
+  });
+
+  test("agents: allowedStocks is the newest PolicyStocks list, named from the indexed series", async () => {
+    const body = await (await get(`/v1/accounts/${ADDR.alice}/agents`)).json() as any;
+    const main = body.agents.find((row: any) => row.agent === ADDR.agent);
+    expect(main.allowedStocks.map((row: any) => row.stock)).toEqual([ADDR.nvda, ADDR.tsla]);
+    expect(main.allowedStocks[0]).toEqual({ stock: ADDR.nvda, name: "NVDA" });
+    expect(body.agents.find((row: any) => row.agent === OTHER_AGENT).allowedStocks).toHaveLength(1);
+    const bob = await (await get(`/v1/accounts/${ADDR.bob}/agents`)).json() as any;
+    expect(bob.agents[0].allowedStocks.map((row: any) => row.stock)).toEqual([ADDR.nvda]);
+  });
+
+  test("activity: a router-queued sell shows for the owner (with the agent), not for the router or a stranger", async () => {
+    const mine = await (await get(`/v1/accounts/${ADDR.alice}/activity?limit=200`)).json() as any;
+    const queued = mine.items.filter((item: any) => item.ticket === "9");
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({ kind: "sell_queued", agent: ADDR.agent, status: "open", seriesId: SERIES_CALL });
+    const bob = await (await get(`/v1/accounts/${ADDR.bob}/activity?limit=200`)).json() as any;
+    expect(bob.items.some((item: any) => item.ticket === "9")).toBe(false);
   });
 
   test("a policy set again after a revoke is live again", async () => {

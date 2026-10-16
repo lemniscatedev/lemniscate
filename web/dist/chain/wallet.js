@@ -143,3 +143,10 @@ export function signHash(hash){
  if(!state.address)throw new Error('Connect a wallet first.');
  return state.provider.request({method:'personal_sign',params:[hash,state.address]});
 }
+
+/** EIP-191 personal_sign over a text message (the invite-code redemption). It sends no transaction and costs no gas. */
+export function signMessage(message){
+ if(!state.address)throw new Error('Connect a wallet first.');
+ const hex='0x'+Array.from(new TextEncoder().encode(message),b=>b.toString(16).padStart(2,'0')).join('');
+ return state.provider.request({method:'personal_sign',params:[hex,state.address]});
+}

@@ -301,6 +301,12 @@ export const ev = {
   policySet: (owner: Address, agent: Address, budgetUsdg: bigint, maxPerTradeUsdg: bigint, expiresAt: bigint, canSell: boolean, canShield: boolean): LogSpec => ({
     address: ADDR.agentRouter, abi: AgentRouterAbi as Abi, eventName: "PolicySet", args: { owner, agent, budgetUsdg, maxPerTradeUsdg, expiresAt, canSell, canShield },
   }),
+  policyStocks: (owner: Address, agent: Address, stocks: Address[]): LogSpec => ({
+    address: ADDR.agentRouter, abi: AgentRouterAbi as Abi, eventName: "PolicyStocks", args: { owner, agent, stocks },
+  }),
+  queuedSellFor: (ticket: bigint, owner: Address, agent: Address, seriesId: Hex): LogSpec => ({
+    address: ADDR.agentRouter, abi: AgentRouterAbi as Abi, eventName: "QueuedSellFor", args: { ticket, owner, agent, seriesId },
+  }),
   policyRevoked: (owner: Address, agent: Address): LogSpec => ({
     address: ADDR.agentRouter, abi: AgentRouterAbi as Abi, eventName: "PolicyRevoked", args: { owner, agent },
   }),
@@ -317,6 +323,8 @@ export async function dumpTables(sql: import("postgres").Sql): Promise<Record<st
     shields: "SELECT * FROM shields ORDER BY block, log_index",
     agent_trades: "SELECT * FROM agent_trades ORDER BY block, log_index",
     agent_policy_events: "SELECT * FROM agent_policy_events ORDER BY block, log_index",
+    agent_policy_stocks: "SELECT * FROM agent_policy_stocks ORDER BY block, log_index",
+    router_tickets: "SELECT * FROM router_tickets ORDER BY block, log_index",
     norm_history: "SELECT * FROM norm_history ORDER BY block, log_index",
     vol_posts: "SELECT * FROM vol_posts ORDER BY block, log_index",
     queued_sells: "SELECT * FROM queued_sells ORDER BY ticket",

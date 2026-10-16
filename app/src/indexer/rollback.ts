@@ -7,6 +7,8 @@ const BLOCK_TABLES = [
   "shields",
   "agent_trades",
   "agent_policy_events",
+  "agent_policy_stocks",
+  "router_tickets",
   "norm_history",
   "ticks",
   "vol_posts",

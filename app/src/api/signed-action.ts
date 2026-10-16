@@ -90,7 +90,7 @@ export async function verifySignedAction(
   }
   if (signer.toLowerCase() !== input.address.toLowerCase()) return { ok: false, code: "BAD_SIGNATURE" };
 
-  const cleanExpired = nowMs - lastCleanup > 60_000;
+  const cleanExpired = Math.abs(nowMs - lastCleanup) > 60_000;
   if (cleanExpired) lastCleanup = nowMs;
   const inserted = await deps.sql.begin(async (tx) => {
     if (cleanExpired) await tx`delete from api_nonces where expires_at < now() - interval '1 day'`;

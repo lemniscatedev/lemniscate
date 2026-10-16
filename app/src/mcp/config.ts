@@ -24,6 +24,8 @@ const schema = z.object({
   AGENT_ROUTER: address.optional(),
   AGENT_RPC_URL: z.string().url().default("https://rpc.mainnet.chain.robinhood.com"),
   AGENT_CHAIN_ID: z.coerce.number().int().positive().default(4663),
+  // Dev fallback: read the policy from AGENT_POLICY instead of the AgentRouter. Off by default; the chain is the authority.
+  AGENT_POLICY_FROM_ENV: z.enum(["0", "1", "true", "false", ""]).default("0"),
   AGENT_POLICY: z.string().optional(),
   MCP_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(0).default(60),
   MCP_HTTP_HOST: z.string().default("127.0.0.1"),
@@ -40,7 +42,9 @@ export interface McpSettings {
   readonly router: Address | undefined;
   readonly rpcUrl: string;
   readonly chainId: number;
+  /** Only set with AGENT_POLICY_FROM_ENV=1 (dev). Otherwise the policy is read from the AgentRouter. */
   readonly policy: PolicyMirror | undefined;
+  readonly policyFromEnv: boolean;
   readonly rateLimitPerMinute: number;
   readonly httpHost: string;
   readonly httpPort: number;
@@ -64,14 +68,15 @@ export function loadMcpSettings(source: Record<string, string | undefined> = pro
     throw error;
   }
   let policy: PolicyMirror | undefined;
-  if (v.AGENT_POLICY) {
+  const policyFromEnv = v.AGENT_POLICY_FROM_ENV === "1" || v.AGENT_POLICY_FROM_ENV === "true";
+  if (policyFromEnv && v.AGENT_POLICY) {
     try { policy = policySchema.parse(JSON.parse(v.AGENT_POLICY)); }
     catch { throw new Error("Invalid MCP configuration: AGENT_POLICY must be JSON with owner, budgetUsdg, maxPerTradeUsdg, expiresAt (raw USDG, 6 dp)"); }
   }
   return {
     apiUrl: v.LMNS_API_URL.replace(/\/+$/, ""), agentKey,
     owner: (v.AGENT_OWNER ?? policy?.owner) as Address | undefined, router: v.AGENT_ROUTER as Address | undefined,
-    rpcUrl: v.AGENT_RPC_URL, chainId: v.AGENT_CHAIN_ID, policy, rateLimitPerMinute: v.MCP_RATE_LIMIT_PER_MINUTE,
+    rpcUrl: v.AGENT_RPC_URL, chainId: v.AGENT_CHAIN_ID, policy, policyFromEnv, rateLimitPerMinute: v.MCP_RATE_LIMIT_PER_MINUTE,
     httpHost: v.MCP_HTTP_HOST, httpPort: v.MCP_HTTP_PORT, httpToken: v.MCP_HTTP_TOKEN,
     allowedOrigins: v.MCP_ALLOWED_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean),
     x402MaxPerCall: parseUnits(v.X402_MAX_PER_CALL_USDG, 6),

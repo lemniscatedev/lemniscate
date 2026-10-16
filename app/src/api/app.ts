@@ -9,6 +9,7 @@ import { registerAccountActivityRoutes } from "./routes/account-activity";
 import { registerChainRoutes } from "./routes/chains";
 import { registerConfigRoutes } from "./routes/config";
 import { registerHealthRoutes } from "./routes/health";
+import { registerInviteRoutes } from "./routes/invites";
 import { registerIntentUserOp } from "./routes/intent-userop";
 import { registerPoolRoutes } from "./routes/pool";
 import { registerQuoteRoutes } from "./routes/quote";
@@ -74,9 +75,18 @@ export function createApiApp(deps: ApiDependencies) {
   });
   app.on(["POST"], ["/v1/quote", "/v1/intent/*"], quoteLimiter);
 
+  // Invite redemption: a signed write, with a tight limit so codes cannot be guessed.
+  app.use("/v1/invites/*", bodyLimit({ maxSize: 4 * 1024 }));
+  app.on(["POST"], "/v1/invites/redeem", rateLimit({
+    limit: deps.config.API_RATE_LIMIT_PER_MINUTE === 0 ? 0 : 10,
+    windowMs: 60_000,
+    clientIpHeader: deps.config.API_CLIENT_IP_HEADER,
+  }));
+
   if (deps.x402) registerX402(app, deps.x402);
 
   registerHealthRoutes(app, deps);
+  registerInviteRoutes(app, deps);
   registerConfigRoutes(app, deps);
   registerChainRoutes(app, deps);
   registerSeriesRoutes(app, deps);

@@ -131,12 +131,15 @@ const deadlineSeconds = z.number().int().min(30).max(3_600).default(300);
 
 export const buyIntentBodySchema = z.object({
   series: hex32, units: unitsText, account: address, recipient: address.optional(), slippageBps, deadlineSeconds,
+  /** One-tap flows: the wallet that owns the smart account `account`. An approved owner counts as an approved account. */
+  owner: address.optional(),
 });
 export const sellIntentBodySchema = buyIntentBodySchema;
 export const shieldIntentBodySchema = z.object({
   name: z.string().regex(/^[A-Za-z0-9.]{1,12}$/).transform((value) => value.toUpperCase()),
   tokenUnits: unitsText,
   account: address,
+  owner: address.optional(),
   strikePctBelowBps: z.number().int().min(100).max(5_000).default(1_000),
   slippageBps, deadlineSeconds,
 });
@@ -320,6 +323,8 @@ export const agentSchema = z.object({
   expiresAt: isoDateTime,
   canSell: z.boolean(),
   canShield: z.boolean(),
+  /** Names the policy allows (from PolicyStocks); name is null when the indexer has no series for that stock. */
+  allowedStocks: z.array(z.object({ stock: z.string(), name: z.string().nullable() })),
   setAt: isoDateTime,
   revoked: z.boolean(),
   revokedAt: isoDateTime.nullable(),

@@ -25,6 +25,20 @@ tested; the engine and agent router are being rewritten. Every invariant and its
 - Until an audit: Pool NAV capped at $2M, each series at $40k outstanding, each account at $25k option value per series, deposits on an
   allowlist, writer vaults closed. Per-name caps also respect the depth of the name's hedge pool.
 
+## Invite codes are an off-chain gate only
+
+During the closed beta the website and the API ask a wallet to redeem an invite code before the API builds calldata for a buy or a Shield
+(`INVITES_REQUIRED`, switchable live without a restart). This is an access gate on our service, not a security control on the protocol:
+
+- **The contracts stay permissionless.** Anyone can call the engine, the pool and the router directly from any wallet or script, with or without a code.
+  Do not rely on invite codes for any safety property. Caps, pauses, price guards and roles are the only on-chain limits.
+- **Sells, exits and claims are never gated**, by the API or the website, whatever the setting.
+- A code is a bearer secret. The database stores only a SHA-256 hash of each code; the plaintext lives in the team's private file. Redeeming binds
+  a code to a wallet with a signed message (same replay-protected scheme as other signed actions); a code admits one wallet, one time. Redemption is
+  rate limited and answers with one message for unknown, revoked and used codes.
+- In one-tap flows the smart account's owner wallet may be the approved address.
+- Turning the gate off opens the website to everyone outside the blocked regions; the region block is a separate website control.
+
 ## Roles
 
 Deployer keys hold nothing after the hand-off. Admin is a 48 hour `TimelockController` owned by a 3-of-5 Safe on mainnet. Keeper,

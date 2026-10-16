@@ -12,7 +12,7 @@ import path from 'node:path';
 import {chromium} from 'playwright';
 import {startMockApi} from './mock-api.mjs';
 
-const WIDTH=390,HEIGHT=844,SITE_PORT=4191,API_PORT=4192;
+const WIDTH=390,HEIGHT=844,SITE_PORT=Number(process.env.SITE_PORT||4191),API_PORT=Number(process.env.API_PORT||4192);
 const routes=JSON.parse(await readFile('scripts/routes.json','utf8'));
 const TABS=['overview','trade','positions','shield','pool','agents','activity','settings'];
 const LEFTOVERS=[/250k\+/,/1\.8M\+/,/Email conversion/,/4\.9-star/,/Work Period/,/Redefine Flow/,/Hypertech/,/\bAlongside\b/,/\bRecap\b/,/Career at/,/Alisha Patel/,/UX writing/,/\boverview[’']s\b/i,/The overview/,/The specification/,/supplied overview/,/under the design/,/\bHOOD\b/,/Robinhood ·/];
@@ -40,6 +40,7 @@ const FAKE_WALLET=`(()=>{const ACCOUNT='0x00000000000000000000000000000000000a11
   if(method==='eth_blockNumber')return '0x10';
   if(method==='eth_getLogs')return [];
   if(method==='eth_sendTransaction'){window.__sent=(window.__sent||[]).concat(params[0]);const h='0x'+(BigInt(Date.now())*1000n+BigInt(++n)).toString(16).padStart(64,'0');await fetch('http://127.0.0.1:${API_PORT}/__test/settle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:params[0].data,hash:h})});return h}
+  if(method==='personal_sign'){const hex=params[0].slice(2);window.__signed=(window.__signed||[]).concat(new TextDecoder().decode(Uint8Array.from(hex.match(/../g)||[],b=>parseInt(b,16))));return '0x'+'11'.repeat(65)}
   if(method==='eth_getTransactionReceipt')return {status:'0x1',transactionHash:params[0],blockNumber:'0x10'};
   throw Object.assign(new Error('unsupported '+method),{code:4200})},on(){},removeListener(){}};
  const info={uuid:'test-wallet-uuid',name:'Test Wallet',icon:'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22/%3E',rdns:'test.wallet'};
@@ -216,6 +217,7 @@ await section('C',async()=>{
  const agentsText=await text(page);
  ok('C agents: policies from API',(await page.locator('.dash-policy').count())===2&&/Active/.test(agentsText)&&/Revoked/.test(agentsText)&&/\$380\.00/.test(agentsText),'');
  ok('C agents: trades from API',/Buy by 0x0000…9e01/.test(agentsText)&&/Sell by 0x0000…9e01/.test(agentsText)&&/NVDA Up · Weekly/.test(agentsText),agentsText.slice(agentsText.indexOf('Agent trades'),agentsText.indexOf('Agent trades')+300).replace(/\n/g,' '));
+ ok('C agents: allowed names as chips',(await page.locator('.dash-policy .dash-name-chip').allTextContents()).join(',')==='NVDA,TSLA','');
  ok('C agents: revoke only on a live policy',(await page.locator('[data-action="revoke-policy"]').count())===1,'');
  ok('C agents: no local policy list',await page.evaluate(()=>localStorage.getItem('lemniscate.policies.v2')===null),'');
  ok('C agents 390px',(await width(page))===WIDTH,'');
@@ -252,6 +254,44 @@ await section('E',async()=>{
  ok('E console clean',errors.length===0,errors.join(' | ').slice(0,300));
  delete overrides.smartDeployed;
  await context.close();
+});
+
+// ---- F. invite codes (closed beta): gate on, redeem with a signed message, then buy; sells never gated
+await section('F',async()=>{
+ const A='0x00000000000000000000000000000000000a11ce';
+ overrides.invites=true;overrides.session='REGULAR';mock.approved.clear();
+ const api=`http://127.0.0.1:${API_PORT}`;
+ const post=(kind,body)=>fetch(`${api}/v1/intent/${kind}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ const sid=[...mock.market.series.keys()][0];
+ const buyDirect=await post('buy',{series:sid,units:'1',account:A});
+ ok('F API refuses buy for an unapproved wallet',buyDirect.status===403&&(await buyDirect.json()).error==='INVITE_REQUIRED','');
+ ok('F API never gates a sell',(await post('sell',{series:sid,units:'1',account:A})).status===200,'');
+ const {page,context,errors}=await newPage({apiBase:api,wallet:true});
+ await page.goto(`${base}/dashboard?tab=trade`,{waitUntil:'load'});await settle(page);await page.waitForSelector('.dash-chain-table',{timeout:10_000});
+ await page.waitForSelector('.dash-invite',{timeout:8_000}).catch(()=>{});
+ ok('F invite banner shown before trading',/Invite-only for now/.test(await text(page)),'');
+ ok('F banner 390px',(await width(page))===WIDTH,'');
+ await page.click('.dash-header [data-action="connect"]');await page.waitForSelector('.dash-wallet-option');
+ await page.locator('.dash-wallet-option',{hasText:'Test Wallet'}).click();
+ await page.waitForSelector('.dash-header [data-address]',{timeout:5_000}).catch(()=>{});
+ await page.click('.dash-invite [data-action="invite"]');await page.waitForSelector('#invite-code',{timeout:5_000});
+ ok('F invite sheet 390px',(await width(page))===WIDTH,'');
+ await page.fill('#invite-code','zzzz-zzzz-zzzz');await page.click('[data-action="invite-redeem"]');
+ await page.waitForFunction(()=>!document.querySelector('#invite-error')?.hidden,null,{timeout:5_000}).catch(()=>{});
+ ok('F a refused code shows a plain message and nothing is approved',/not valid or has already been used/.test(await page.locator('#invite-error').innerText())&&!mock.approved.has(A),'');
+ await page.fill('#invite-code','abcd-efgh-2345');await page.click('[data-action="invite-redeem"]');
+ await page.waitForFunction(()=>!document.querySelector('.dash-invite'),null,{timeout:5_000}).catch(()=>{});
+ ok('F the right code approves the wallet and the banner goes',mock.approved.has(A)&&!/Invite-only for now/.test(await text(page)),'');
+ const signed=(await page.evaluate(()=>window.__signed||[])).join('\n');
+ ok('F redemption is a signed message with action, address and chain',/Action: invites\.redeem/.test(signed)&&signed.includes('Address: '+A)&&/Payload: [0-9a-f]{64}/.test(signed)&&/Chain: 4663/.test(signed),signed.slice(0,60).replace(/\n/g,' '));
+ ok('F no transaction was sent to redeem',(await page.evaluate(()=>(window.__sent||[]).length))===0,'');
+ await page.waitForSelector('[data-action="review"]:not([disabled])',{timeout:10_000});
+ await page.click('[data-action="review"]');await page.click('[data-action="confirm-buy"]');
+ await page.waitForFunction(()=>/Done\./.test(document.querySelector('#tx-status')?.innerText||''),null,{timeout:15_000}).catch(()=>{});
+ ok('F approved wallet can buy',(await page.evaluate(()=>(window.__sent||[]).length))===2,'');
+ ok('F console clean',errors.length===0,errors.join(' | ').slice(0,300));
+ await context.close();
+ overrides.invites=false;mock.approved.clear();
 });
 
 // ---- D. demo mode

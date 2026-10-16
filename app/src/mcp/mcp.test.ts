@@ -6,7 +6,7 @@ import { ToolError, type ApiClient } from "./api-client";
 import { buildMcp, createMcpHttpApp, TOOL_NAMES, toolListing } from "./index";
 import { loadMcpSettings } from "./config";
 import { runStdio } from "./stdio";
-import type { Executor } from "./agent";
+import type { ChainReader, Executor } from "./agent";
 
 const SERIES = `0x${"a0".repeat(32)}` as Hex;
 const OWNER = getAddress("0x00000000000000000000000000000000000000c3");
@@ -62,11 +62,11 @@ function fakeApi(log: Array<[string, unknown?]> = [], over: Record<string, () =>
   return { get: async (p) => answer(p), post: async (p, b) => answer(p, b) };
 }
 
-function setup(env: Record<string, string> = {}, api: ApiClient = fakeApi(), executor?: Executor) {
+function setup(env: Record<string, string> = {}, api: ApiClient = fakeApi(), executor?: Executor, chain?: ChainReader) {
   const sent: Array<{ to: Address; data: Hex }> = [];
   const mockExecutor: Executor = executor ?? { send: async (c) => { sent.push(c); return { txHash: `0x${"ee".repeat(32)}` as Hex }; } };
-  const settings = loadMcpSettings({ AGENT_ROUTER: ROUTER, AGENT_OWNER: OWNER, ...env });
-  const built = buildMcp(settings, { api, executor: mockExecutor, now: () => NOW_MS });
+  const settings = loadMcpSettings({ AGENT_ROUTER: ROUTER, AGENT_OWNER: OWNER, ...(env.AGENT_POLICY ? { AGENT_POLICY_FROM_ENV: "1" } : {}), ...env });
+  const built = buildMcp(settings, { api, executor: mockExecutor, now: () => NOW_MS, ...(chain ? { chain } : {}) });
   return { ...built, sent, settings };
 }
 
@@ -247,7 +247,7 @@ describe("R2 executionOnlyViaPolicy", () => {
       expect(`${label}:${r.structuredContent.error}`).toBe(`${label}:${code}`);
       expect(s.sent).toHaveLength(0);
     }
-    const none = setup({ AGENT_KEY });
+    const none = setup({ AGENT_KEY, AGENT_POLICY_FROM_ENV: "1" });
     expect((await call(none, "lmns_buy", { series: SERIES, units: "1" })).structuredContent.error).toBe("NO_POLICY");
     const stranger = setup({ AGENT_KEY, AGENT_POLICY: policy({ owner: TSLA }), AGENT_OWNER: OWNER });
     expect((await call(stranger, "lmns_buy", { series: SERIES, units: "1" })).structuredContent.error).toBe("NO_POLICY");
@@ -265,7 +265,7 @@ describe("R2 executionOnlyViaPolicy", () => {
     const calls: unknown[] = [];
     const base = { spent: 0n, budget: 3_000_000n, maxPerTrade: 20_000_000n, expiresAt: Math.floor(NOW_MS / 1000) + 3600, canSell: true, canShield: true, revoked: false, stocks: [NVDA] };
     const run = async (state: typeof base, tool: string, args: unknown) => {
-      const settings = loadMcpSettings({ AGENT_ROUTER: ROUTER, AGENT_OWNER: OWNER, AGENT_KEY, AGENT_POLICY: policy() });
+      const settings = loadMcpSettings({ AGENT_ROUTER: ROUTER, AGENT_OWNER: OWNER, AGENT_KEY, AGENT_POLICY: policy(), AGENT_POLICY_FROM_ENV: "1" });
       // clientSideChecks is off so the call reaches the router
       const { createAgentRuntime, envPolicyReader } = await import("./agent");
       const { createKeyedLimiter } = await import("./rate-limit");
@@ -360,5 +360,59 @@ describe("R7 rateLimitPerAgent", () => {
     const settings = loadMcpSettings({ MCP_RATE_LIMIT_PER_MINUTE: "1" });
     const { server } = buildMcp(settings, { api: fakeApi() });
     for (let i = 0; i < 5; i++) expect(((await server.handle({ jsonrpc: "2.0", id: i + 1, method: "tools/list" }, "a"))!.result as any).tools).toHaveLength(7);
+  });
+});
+
+describe("17b R1 policyFromChain", () => {
+  const ZERO = "0x0000000000000000000000000000000000000000";
+  const onChain = (over: Record<string, unknown> = {}, stocks: Address[] = [NVDA], remaining = 50_000_000n): ChainReader & { reads: string[] } => {
+    const reads: string[] = [];
+    return {
+      reads,
+      async readContract({ address, functionName }) {
+        reads.push(`${address}:${functionName}`);
+        if (functionName === "policyOf") {
+          return { agent: agentAddress, budgetUsdg: 50_000_000n, spentUsdg: 50_000_000n - remaining, maxPerTradeUsdg: 20_000_000n,
+            expiresAt: BigInt(Math.floor(NOW_MS / 1000) + 3600), canSell: true, canShield: true, revoked: false, ...over };
+        }
+        if (functionName === "allowedStocks") return stocks;
+        if (functionName === "remainingBudget") return remaining;
+        throw new Error("unexpected");
+      },
+    };
+  };
+
+  test("with a router and no env flag the policy comes from the chain, not AGENT_POLICY", async () => {
+    const chain = onChain();
+    const s = setup({ AGENT_KEY, AGENT_POLICY: policy({ budgetUsdg: "1" }), AGENT_POLICY_FROM_ENV: "0" }, fakeApi(), undefined, chain);
+    expect(s.settings.policy).toBeUndefined();
+    expect((await call(s, "lmns_buy", { series: SERIES, units: "1" })).structuredContent.status).toBe("sent");
+    expect(chain.reads).toEqual([`${ROUTER}:policyOf`, `${ROUTER}:allowedStocks`, `${ROUTER}:remainingBudget`]);
+  });
+
+  test("chain state is refused with the contract's reasons: revoked, expired, name, budget, no policy", async () => {
+    const run = async (chain: ChainReader, tool = "lmns_buy", args: unknown = { series: SERIES, units: "1" }) =>
+      (await call(setup({ AGENT_KEY }, fakeApi(), undefined, chain), tool, args)).structuredContent.error;
+    expect(await run(onChain({ revoked: true }))).toBe("POLICY_REVOKED");
+    expect(await run(onChain({ expiresAt: 1n }))).toBe("POLICY_EXPIRED");
+    expect(await run(onChain({}, [TSLA]))).toBe("STOCK_NOT_ALLOWED");
+    expect(await run(onChain({}, [NVDA], 1_000_000n))).toBe("BUDGET_EXCEEDED");
+    expect(await run(onChain({ agent: ZERO }))).toBe("NO_POLICY");
+  });
+
+  test("spend follows the chain: the next read sees the lower remaining budget", async () => {
+    let remaining = 9_000_000n;
+    const chain: ChainReader = { readContract: (a) => onChain({}, [NVDA], remaining).readContract(a) };
+    const s = setup({ AGENT_KEY }, fakeApi(), undefined, chain);
+    expect((await call(s, "lmns_buy", { series: SERIES, units: "1" })).isError).toBe(false);
+    remaining = 3_000_000n; // the router counted the actual cost
+    expect((await call(s, "lmns_buy", { series: SERIES, units: "1" })).structuredContent.error).toBe("BUDGET_EXCEEDED");
+  });
+
+  test("a failing RPC is reported without leaking its message", async () => {
+    const chain: ChainReader = { readContract: async () => { throw new Error("https://secret-rpc.example/key123 down"); } };
+    const r = await call(setup({ AGENT_KEY }, fakeApi(), undefined, chain), "lmns_buy", { series: SERIES, units: "1" });
+    expect(r.structuredContent.error).toBe("POLICY_READ_FAILED");
+    expect(JSON.stringify(r)).not.toContain("secret-rpc");
   });
 });

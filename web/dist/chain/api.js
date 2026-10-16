@@ -16,6 +16,9 @@ const PLAIN={
  BUNDLER_ERROR:'The one-tap relay did not accept the operation. Try a regular transaction.',
  BAD_REQUEST:'That request was not accepted. Reload the page and try again.',
  RATE_LIMITED:'Too many requests in a short time. Wait a moment and try again.',
+ INVITE_REQUIRED:'Lemniscate is invite-only for now. Enter your invite code to start buying. Selling is always open.',
+ INVALID_CODE:'That code is not valid or has already been used.',
+ UNAUTHORIZED:'Your wallet signature was not accepted. Try again.',
 };
 
 export function plainError(error){
@@ -58,6 +61,8 @@ export function createApi(base){
   smartAccount:(address,index=0)=>request('/v1/accounts/'+encodeURIComponent(address)+'/smart-account'+(index?'?index='+index:'')),
   quote:body=>request('/v1/quote',{method:'POST',body}),
   intent:(kind,body,{userop=false}={})=>request('/v1/intent/'+kind+(userop?'?format=userop':''),{method:'POST',body}),
+  invitesStatus:address=>request('/v1/invites/status'+(address?'?address='+encodeURIComponent(address):'')),
+  inviteRedeem:body=>request('/v1/invites/redeem',{method:'POST',body}),
   useropConfig:()=>request('/v1/userop/config'),
   useropSend:userOp=>request('/v1/userop/send',{method:'POST',body:{userOp}}),
   useropStatus:hash=>request('/v1/userop/'+encodeURIComponent(hash)),

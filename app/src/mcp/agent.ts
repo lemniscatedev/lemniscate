@@ -65,7 +65,38 @@ export function checkPolicy(policy: PolicyView | null, call: RouterCall, nowSeco
   return null;
 }
 
-/** Policy kept in the environment (AGENT_POLICY). Spend is tracked in memory; restart resets it, so keep spentUsdg current. */
+/** The one read call the chain reader needs; a viem PublicClient satisfies it and tests pass a mock. */
+export interface ChainReader {
+  readContract(args: { address: Address; abi: typeof AgentRouterAbi; functionName: string; args: readonly unknown[] }): Promise<unknown>;
+}
+
+/** The policy as the AgentRouter holds it (policyOf, allowedStocks, remainingBudget): the owner's on-chain word, not a copy. */
+export function chainPolicyReader(chain: ChainReader, router: Address): PolicyReader {
+  const read = (functionName: string, args: readonly unknown[]) => chain.readContract({ address: router, abi: AgentRouterAbi, functionName, args });
+  return {
+    async read(owner, agent) {
+      let raw: { agent: Address; budgetUsdg: bigint; spentUsdg: bigint; maxPerTradeUsdg: bigint; expiresAt: bigint; canSell: boolean; canShield: boolean; revoked: boolean };
+      let stocks: readonly Address[];
+      let remaining: bigint;
+      try {
+        [raw, stocks, remaining] = await Promise.all([
+          read("policyOf", [owner, agent]), read("allowedStocks", [owner, agent]), read("remainingBudget", [owner, agent]),
+        ]) as [typeof raw, readonly Address[], bigint];
+      } catch {
+        // Never echo the underlying message: viem errors can embed the RPC URL.
+        throw new ToolError("POLICY_READ_FAILED", "The agent policy could not be read from the AgentRouter. Try again shortly.");
+      }
+      // An unset policy comes back as the zero struct.
+      if (raw.agent === "0x0000000000000000000000000000000000000000") return null;
+      return {
+        owner, budgetUsdg: raw.budgetUsdg.toString(), spentUsdg: (raw.budgetUsdg - remaining).toString(), maxPerTradeUsdg: raw.maxPerTradeUsdg.toString(),
+        expiresAt: Number(raw.expiresAt), canSell: raw.canSell, canShield: raw.canShield, revoked: raw.revoked, stocks: [...stocks],
+      };
+    },
+  };
+}
+
+/** Dev fallback only (AGENT_POLICY_FROM_ENV=1): policy kept in the environment (AGENT_POLICY). Spend is tracked in memory; restart resets it, so keep spentUsdg current. */
 export function envPolicyReader(mirror: PolicyView | undefined): PolicyReader {
   let current = mirror ? { ...mirror } : undefined;
   return {

@@ -1,7 +1,7 @@
 // Local mock of the Lemniscate API for website tests (todo 18). Same routes and response shapes as the backend
 // (app/src/api, OpenAPI at /v1/openapi.json there), data from dist/chain/demo.js. Never used in production.
 // Run: node scripts/mock-api.mjs [port]   (env MOCK_SESSION=REGULAR|EXTENDED|CLOSED|UNKNOWN|HALTED, MOCK_EARNINGS=TSLA,
-// MOCK_SPLIT=AAPL, MOCK_NO_ROUTER=1)
+// MOCK_SPLIT=AAPL, MOCK_NO_ROUTER=1, MOCK_INVITES=1 turns the invite gate on; the one valid code is ABCD-EFGH-2345)
 import http from 'node:http';
 import {createDemoMarket} from '../dist/chain/demo.js';
 
@@ -12,6 +12,9 @@ export function startMockApi({port=4190,overrides={},seed=false}={}){
  const feed=new Map();// account -> activity items, oldest first
  const agentBook=new Map();// owner -> agent rows
  const smartSeen=new Set();
+ const approved=new Set();// wallets that redeemed an invite code (overrides.invites turns the gate on)
+ const usedCodes=new Set();
+ const VALID_CODE='ABCDEFGH2345';// the one code this mock accepts, once
  const ACCOUNT_SEED='0x00000000000000000000000000000000000a11ce';
  const cfg=market.config();
  const send=(res,status,body)=>{res.writeHead(status,{'Content-Type':'application/json','Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'Content-Type','Access-Control-Allow-Methods':'GET,POST,OPTIONS','Cache-Control':'no-store'});res.end(JSON.stringify(body))};
@@ -63,8 +66,8 @@ export function startMockApi({port=4190,overrides={},seed=false}={}){
   const trade=(agent,side,usdg,k)=>({txHash:'0x'+hex(7000+k),logIndex:0,ts:new Date(Date.UTC(2026,9,10,12,0,0)+k*60e3).toISOString(),agent,seriesId:nvda?.id||'0x'+'ab'.repeat(32),name:'NVDA',isCall:true,speed:'WEEKLY',strike:'180',side,usdg});
   const A1='0x00000000000000000000000000000000000a9e01',A2='0x00000000000000000000000000000000000a9e02';
   agentBook.set(ACCOUNT_SEED,[
-   {agent:A1,budgetUsdg:'500',maxPerTradeUsdg:'100',spentUsdg:'120',remainingBudgetUsdg:'380',expiresAt:'2100-01-01T00:00:00.000Z',canSell:true,canShield:false,setAt:'2026-10-09T00:00:00.000Z',revoked:false,revokedAt:null,expired:false,active:true,tradeCount:2,recentTrades:[trade(A1,'buy',70,1),trade(A1,'sell',50,2)]},
-   {agent:A2,budgetUsdg:'200',maxPerTradeUsdg:'50',spentUsdg:'0',remainingBudgetUsdg:'200',expiresAt:'2020-09-01T00:00:00.000Z',canSell:false,canShield:false,setAt:'2026-08-01T00:00:00.000Z',revoked:true,revokedAt:'2026-08-20T00:00:00.000Z',expired:true,active:false,tradeCount:0,recentTrades:[]},
+   {agent:A1,budgetUsdg:'500',maxPerTradeUsdg:'100',spentUsdg:'120',remainingBudgetUsdg:'380',expiresAt:'2100-01-01T00:00:00.000Z',canSell:true,canShield:false,allowedStocks:[{stock:'0x00000000000000000000000000000000000a0001',name:'NVDA'},{stock:'0x00000000000000000000000000000000000a0002',name:'TSLA'}],setAt:'2026-10-09T00:00:00.000Z',revoked:false,revokedAt:null,expired:false,active:true,tradeCount:2,recentTrades:[trade(A1,'buy',70,1),trade(A1,'sell',50,2)]},
+   {agent:A2,budgetUsdg:'200',maxPerTradeUsdg:'50',spentUsdg:'0',remainingBudgetUsdg:'200',expiresAt:'2020-09-01T00:00:00.000Z',canSell:false,canShield:false,allowedStocks:[],setAt:'2026-08-01T00:00:00.000Z',revoked:true,revokedAt:'2026-08-20T00:00:00.000Z',expired:true,active:false,tradeCount:0,recentTrades:[]},
   ]);
  }
  const ADDR=/^0x[0-9a-fA-F]{40}$/;
@@ -86,6 +89,7 @@ export function startMockApi({port=4190,overrides={},seed=false}={}){
   if(req.method==='OPTIONS')return send(res,204,{});
   let m;
   if(req.method==='GET'){
+   if(p==='/v1/invites/status'){const a=(url.searchParams.get('address')||'').toLowerCase();return send(res,200,{required:!!overrides.invites,approved:a?approved.has(a):null})}
    if(p==='/v1/config')return send(res,200,cfg);
    if(p==='/v1/chains')return send(res,200,market.chains());
    if((m=p.match(/^\/v1\/chains\/([A-Za-z0-9.]{1,12})$/))){const c=market.chain(m[1].toUpperCase());return c?send(res,200,c):send(res,404,{error:'NOT_FOUND',message:'Unknown name: '+m[1]})}
@@ -102,16 +106,23 @@ export function startMockApi({port=4190,overrides={},seed=false}={}){
   if(req.method==='POST'){
    const body=await readBody(req);
    if(p==='/v1/quote'){const q=body&&market.quote(body.series,Number(body.units),body.side);return q?send(res,200,q):send(res,404,{error:'NOT_FOUND',message:'Unknown series.'})}
-   if((m=p.match(/^\/v1\/intent\/(buy|sell|shield)$/))){if(url.searchParams.get('format')==='userop')return send(res,503,{error:'AA_UNAVAILABLE',message:'One-tap flows are not configured on this server. Use the plain transaction.'});const [status,out]=intent(m[1],body);return send(res,status,out)}
+   if((m=p.match(/^\/v1\/intent\/(buy|sell|shield)$/))){if(m[1]!=='sell'&&overrides.invites&&!approved.has(String(body?.account||'').toLowerCase())&&!approved.has(String(body?.owner||'').toLowerCase()))return send(res,403,{error:'INVITE_REQUIRED',message:'Lemniscate is invite-only for now. Enter your invite code to start buying. Selling is always open.'});if(url.searchParams.get('format')==='userop')return send(res,503,{error:'AA_UNAVAILABLE',message:'One-tap flows are not configured on this server. Use the plain transaction.'});const [status,out]=intent(m[1],body);return send(res,status,out)}
+   if(p==='/v1/invites/redeem'){
+    const code=String(body?.code||'').toUpperCase().replace(/[^A-Z0-9]/g,''),a=String(body?.address||'').toLowerCase();
+    if(!/^0x[0-9a-f]{40}$/.test(a)||!/^0x[0-9a-fA-F]{130}$/.test(body?.signature||''))return send(res,401,{error:'UNAUTHORIZED',message:'Signature check failed.'});
+    if(approved.has(a))return send(res,200,{approved:true,alreadyApproved:true});
+    if(code!==VALID_CODE||usedCodes.has(code))return send(res,403,{error:'INVALID_CODE',message:'That code is not valid or has already been used.'});
+    usedCodes.add(code);approved.add(a);return send(res,200,{approved:true,alreadyApproved:false});
+   }
    if(p==='/__test/settle')return send(res,200,{ok:settle(body?.data,body?.hash)});
   }
   send(res,404,{error:'NOT_FOUND',message:'Route not found.'});
  });
- return new Promise(resolve=>server.listen(port,'127.0.0.1',()=>resolve({server,port,market,settle,close:()=>new Promise(r=>server.close(r))})));
+ return new Promise(resolve=>server.listen(port,'127.0.0.1',()=>resolve({server,port,market,settle,approved,close:()=>new Promise(r=>server.close(r))})));
 }
 
 if(import.meta.url===`file://${process.argv[1]}`){
  const env=process.env,split=v=>v?v.split(',').map(x=>x.trim().toUpperCase()):[];
- const {port}=await startMockApi({port:Number(process.argv[2]||4190),seed:!!env.MOCK_SEED,overrides:{session:env.MOCK_SESSION,earnings:split(env.MOCK_EARNINGS),splitPause:split(env.MOCK_SPLIT),agentRouter:env.MOCK_NO_ROUTER?false:undefined}});
+ const {port}=await startMockApi({port:Number(process.argv[2]||4190),seed:!!env.MOCK_SEED,overrides:{session:env.MOCK_SESSION,earnings:split(env.MOCK_EARNINGS),splitPause:split(env.MOCK_SPLIT),agentRouter:env.MOCK_NO_ROUTER?false:undefined,invites:!!env.MOCK_INVITES}});
  console.log(`Lemniscate mock API: http://127.0.0.1:${port}`);
 }

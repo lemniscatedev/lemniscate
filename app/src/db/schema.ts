@@ -301,6 +301,44 @@ export const agentPolicyEvents = pgTable(
   ],
 );
 
+export const agentPolicyStocks = pgTable(
+  "agent_policy_stocks",
+  {
+    txHash: text("tx_hash").notNull(),
+    logIndex: integer("log_index").notNull(),
+    block: chainBlock().notNull(),
+    ts: at("ts").notNull(),
+    owner: text("owner").notNull(),
+    agent: text("agent").notNull(),
+    stocks: text("stocks").array().notNull(),
+  },
+  (table) => [
+    primaryKey({ name: "agent_policy_stocks_pk", columns: [table.txHash, table.logIndex] }),
+    index("agent_policy_stocks_owner_idx").on(table.owner, table.agent, table.block.desc(), table.logIndex.desc()),
+    index("agent_policy_stocks_block_idx").on(table.block),
+  ],
+);
+
+/** Router-held queued sells: links an engine ticket (seller = the router) to the owner it belongs to. */
+export const routerTickets = pgTable(
+  "router_tickets",
+  {
+    txHash: text("tx_hash").notNull(),
+    logIndex: integer("log_index").notNull(),
+    block: chainBlock().notNull(),
+    ts: at("ts").notNull(),
+    ticket: numeric("ticket", { precision: 78, scale: 0 }).notNull().unique("router_tickets_ticket_uq"),
+    owner: text("owner").notNull(),
+    agent: text("agent").notNull(),
+    seriesId: text("series_id").notNull(),
+  },
+  (table) => [
+    primaryKey({ name: "router_tickets_pk", columns: [table.txHash, table.logIndex] }),
+    index("router_tickets_owner_idx").on(table.owner, table.block.desc()),
+    index("router_tickets_block_idx").on(table.block),
+  ],
+);
+
 // TimescaleDB hypertable on ts.
 export const normHistory = pgTable(
   "norm_history",
@@ -615,4 +653,35 @@ export const blockHashes = pgTable("block_hashes", {
   hash: text("hash").notNull(),
   parentHash: text("parent_hash").notNull(),
   ts: at("ts").notNull(),
+});
+
+/** Invite codes for the closed beta (todo 33). Codes are stored as sha256 hashes; the plaintext lives only in the team's private file. */
+export const inviteCodes = pgTable(
+  "invite_codes",
+  {
+    codeHash: text("code_hash").primaryKey(),
+    label: text("label"),
+    maxUses: integer("max_uses").notNull().default(1),
+    uses: integer("uses").notNull().default(0),
+    revoked: boolean("revoked").notNull().default(false),
+    createdAt: at("created_at").notNull().defaultNow(),
+  },
+);
+
+/** One row per approved wallet: the code it redeemed. An approved wallet stays approved when invites switch off and on again. */
+export const inviteRedemptions = pgTable(
+  "invite_redemptions",
+  {
+    address: text("address").primaryKey(),
+    codeHash: text("code_hash").notNull(),
+    redeemedAt: at("redeemed_at").notNull().defaultNow(),
+  },
+  (table) => [index("invite_redemptions_code_idx").on(table.codeHash)],
+);
+
+/** Small runtime switches the operator flips without a restart (key `invites_required` = "1" | "0"). */
+export const appSettings = pgTable("app_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: at("updated_at").notNull().defaultNow(),
 });

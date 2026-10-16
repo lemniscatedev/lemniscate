@@ -74,9 +74,17 @@ export async function accountActivity(
       SELECT 'sell_queued', q.queued_at, q.queued_block::text, q.queued_tx, q.queued_log, q.series_id, NULL, q.tokens, q.ticket::text, NULL, NULL, q.status
       FROM queued_sells q WHERE q.seller = ${who}
       UNION ALL
+      SELECT 'sell_queued', q.queued_at, q.queued_block::text, q.queued_tx, q.queued_log, q.series_id, NULL, q.tokens, q.ticket::text, r.agent, NULL, q.status
+      FROM queued_sells q JOIN router_tickets r ON r.ticket = q.ticket WHERE r.owner = ${who}
+      UNION ALL
       SELECT CASE q.status WHEN 'filled' THEN 'sell_filled' ELSE 'sell_cancelled' END, q.closed_at, q.closed_block::text, q.closed_tx, q.closed_log,
              q.series_id, q.usdg_out, q.tokens, q.ticket::text, NULL, q.filler, q.status
       FROM queued_sells q WHERE q.seller = ${who} AND q.status IN ('filled', 'cancelled') AND q.closed_tx IS NOT NULL
+      UNION ALL
+      SELECT CASE q.status WHEN 'filled' THEN 'sell_filled' ELSE 'sell_cancelled' END, q.closed_at, q.closed_block::text, q.closed_tx, q.closed_log,
+             q.series_id, q.usdg_out, q.tokens, q.ticket::text, r.agent, q.filler, q.status
+      FROM queued_sells q JOIN router_tickets r ON r.ticket = q.ticket
+      WHERE r.owner = ${who} AND q.status IN ('filled', 'cancelled') AND q.closed_tx IS NOT NULL
       UNION ALL
       SELECT 'pool_' || p.kind, p.ts, p.block::text, p.tx_hash, p.log_index, NULL, p.assets, p.shares, NULL, NULL, NULL, NULL
       FROM pool_events p WHERE p.account = ${who}
@@ -115,6 +123,8 @@ export interface AgentPolicyRow {
   expiresAt: string;
   canSell: boolean;
   canShield: boolean;
+  /** The names the policy allows (newest PolicyStocks), with the series name where the indexer knows the stock. */
+  allowedStocks: { stock: string; name: string | null }[];
   setAt: string;
   revoked: boolean;
   revokedAt: string | null;
@@ -145,15 +155,27 @@ export async function ownerAgentPolicies(deps: QueryDeps, owner: string): Promis
       FROM agent_policy_events WHERE owner = ${owner.toLowerCase()} AND kind = 'revoked' ORDER BY agent, block DESC, log_index DESC
     )
     SELECT s.agent, s.ts, s.budget_usdg::text AS budget_usdg, s.max_per_trade_usdg::text AS max_per_trade_usdg, s.expires_at,
-           s.can_sell, s.can_shield, (r.agent IS NOT NULL AND (r.block, r.log_index) > (s.block, s.log_index)) AS revoked,
+           s.can_sell, s.can_shield,
+           COALESCE((SELECT st.stocks FROM agent_policy_stocks st WHERE st.owner = ${owner.toLowerCase()} AND st.agent = s.agent
+                     ORDER BY st.block DESC, st.log_index DESC LIMIT 1), ARRAY[]::text[]) AS stocks,
+           (r.agent IS NOT NULL AND (r.block, r.log_index) > (s.block, s.log_index)) AS revoked,
            CASE WHEN r.agent IS NOT NULL AND (r.block, r.log_index) > (s.block, s.log_index) THEN r.ts END AS revoked_at
     FROM latest_set s LEFT JOIN latest_revoke r ON r.agent = s.agent
     ORDER BY s.ts DESC, s.agent
   `) as unknown as {
     agent: string; ts: Date | string; budget_usdg: string; max_per_trade_usdg: string; expires_at: Date | string;
-    can_sell: boolean; can_shield: boolean; revoked: boolean; revoked_at: Date | string | null;
+    can_sell: boolean; can_shield: boolean; stocks: string[]; revoked: boolean; revoked_at: Date | string | null;
   }[];
+  const wanted = [...new Set(rows.flatMap((row) => row.stocks))];
+  const names = new Map<string, string>();
+  if (wanted.length > 0) {
+    const named = (await deps.sql`
+      SELECT DISTINCT ON (stock_token) stock_token, name FROM series WHERE stock_token IN ${deps.sql(wanted)} AND name IS NOT NULL ORDER BY stock_token, name
+    `) as unknown as { stock_token: string; name: string }[];
+    for (const row of named) names.set(row.stock_token, row.name);
+  }
   return rows.map((row) => ({
+    allowedStocks: row.stocks.map((stock) => ({ stock, name: names.get(stock) ?? null })),
     agent: row.agent, budgetUsdg: row.budget_usdg, maxPerTradeUsdg: row.max_per_trade_usdg,
     expiresAt: new Date(row.expires_at).toISOString(), canSell: row.can_sell, canShield: row.can_shield,
     setAt: new Date(row.ts).toISOString(), revoked: row.revoked, revokedAt: row.revoked_at ? new Date(row.revoked_at).toISOString() : null,

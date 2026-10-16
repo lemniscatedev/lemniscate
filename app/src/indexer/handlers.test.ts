@@ -82,6 +82,8 @@ suite("handlersStoreEvents", () => {
     ]);
     blocks.queueClosed = chain.mine([ev.queuedFilled(1n, ADDR.carol, 2_000_000n), ev.queuedCancelled(2n)]);
     blocks.agent = chain.mine([ev.agentTrade(ADDR.alice, ADDR.agent, SERIES_CALL, true, 5_000_000n)]);
+    blocks.routerSet = chain.mine([ev.policyStocks(ADDR.alice, ADDR.agent, [ADDR.nvda, ADDR.tsla])]);
+    blocks.routerQueue = chain.mine([ev.sellQueued(7n, SERIES_CALL, ADDR.agentRouter, ADDR.agentRouter, WAD, 1_790_000_300n), ev.queuedSellFor(7n, ADDR.alice, ADDR.agent, SERIES_CALL)]);
     blocks.guard = chain.mine([ev.stockPaused(ADDR.nvda, true, ("0x" + Buffer.from("SPLIT").toString("hex").padEnd(64, "0")) as Hex)]);
     blocks.poolTransfer = chain.mine([ev.poolTransfer("0x0000000000000000000000000000000000000000", ADDR.alice, 100n * 10n ** 12n)]);
 
@@ -165,6 +167,16 @@ suite("handlersStoreEvents", () => {
     expect(await rows(db, "SELECT ticket, series_id, seller, tokens, status, filler, usdg_out FROM queued_sells ORDER BY ticket")).toEqual([
       { ticket: "1", series_id: SERIES_CALL, seller: ADDR.alice, tokens: "1.000000000000000000", status: "filled", filler: ADDR.carol, usdg_out: "2.000000000000000000" },
       { ticket: "2", series_id: SERIES_CALL, seller: ADDR.bob, tokens: "2.000000000000000000", status: "cancelled", filler: null, usdg_out: null },
+      { ticket: "7", series_id: SERIES_CALL, seller: ADDR.agentRouter, tokens: "1.000000000000000000", status: "open", filler: null, usdg_out: null },
+    ]);
+  });
+
+  test("PolicyStocks and QueuedSellFor are stored", async () => {
+    expect(await rows(db, "SELECT owner, agent, stocks FROM agent_policy_stocks")).toEqual([
+      { owner: ADDR.alice, agent: ADDR.agent, stocks: [ADDR.nvda, ADDR.tsla] },
+    ]);
+    expect(await rows(db, "SELECT ticket, owner, agent, series_id FROM router_tickets")).toEqual([
+      { ticket: "7", owner: ADDR.alice, agent: ADDR.agent, series_id: SERIES_CALL },
     ]);
   });
 

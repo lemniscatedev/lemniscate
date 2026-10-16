@@ -14,7 +14,7 @@ const NEW_TABLES = [
 ];
 const KEPT_TABLES = [
   "account_metadata", "balances", "corp_actions", "cursors", "earnings", "keeper_status", "market_launch", "ref_prices",
-  "token_flow", "upcoming_subscriptions", "api_nonces",
+  "token_flow", "upcoming_subscriptions", "api_nonces", "invite_codes", "invite_redemptions", "app_settings",
 ];
 const RETIRED_TABLES = ["markets", "vault_ticks", "vault_events", "vault_account_state", "regime_log", "carry_updates", "oracle_updates"];
 

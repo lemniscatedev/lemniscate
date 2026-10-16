@@ -69,7 +69,7 @@ export function registerAccountActivityRoutes(app: OpenAPIHono, deps: ApiDepende
         maxPerTradeUsdg: trimDecimal(policy.maxPerTradeUsdg),
         spentUsdg: trimDecimal(totals.get(policy.agent)?.spentUsdg ?? "0"),
         remainingBudgetUsdg: trimDecimal(usdgText(remaining > 0n ? remaining : 0n)),
-        expiresAt: policy.expiresAt, canSell: policy.canSell, canShield: policy.canShield, setAt: policy.setAt,
+        expiresAt: policy.expiresAt, allowedStocks: policy.allowedStocks, canSell: policy.canSell, canShield: policy.canShield, setAt: policy.setAt,
         revoked: policy.revoked, revokedAt: policy.revokedAt, expired, active: !policy.revoked && !expired,
         tradeCount: totals.get(policy.agent)?.trades ?? 0,
         recentTrades: (recent.get(policy.agent) ?? []).map((trade) => ({ ...trade, strike: trim(trade.strike), usdg: trimDecimal(trade.usdg) })),

@@ -42,4 +42,6 @@ html[data-lm-dashboard="true"] body{background:#edf0f0!important}.lm-dashboard{m
 @media (max-width:760px){.dash-demo-banner{margin-top:-10px}}
 @media(max-width:809px){.dash-market-row .dash-row-session{display:none}.dash-demo-label{font-size:10px;padding:6px 10px}}
 .dash-connect{cursor:pointer;background:#fff6e2;border-color:#f0d9a4}.dash-connect span:first-child svg{width:16px;height:16px}
-@media(max-width:809px){.dash-connect span:nth-child(2){display:inline!important;font-size:11px}}
+@media(max-width:809px){.dash-connect span:nth-child(2){display:inline!important;font-size:11px}}.dash-policy-names{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 0}.dash-name-chip{padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600;letter-spacing:.02em;background:#ffffff8c;border:1px solid #0000001f}
+
+.dash-invite{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:0 0 18px;padding:14px 18px}.dash-invite div{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1 1 220px}.dash-invite strong{font-size:14px}.dash-invite span{font-size:12px;line-height:1.55;color:#4a556c}

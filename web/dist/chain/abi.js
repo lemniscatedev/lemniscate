@@ -1,7 +1,7 @@
 // Minimal ABI encoding for the few calls the website builds itself (pool deposit/redeem, agent policies, reads).
 // Option trades never use this: their calldata comes from the API intents. Selectors were computed with viem's
-// toFunctionSelector from the backend ABIs (backend app/src/abi) on 2026-10-16. The AgentRouter ABI there is a declared
-// fallback until its contract lands (todo 09); recheck setPolicy/revoke against the real artifact then.
+// toFunctionSelector from the backend ABIs (backend app/src/abi) on 2026-10-16. The AgentRouter selectors match the deployed
+// contract's interface (IAgentRouter); setPolicy takes the allowed names as its last argument.
 export const SELECTORS=Object.freeze({
  approve:'0x095ea7b3',                 // approve(address,uint256)
  allowance:'0xdd62ed3e',               // allowance(address,address)

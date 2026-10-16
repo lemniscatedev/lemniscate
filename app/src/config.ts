@@ -64,6 +64,9 @@ const envSchema = z.object({
   API_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(0).default(300),
   // Header holding the real client IP set by the fronting proxy.
   API_CLIENT_IP_HEADER: z.string().default("cf-connecting-ip").transform((value) => value.trim().toLowerCase()),
+  // Closed beta (todo 33): "1" = a wallet needs a redeemed invite code before the API builds buy or shield intents. Sells are never gated.
+  // The app_settings row `invites_required` (set by scripts/invites/switch.ts) overrides this at runtime, no restart needed.
+  INVITES_REQUIRED: z.enum(["0", "1"]).default("0").transform((value) => value === "1"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
 });
 
