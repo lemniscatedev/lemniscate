@@ -181,7 +181,7 @@ export function createTransactionQueue(clients: ServiceClients, options: Transac
       const price = fresh > bumped ? fresh : bumped;
       previous = price;
       const serializedTransaction = await account.signTransaction({
-        chainId: robinhoodChain.id, type: "legacy", nonce,
+        chainId: clients.chainId ?? robinhoodChain.id, type: "legacy", nonce,
         to: transaction.to, data: transaction.data, value: transaction.value ?? 0n,
         gas: (estimate * 120n + 99n) / 100n, gasPrice: price,
       });

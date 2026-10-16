@@ -162,3 +162,13 @@ describe("keeper transaction queue", () => {
     expect(classifyBroadcastError(Object.assign(new Error("RPC error"), { cause: { message: "intrinsic gas too low" } }))).toBe("rejected");
   });
 });
+
+describe("keeper transaction queue on the fork (todo 23)", () => {
+  test("signs with the configured chain id (31337 on the anvil fork), not a hardcoded 4663", async () => {
+    const h = harness();
+    const forkClients = { ...h.client, chainId: 31337 } as ServiceClients;
+    const queue = createTransactionQueue(forkClients, { dryRun: false, logger: createLogger("silent"), receiptTimeoutMs: 0 });
+    await queue.submit(transaction);
+    expect(parseTransaction(h.sent[0]!).chainId).toBe(31337);
+  });
+});

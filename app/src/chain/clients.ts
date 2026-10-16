@@ -7,7 +7,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import type { RuntimeConfig } from "../config";
 import { createRpcPool, type RpcPool } from "./rpc-pool";
-import { robinhoodChain } from "./chain";
+import { chainFor } from "./chain";
 
 export interface ServiceClients {
   readonly logsClient: PublicClient;
@@ -15,6 +15,8 @@ export interface ServiceClients {
   readonly txClient: PublicClient;
   readonly walletClient?: WalletClient;
   readonly pool: RpcPool;
+  /** The chain id every transaction is signed for (CHAIN_ID: 4663 mainnet, 31337 the anvil fork, 46630 testnet). */
+  readonly chainId?: number;
 }
 
 /** `signerKey` is passed only by the keeper; other services get read-only clients. */
@@ -23,12 +25,10 @@ export function createClients(
   pool = createRpcPool(config),
   signerKey?: `0x${string}`,
 ): ServiceClients {
-  if (config.CHAIN_ID !== robinhoodChain.id) {
-    throw new Error(`Unsupported chain id ${config.CHAIN_ID}; this service only supports 4663`);
-  }
+  const chain = chainFor(config.CHAIN_ID);
 
   pool.startHourlyReporter();
-  const clientOptions = { chain: robinhoodChain, batch: { multicall: true } } as const;
+  const clientOptions = { chain, batch: { multicall: true } } as const;
   const logsClient = createPublicClient({
     ...clientOptions,
     transport: pool.transport("logs"),
@@ -42,13 +42,13 @@ export function createClients(
     transport: pool.transport("tx"),
   });
 
-  if (!signerKey) return { logsClient, stateClient, txClient, pool };
+  if (!signerKey) return { logsClient, stateClient, txClient, pool, chainId: chain.id };
 
   const account = privateKeyToAccount(signerKey);
   const walletClient = createWalletClient({
     account,
-    chain: robinhoodChain,
+    chain,
     transport: pool.transport("tx"),
   });
-  return { logsClient, stateClient, txClient, walletClient, pool };
+  return { logsClient, stateClient, txClient, walletClient, pool, chainId: chain.id };
 }
