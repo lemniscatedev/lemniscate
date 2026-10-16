@@ -33,7 +33,7 @@ web/          Website (static build, subtree of the frontend repository; extra d
 | `VolOracle` | Stores sigma posts signed by one off-chain signer (EIP-712): step limit, rate limit, floor, expiry, nonces, earnings buy-block window | built |
 | `MarketHours` | Market session calendar, pushed by the keeper, with an NYSE calendar fallback | built |
 | `WriterPool` | ERC-4626-style USDG pool. Counterparty for all trades, holds the spot hedges (linked library `PoolHedging`), withdrawal queue paid at NAV (72h on mainnet) | built |
-| `Reserve`, `FeeRouter` | First-loss reserve funded from spread income; protocol fee split to the pool, keepers, hedger and treasury on a fixed period (7 days on mainnet) | built |
+| `Reserve`, `FeeRouter` | First-loss reserve funded from a share of the spread; protocol fee split to the pool, keepers, hedger and treasury on a fixed period (7 days on mainnet) | built |
 | `AgentRouter` | Lets an owner give an agent key a budget, an expiry and a list of names; trades only through the engine, always to the owner | built |
 | `UniswapV3HedgeAdapter`, `UniswapV3TwapReference` | Swap route for the pool's hedges and the TWAP that floors forced sales | built |
 | `LemniscatePaymaster` | Verifying paymaster for ERC-4337 one-tap transactions | built |
