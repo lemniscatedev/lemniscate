@@ -73,6 +73,7 @@ library EngineTradeLib {
             EngineCore.priceTrade(h, c, b, $.pool.navFor(b.tNow), units, false);
         proceeds = q.usdg;
         if (proceeds < minProceeds) revert IOptionEngine.Slippage(proceeds, minProceeds);
+        uint256 gasBefore = gasleft();
         try $.pool.pay(recipient, proceeds, spread) {
             IOptionToken(c.token).burn(msg.sender, tokens);
             EngineCore.dropIfEmpty(id, c.stock, c.token);
@@ -80,6 +81,8 @@ library EngineTradeLib {
             emit IOptionEngine.Sold(id, msg.sender, recipient, units, tokens, proceeds, q.vMarkWad, q.sigmaBps, c.session);
             EngineCore.recheck(h, false);
         } catch {
+            // A payout that failed for lack of gas is not a blocked payout: never queue the sell for that.
+            EngineCore.requireNotOutOfGas(gasBefore);
             escrow(c, msg.sender, recipient, tokens);
             proceeds = 0;
         }

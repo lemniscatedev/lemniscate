@@ -55,6 +55,18 @@ contract MockEnginePriceGuard is IPriceGuard {
     }
 
     mapping(address => Px) public px;
+    /// @dev Gas each read burns, to model the real PriceGuard (~57k per read on a mainnet fork with feeds and tokens).
+    uint256 public readGas;
+
+    function setReadGas(uint256 g) external {
+        readGas = g;
+    }
+
+    function _burn() internal view {
+        uint256 stop = gasleft() > readGas ? gasleft() - readGas : 0;
+        uint256 x;
+        while (gasleft() > stop) x = uint256(keccak256(abi.encode(x)));
+    }
 
     function set(address stock, uint256 s, SessionKind session, bool fresh) external {
         Px storage p = px[stock];
@@ -77,11 +89,13 @@ contract MockEnginePriceGuard is IPriceGuard {
     }
 
     function read(address stock) public view returns (PriceReading memory r) {
+        _burn();
         Px memory p = px[stock];
         r = PriceReading({s: p.s, session: p.session, fresh: p.fresh, buysPaused: p.buysPaused || p.twapPaused, updatedAt: block.timestamp});
     }
 
     function readLite(address stock) external view returns (PriceReading memory r) {
+        _burn();
         Px memory p = px[stock];
         r = PriceReading({s: p.s, session: p.session, fresh: p.fresh, buysPaused: p.buysPaused, updatedAt: block.timestamp});
     }
@@ -187,6 +201,13 @@ contract MockEnginePool is IPool {
         stale = s;
     }
 
+    /// @dev Gas navFor burns, to model the real WriterPool (cash + hedges valued through PriceGuard: ~170k on a fork).
+    uint256 public navGas;
+
+    function setNavGas(uint256 g) external {
+        navGas = g;
+    }
+
     function onSale(bytes32, uint256 usdgIn, uint256 spreadUsdg) external {
         if (msg.sender != engine) revert NotEngine();
         saleIn += usdgIn;
@@ -217,6 +238,9 @@ contract MockEnginePool is IPool {
     }
 
     function navFor(uint256 liabilityWad) public view returns (int256) {
+        uint256 stop = gasleft() > navGas ? gasleft() - navGas : 0;
+        uint256 x;
+        while (gasleft() > stop) x = uint256(keccak256(abi.encode(x)));
         return int256(usdg.balanceOf(address(this)) * 1e12) + navAdjustWad - int256(liabilityWad);
     }
 

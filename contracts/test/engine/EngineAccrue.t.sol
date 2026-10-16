@@ -247,6 +247,38 @@ contract EngineAccrueTest is EngineBase {
         _buy(bob, t1, 1e18);
     }
 
+    /// todo 23 (fork run): the stress re-check reads the pool's NAV inside try/catch. With just enough gas for the rest
+    /// of accrue, that read ran out of gas, the catch returned early and the accrual "succeeded" without the re-check:
+    /// eth_estimateGas finds exactly that cheaper path, so wallets and the keeper sent accruals that then failed on
+    /// chain (the real path costs more), and a caller could pick the gas that skips the re-check. The cheapest gas at
+    /// which accrue succeeds must still run the re-check.
+    function test_R20_stressRecheckCannotBeSkippedWithTightGas() public {
+        _buy(alice, callD, 16_000e18);
+        skip(1);
+        guard.setS(address(nvda), 105e18);
+        guard.setReadGas(57_000); // the real PriceGuard read on a mainnet fork
+        pool.setNavGas(170_000); // the real WriterPool.navFor with hedges on a mainnet fork
+        bytes memory call = abi.encodeCall(engine.accrue, (callD));
+        uint256 snap = vm.snapshotState();
+        (bool full,) = address(engine).call{gas: 5_000_000}(call);
+        assertTrue(full);
+        vm.revertToState(snap);
+        uint256 lo = 50_000;
+        uint256 hi = 5_000_000;
+        while (hi - lo > 1_000) {
+            uint256 mid = (lo + hi) / 2;
+            snap = vm.snapshotState();
+            (bool ok,) = address(engine).call{gas: mid}(call);
+            vm.revertToState(snap);
+            if (ok) hi = mid;
+            else lo = mid;
+        }
+        (bool ok2,) = address(engine).call{gas: hi}(call);
+        assertTrue(ok2, "succeeds at the cheapest gas");
+        (, bool stress,,) = engine.flags();
+        assertTrue(stress, "the stress re-check ran even at the cheapest gas that succeeds");
+    }
+
     function test_R20_priceRecoveryClearsOnNextAccrue() public {
         _buy(alice, callD, 16_000e18);
         skip(1);

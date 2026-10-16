@@ -19,6 +19,18 @@ library EngineCore {
     using SafeCast for uint256;
     using SafeCast for int256;
 
+    /// @dev A call inside try/catch failed because it ran out of gas, not on its own (todo 23).
+    error InnerCallOutOfGas();
+
+    /// @dev Call right after a caught failure with the gas measured just before the call. A callee that ran out of gas
+    /// leaves the caller only 1/64 of what it had (EIP-150); one that reverted on its own leaves far more. Without this,
+    /// the cheapest gas at which a transaction succeeds is the one where the inner call silently runs out (the catch
+    /// path), so eth_estimateGas returned too little and the real path then failed on chain, and a caller could choose
+    /// the gas that skips the stress re-check or turns a payout into a queued sell.
+    function requireNotOutOfGas(uint256 gasBefore) internal view {
+        if (gasleft() <= gasBefore / 63) revert InnerCallOutOfGas();
+    }
+
     uint256 internal constant WAD = 1e18;
     uint256 internal constant BPS = 10_000;
     uint32 internal constant TAU_DAILY = 86_400;
@@ -227,9 +239,11 @@ library EngineCore {
         // slither-disable-next-line weak-prng
         $.fundingDustWad = dust % 1e12;
         if (amount == 0) return;
+        uint256 gasBefore = gasleft();
         try $.pool.onFunding(id, amount) {
             $.fundingBacklogUsdg = 0;
         } catch {
+            requireNotOutOfGas(gasBefore);
             $.fundingBacklogUsdg = amount;
             emit IOptionEngine.FundingReportFailed(id, amount);
         }
@@ -338,9 +352,11 @@ library EngineCore {
     function recheck(EngineHelper h, bool withDrawdown) internal {
         EngineStorage.Layout storage $ = EngineStorage.layout();
         int256 nav;
+        uint256 gasBefore = gasleft();
         try $.pool.navFor($.bookValue) returns (int256 n) {
             nav = n;
         } catch {
+            requireNotOutOfGas(gasBefore);
             return;
         }
         EngineHelper.Risk memory none;
