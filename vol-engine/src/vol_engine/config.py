@@ -75,6 +75,8 @@ class Settings:
     max_validity_s: int = MAX_VALIDITY_S
     names: tuple[str, ...] = LAUNCH_NAMES
     stocks: tuple[tuple[str, str], ...] = ()  # optional (name, address) overrides from VOL_STOCKS
+    # "wall" (default) or "chain": take "now" from the latest block (an anvil fork moved with evm_increaseTime).
+    clock: str = "wall"
 
     @staticmethod
     def from_env(env: Mapping[str, str] | None = None) -> "Settings":
@@ -95,6 +97,7 @@ class Settings:
             rolling_window_s=int(e.get("VOL_ROLLING_WINDOW_S", "3600")),
             max_validity_s=int(e.get("VOL_MAX_VALIDITY_S", str(MAX_VALIDITY_S))),
             names=names,
+            clock="chain" if e.get("VOL_CLOCK", "wall").strip().lower() == "chain" else "wall",
             stocks=tuple(
                 (k.strip().upper(), v.strip().lower())
                 for k, _, v in (item.partition("=") for item in e.get("VOL_STOCKS", "").split(",") if item.strip())

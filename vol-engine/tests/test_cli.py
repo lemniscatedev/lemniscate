@@ -11,3 +11,26 @@ def test_cli_requires_a_mode(capsys):
 def test_cli_needs_database_url(monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     assert main(["post", "--once"]) == 2
+
+
+def test_chain_clock_uses_the_latest_block_time_on_a_warped_fork():
+    """todo 23: on an anvil fork moved forward with evm_increaseTime, wall-clock posts carry a validUntil in the chain's
+    past and VolOracle rejects every one (Expired). VOL_CLOCK=chain takes "now" from the latest block instead."""
+    from datetime import datetime, timezone
+    from vol_engine.cli import cycle_now
+    from vol_engine.config import Settings
+
+    calls = []
+
+    def transport(method, params):
+        calls.append((method, params))
+        return {"timestamp": hex(1_800_000_000)}
+
+    chain = Settings.from_env({"VOL_CLOCK": "chain"})
+    assert chain.clock == "chain"
+    assert cycle_now(chain, transport) == datetime.fromtimestamp(1_800_000_000, timezone.utc)
+    assert calls == [("eth_getBlockByNumber", ["latest", False])]
+    wall = Settings.from_env({})
+    assert wall.clock == "wall"
+    assert abs((cycle_now(wall, transport) - datetime.now(timezone.utc)).total_seconds()) < 5
+    assert len(calls) == 1

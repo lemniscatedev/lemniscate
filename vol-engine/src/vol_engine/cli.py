@@ -17,6 +17,14 @@ from .keystore import KeyConfigError
 from .store import PgStore
 
 
+def cycle_now(settings: Settings, transport=None) -> datetime:
+    """The time a pass plans with: wall time, or the latest block's time with VOL_CLOCK=chain (a warped fork)."""
+    if settings.clock == "chain":
+        block = (transport or http_transport(settings.rpc_url))("eth_getBlockByNumber", ["latest", False])
+        return datetime.fromtimestamp(int(str(block["timestamp"]), 16), timezone.utc)
+    return datetime.now(timezone.utc)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="vol-engine")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -50,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         while True:
             try:
-                run_cycle(datetime.now(timezone.utc), store, sender, settings, history, force=args.once)
+                run_cycle(cycle_now(settings), store, sender, settings, history, force=args.once)
             except Exception:  # noqa: BLE001 (a bad pass must not kill the loop; --once reports it)
                 if args.once:
                     raise
