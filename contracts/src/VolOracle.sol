@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IVolOracle} from "./interfaces/IVolOracle.sol";
 import {Speed, VolReading} from "./libs/OptionTypes.sol";
 
@@ -24,6 +25,12 @@ import {Speed, VolReading} from "./libs/OptionTypes.sol";
 ///    decides what stale means (buys pause, sells use the last sigma plus a bump).
 ///  - Only the admin (the timelock) rotates the signer and sets floors. A rotation invalidates every unsubmitted post
 ///    signed by the old key.
+///  - Rate limit (todo 04b R7, `volRateLimit`): at most one accepted post per stock and speed per MIN_POST_INTERVAL
+///    (5 min), and a new sigma must be within +-50% of every sigma in force during the last rolling hour (each lifted
+///    to the floor, like the step reference). That bounds any rolling 1h move to +-50% of the value at the start of
+///    the hour, so a compromised signer posting maximum steps walks sigma at most 1.5x (or 0.5x) per hour, not 25%
+///    per transaction. The last HISTORY (12) accepted posts are kept per stock and speed; with one post per 5 minutes
+///    that always covers the hour plus the value in force at its start. The first post is exempt (no history).
 contract VolOracle is AccessControl, EIP712, IVolOracle {
     /// @notice EIP-712 type of a post. `speed` is the Speed enum as uint8 (0 = DAILY, 1 = WEEKLY).
     bytes32 public constant POST_TYPEHASH = keccak256(
@@ -41,12 +48,23 @@ contract VolOracle is AccessControl, EIP712, IVolOracle {
     /// @notice Upper bound for an admin floor (1000%), so a typo cannot freeze a name.
     uint64 public constant MAX_FLOOR_BPS = 100_000;
 
+    /// @notice Minimum time between two accepted posts for one stock and speed.
+    uint64 public constant MIN_POST_INTERVAL = 5 minutes;
+    /// @notice Rolling window of the cumulative bound.
+    uint64 public constant ROLLING_WINDOW = 1 hours;
+    /// @notice Largest cumulative move inside any rolling window, in bps of the value at its start (50%).
+    uint64 public constant MAX_WINDOW_MOVE_BPS = 5000;
+    /// @notice Accepted posts kept per stock and speed (12 * 5 min = 1 h).
+    uint256 public constant HISTORY = 12;
+
     uint256 private constant BPS = 10_000;
 
     error InvalidAdmin();
     error InvalidSigner();
     error InvalidFloor(uint64 floorBps);
     error BadBuyBlockWindow(uint64 from, uint64 to);
+    error RateLimited(uint64 nextAllowedAt);
+    error WindowMoveTooLarge(uint64 anchorBps, uint64 next);
 
     event FloorSet(address indexed stock, uint64 floorBps);
 
@@ -66,7 +84,19 @@ contract VolOracle is AccessControl, EIP712, IVolOracle {
         bool set;
     }
 
+    /// @dev Ring of the last HISTORY accepted posts (two entries per slot) and the next write index.
+    struct Entry {
+        uint64 at;
+        uint64 sigmaBps;
+    }
+
+    struct History {
+        Entry[12] ring;
+        uint8 next;
+    }
+
     address public signer;
+    mapping(address stock => mapping(Speed speed => History)) private _history;
     mapping(address stock => mapping(Speed speed => Slot)) private _vol;
     mapping(address stock => Floor) private _floor;
 
@@ -112,6 +142,8 @@ contract VolOracle is AccessControl, EIP712, IVolOracle {
         if (p.buyBlockTo < p.buyBlockFrom || p.buyBlockTo - p.buyBlockFrom > MAX_BUY_BLOCK) {
             revert BadBuyBlockWindow(p.buyBlockFrom, p.buyBlockTo);
         }
+
+        _checkAndRecordWindow(_history[p.stock][p.speed], p.sigmaBps, floor_, prior != 0);
 
         _vol[p.stock][p.speed] = Slot({
             sigmaBps: p.sigmaBps,
@@ -176,7 +208,68 @@ contract VolOracle is AccessControl, EIP712, IVolOracle {
         return _hashTypedDataV4(structHash(p));
     }
 
+    /// @notice The sigma range a post landing now would be allowed by the rolling-hour bound (before the 25% step
+    /// and the floor), and the earliest time the rate limit allows the next post. lo = 0, hi = max when no history.
+    function windowBounds(address stock, Speed speed)
+        external
+        view
+        returns (uint64 lo, uint64 hi, uint64 nextAllowedAt)
+    {
+        History storage h = _history[stock][speed];
+        uint64 floor_ = floorOf(stock);
+        (uint64 minV, uint64 maxV, uint64 lastAt, bool any) = _windowRange(h, floor_);
+        if (!any) return (0, type(uint64).max, 0);
+        hi = uint64(Math.min(uint256(minV) * (BPS + MAX_WINDOW_MOVE_BPS) / BPS, type(uint64).max));
+        lo = uint64(Math.ceilDiv(uint256(maxV) * (BPS - MAX_WINDOW_MOVE_BPS), BPS));
+        nextAllowedAt = lastAt + MIN_POST_INTERVAL;
+    }
+
     // ------------------------------------------------------------------ internal
+
+    /// @dev Enforces the rate limit and the rolling-hour bound against the stored history, then appends `sigma`.
+    function _checkAndRecordWindow(History storage h, uint64 sigma, uint64 floor_, bool hasPrior) private {
+        if (hasPrior) {
+            (uint64 minV, uint64 maxV, uint64 lastAt, bool any) = _windowRange(h, floor_);
+            if (any) {
+                if (block.timestamp < uint256(lastAt) + MIN_POST_INTERVAL) {
+                    revert RateLimited(lastAt + MIN_POST_INTERVAL);
+                }
+                // sigma within +-50% of every value in force during the last hour.
+                if (uint256(sigma) * BPS > uint256(minV) * (BPS + MAX_WINDOW_MOVE_BPS)) {
+                    revert WindowMoveTooLarge(minV, sigma);
+                }
+                if (uint256(sigma) * BPS < uint256(maxV) * (BPS - MAX_WINDOW_MOVE_BPS)) {
+                    revert WindowMoveTooLarge(maxV, sigma);
+                }
+            }
+        }
+        uint8 i = h.next;
+        h.ring[i] = Entry({at: uint64(block.timestamp), sigmaBps: sigma});
+        h.next = uint8((uint256(i) + 1) % HISTORY);
+    }
+
+    /// @dev Min and max sigma (each lifted to the floor) over the posts in force during [now - 1h, now]: every post
+    /// newer than the window start plus the newest one at or before it (the value in force when the window opened).
+    function _windowRange(History storage h, uint64 floor_)
+        private
+        view
+        returns (uint64 minV, uint64 maxV, uint64 lastAt, bool any)
+    {
+        uint256 start = block.timestamp > ROLLING_WINDOW ? block.timestamp - ROLLING_WINDOW : 0;
+        minV = type(uint64).max;
+        uint256 idx = h.next;
+        for (uint256 k; k < HISTORY; ++k) {
+            idx = idx == 0 ? HISTORY - 1 : idx - 1; // newest first
+            Entry memory e = h.ring[idx];
+            if (e.at == 0) break; // never written
+            if (!any) lastAt = e.at;
+            any = true;
+            uint64 v = e.sigmaBps < floor_ ? floor_ : e.sigmaBps;
+            if (v < minV) minV = v;
+            if (v > maxV) maxV = v;
+            if (e.at <= start) break; // this one was in force at the window start; older ones are not
+        }
+    }
 
     function _setSigner(address signer_) private {
         if (signer_ == address(0)) revert InvalidSigner();

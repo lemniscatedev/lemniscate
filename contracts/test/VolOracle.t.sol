@@ -50,6 +50,7 @@ contract VolOracleTest is Test {
 
     function _submit(IVolOracle.Post memory p) internal {
         oracle.post(p, _sign(SIGNER_PK, p));
+        skip(5 minutes); // todo 04b R7: one post per stock and speed per 5 minutes
     }
 
     // ------------------------------------------------------------------ R1 valid signature
@@ -360,6 +361,7 @@ contract VolOracleTest is Test {
         vm.expectRevert(abi.encodeWithSelector(IVolOracle.NonceUsed.selector, uint64(1)));
         oracle.post(p, sig);
 
+        skip(5 minutes); // todo 04b R7 rate limit
         _submit(_post(5100, 5));
         // A lower nonce (an older, delayed post) is rejected even if otherwise valid.
         IVolOracle.Post memory old = _post(5050, 4);

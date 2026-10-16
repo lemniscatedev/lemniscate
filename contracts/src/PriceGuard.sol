@@ -9,6 +9,17 @@ import {IAggregatorV3} from "./interfaces/IAggregatorV3.sol";
 import {IStockToken} from "./interfaces/IStockToken.sol";
 import {PriceReading, SessionKind} from "./libs/OptionTypes.sol";
 import {Roles} from "./libs/Roles.sol";
+import {TickPrice} from "./libs/TickPrice.sol";
+import {IUniswapV3PoolLike} from "./UniswapV3TwapReference.sol";
+
+interface ITwapPoolTokens {
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+}
+
+interface ITokenDecimals {
+    function decimals() external view returns (uint8);
+}
 
 /// @title PriceGuard
 /// @notice The one place an underlying price S is produced. S is WAD USDG per whole Stock Token with the issuer's
@@ -29,6 +40,25 @@ import {Roles} from "./libs/Roles.sol";
 ///    that reading is HALTED (sells queue) until they agree again, so nobody trades at a 4x-off price.
 ///  - `poke` is the only state writer (besides admin setters). It is permissionless: it only records what the feed
 ///    and token report, and confirmations need distinct feed rounds.
+///  - TWAP cross-check (todo 04b, test/PriceGuardTwap.t.sol). The Robinhood stock feeds print only on a 0.5% move or a
+///    24h heartbeat, so a healthy in-session feed can be ~24h old and age alone cannot tell "quiet" from "stopped".
+///    When a TWAP source is set, a live REGULAR/EXTENDED reading also compares S with the `window`-second TWAP of the
+///    stock/USDG Uniswap v3 pool: |S/TWAP - 1| > bandBps pauses buys ("TWAP"); a TWAP that cannot be read (no pool
+///    code, observation history too short, observe reverting or malformed) pauses buys ("TWAP_UNAVAILABLE"). Both are
+///    computed in the view, need no keeper, clear by themselves, and never touch the reading's S, session or fresh
+///    flag, so sells keep using the feed. maxAgeRegular for heartbeat-24h feeds is therefore set wide
+///    (DEFAULT_MAX_AGE_24H_HEARTBEAT = 26h) and the TWAP carries the freshness burden.
+///  - Manipulation (R4). The TWAP never prices anything: S always comes from the feed. A manipulated pool can only
+///    (a) pause buys (grief) or (b) hide a feed that stopped while the market moved. A price held `d` seconds at `x`
+///    ticks off moves the mean by x*d/window ticks, so a one-block (1-2 s) spike of +/-20% (~1,820 ticks) moves a
+///    30-minute TWAP by ~1-2 ticks, far inside a 75 bps band (~75 ticks). Shifting it by the band needs about
+///    band*window tick-seconds (75 ticks for the full 30 minutes, or 2.25% for 10 minutes) held against arbitrage.
+///    With in-range liquidity read on 2026-10-16 a 1% move costs about 372k USDG (NVDA 0.05%), 50k (SPY 0.05%),
+///    27k (TSLA 0.3%, QQQ 0.05%), so the thin SPY/TSLA/QQQ pools are cheap to grief but expensive to hold off-market
+///    for a full window. Assumption recorded: holding a primary pool off the market for most of the window costs more
+///    than a buyer can extract from a stale S under the per-series caps ($40k outstanding). Residual risk: pushing a
+///    thin pool through all of its liquidity to an extreme tick for a few seconds can move the mean by hundreds of
+///    ticks (that pauses buys; using it to hide a stopped feed also needs the feed to stop, which maxAge bounds).
 contract PriceGuard is AccessControl, IPriceGuard {
     bytes32 public constant GUARDIAN_ROLE = Roles.GUARDIAN_ROLE;
 
@@ -37,6 +67,19 @@ contract PriceGuard is AccessControl, IPriceGuard {
     bytes32 public constant REASON_SPLIT = "SPLIT_PENDING";
     bytes32 public constant REASON_CONTINUITY = "CONTINUITY";
     bytes32 public constant REASON_HALTED = "HALTED";
+    bytes32 public constant REASON_TWAP = "TWAP";
+    bytes32 public constant REASON_TWAP_UNAVAILABLE = "TWAP_UNAVAILABLE";
+
+    /// @notice Suggested maxAgeRegular/maxAgeExtended for feeds with a 24h heartbeat (all launch names): 24h plus
+    /// slack. The TWAP cross-check, not the age, is what detects a stopped feed in session.
+    uint32 public constant DEFAULT_MAX_AGE_24H_HEARTBEAT = 26 hours;
+    uint32 public constant DEFAULT_TWAP_WINDOW = 30 minutes;
+    uint32 public constant MIN_TWAP_WINDOW = 10 minutes;
+    uint32 public constant MAX_TWAP_WINDOW = 1 days;
+    uint16 public constant DEFAULT_TWAP_BAND_BPS = 75;
+    uint16 public constant MAX_TWAP_BAND_BPS = 2000;
+    /// @dev 10^exp converts the pool's raw quote-per-stock price to WAD per whole token; 18/6 decimals gives 30.
+    uint8 private constant MAX_TWAP_SCALE_EXP = 60;
 
     uint256 private constant WAD = 1e18;
     uint256 private constant BPS = 10_000;
@@ -58,6 +101,7 @@ contract PriceGuard is AccessControl, IPriceGuard {
     error InvalidAdmin();
     error InvalidConfig();
     error InvalidGracePeriod();
+    error InvalidTwapSource();
 
     event MarketHoursSet(address marketHours);
     event SequencerFeedSet(address feed, uint32 gracePeriod);
@@ -89,6 +133,17 @@ contract PriceGuard is AccessControl, IPriceGuard {
         uint256 splitUntil;
         bool jump; // unexplained jump vs last good (only evaluated when not already latched)
         bytes32 reason;
+        uint256 twap; // only computed for a live reading with a TWAP source
+        bytes32 twapReason; // REASON_TWAP / REASON_TWAP_UNAVAILABLE / 0
+    }
+
+    /// @dev One storage slot per stock.
+    struct TwapSource {
+        address pool;
+        uint32 window;
+        uint16 bandBps;
+        bool stockIsToken0;
+        uint8 scaleExp;
     }
 
     struct TokenData {
@@ -107,6 +162,7 @@ contract PriceGuard is AccessControl, IPriceGuard {
     mapping(address stock => StockConfig) private _configs;
     mapping(address stock => uint8) public feedDecimals;
     mapping(address stock => StockState) private _states;
+    mapping(address stock => TwapSource) private _twap;
 
     constructor(address admin, address marketHours_) {
         if (admin == address(0)) revert InvalidAdmin();
@@ -176,7 +232,59 @@ contract PriceGuard is AccessControl, IPriceGuard {
         emit SequencerFeedSet(feed, gracePeriod);
     }
 
+    /// @inheritdoc IPriceGuard
+    /// @dev The pool must hold the stock on one side; its decimals and the quote token's fix the price scale here, so
+    /// `read` does no extra token calls. Cardinality is not checked here: a pool that cannot serve the window simply
+    /// reads TWAP_UNAVAILABLE (buys paused) until it can.
+    function setTwapSource(address stock, address pool, uint32 window, uint16 bandBps)
+        external
+        override
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        _requireKnown(stock);
+        if (pool == address(0)) {
+            delete _twap[stock];
+            emit TwapSourceSet(stock, address(0), 0, 0);
+            return;
+        }
+        if (window == 0) window = DEFAULT_TWAP_WINDOW;
+        if (bandBps == 0) bandBps = DEFAULT_TWAP_BAND_BPS;
+        if (window < MIN_TWAP_WINDOW || window > MAX_TWAP_WINDOW || bandBps > MAX_TWAP_BAND_BPS) {
+            revert InvalidTwapSource();
+        }
+        (bool ok0, uint256 t0) = _staticWord(pool, abi.encodeCall(ITwapPoolTokens.token0, ()));
+        (bool ok1, uint256 t1) = _staticWord(pool, abi.encodeCall(ITwapPoolTokens.token1, ()));
+        if (!ok0 || !ok1) revert InvalidTwapSource();
+        bool stockIsToken0 = address(uint160(t0)) == stock;
+        if (stockIsToken0 == (address(uint160(t1)) == stock)) revert InvalidTwapSource(); // neither side, or both
+        address quote = address(uint160(stockIsToken0 ? t1 : t0));
+        (bool okS, uint256 sd) = _staticWord(stock, abi.encodeCall(ITokenDecimals.decimals, ()));
+        (bool okQ, uint256 qd) = _staticWord(quote, abi.encodeCall(ITokenDecimals.decimals, ()));
+        if (!okS || !okQ || sd > 36 || qd > 36 || 18 + sd < qd || 18 + sd - qd > MAX_TWAP_SCALE_EXP) {
+            revert InvalidTwapSource();
+        }
+        _twap[stock] = TwapSource({
+            pool: pool,
+            window: window,
+            bandBps: bandBps,
+            stockIsToken0: stockIsToken0,
+            scaleExp: uint8(18 + sd - qd)
+        });
+        emit TwapSourceSet(stock, pool, window, bandBps);
+    }
+
     // ------------------------------------------------------------------ views
+
+    /// @inheritdoc IPriceGuard
+    function twapCheck(address stock) external view override returns (uint256 twap, bool ok) {
+        Eval memory e = _evaluate(stock);
+        if (e.live && _twap[stock].pool != address(0)) return (e.twap, e.twapReason == bytes32(0));
+        return (_twapPrice(_twap[stock]), false);
+    }
+
+    function twapSource(address stock) external view returns (TwapSource memory) {
+        return _twap[stock];
+    }
 
     /// @inheritdoc IPriceGuard
     function read(address stock) external view override returns (PriceReading memory) {
@@ -297,6 +405,14 @@ contract PriceGuard is AccessControl, IPriceGuard {
                         if (_explainedByMultiplier(s, st, t, cfg.continuityBps)) halted = true;
                         else if (!st.contPaused) e.jump = true; // a latched jump is handled by poke's confirmations
                     }
+                    if (!halted) {
+                        TwapSource memory src = _twap[stock];
+                        if (src.pool != address(0)) {
+                            e.twap = _twapPrice(src);
+                            if (e.twap == 0) e.twapReason = REASON_TWAP_UNAVAILABLE;
+                            else if (!_within(s, e.twap, src.bandBps)) e.twapReason = REASON_TWAP;
+                        }
+                    }
                 }
             }
         }
@@ -325,6 +441,7 @@ contract PriceGuard is AccessControl, IPriceGuard {
         else if (st.contPaused || e.jump) e.reason = REASON_CONTINUITY;
         else if (splitActive) e.reason = REASON_SPLIT;
         else if (halted) e.reason = REASON_HALTED;
+        else if (e.twapReason != bytes32(0)) e.reason = e.twapReason;
         r.buysPaused = e.reason != bytes32(0);
     }
 
@@ -419,6 +536,44 @@ contract PriceGuard is AccessControl, IPriceGuard {
             if (raw == 0 || raw > MAX_S) return (false, 0, updatedAt);
         }
         valid = true;
+    }
+
+    /// @dev Mean tick over the window from `observe([window, 0])`, priced in WAD USDG per whole token. Returns 0 on any
+    /// failure (no code, revert, short or malformed return, tick out of range); never reverts.
+    function _twapPrice(TwapSource memory src) private view returns (uint256 twap) {
+        if (src.pool == address(0)) return 0;
+        uint32[] memory ago = new uint32[](2);
+        ago[0] = src.window;
+        (bool ok, bytes memory data) = src.pool.staticcall{gas: EXTERNAL_READ_GAS}(
+            abi.encodeCall(IUniswapV3PoolLike.observe, (ago))
+        );
+        // (int56[2], uint160[2]): two offsets + two (length, a, b) blocks = 256 bytes.
+        if (!ok || data.length < 256) return 0;
+        uint256 off;
+        assembly ("memory-safe") {
+            off := mload(add(data, 32))
+        }
+        if (off > data.length - 96) return 0;
+        uint256 len;
+        int256 c0;
+        int256 c1;
+        assembly ("memory-safe") {
+            let p := add(add(data, 32), off)
+            len := mload(p)
+            c0 := mload(add(p, 32))
+            c1 := mload(add(p, 64))
+        }
+        if (len < 2 || c0 != int256(int56(c0)) || c1 != int256(int56(c1))) return 0;
+        int256 delta = c1 - c0;
+        int256 span = int256(uint256(src.window));
+        int256 meanTick = delta / span;
+        if (delta < 0 && delta % span != 0) --meanTick; // round toward negative infinity, as Uniswap's OracleLibrary
+        if (meanTick > TickPrice.MAX_TICK || meanTick < -TickPrice.MAX_TICK) return 0;
+        uint256 px = TickPrice.priceX128(int24(meanTick));
+        if (px == 0) return 0;
+        uint256 scale = 10 ** uint256(src.scaleExp);
+        twap = src.stockIsToken0 ? Math.mulDiv(px, scale, TickPrice.Q128) : Math.mulDiv(scale, TickPrice.Q128, px);
+        if (twap > MAX_S) return 0;
     }
 
     function _sequencerDown() private view returns (bool) {
