@@ -102,7 +102,7 @@ if [[ ! -s "$FORK_DIR/deployment.json" ]]; then
     rmdir deployments 2>/dev/null || true
   )
   grep -E "PASS|FAIL" "$FORK_DIR/logs/deploy.log" "$FORK_DIR/logs/post-deploy-check.log" | sed 's/^/up: /'
-  bun scripts/fork/setup.ts --relax
+  bun scripts/fork/setup.ts --proof --relax
 fi
 
 # 5. Env files (keys from anvil's config-out, never written to the repo), migrations, services.

@@ -1,11 +1,24 @@
 import { describe, expect, test } from "bun:test";
+import { parseOptionDeployment } from "@/chain/deployment";
 import { cacheable } from "./rpc-cache";
+import { withForkProof } from "./setup";
 
 const deployment = {
   chainId: 31337, network: "fork", deployBlock: 123,
   contracts: { engine: `0x${"1".repeat(40)}`, pool: `0x${"2".repeat(40)}`, registry: `0x${"3".repeat(40)}`, priceGuard: `0x${"4".repeat(40)}`, volOracle: `0x${"5".repeat(40)}`, usdg: `0x${"6".repeat(40)}` },
   stocks: [{ name: "NVDA", stock: `0x${"7".repeat(40)}` }],
 };
+
+describe("fork deployment identity (todo 23 bug: the keeper refused the fork deploy's file)", () => {
+  test("the deploy output alone has no forkProof, which the fork keeper requires", () => {
+    expect(parseOptionDeployment(deployment).forkProof).toBeUndefined();
+  });
+  test("withForkProof adds the deploy block number and hash in the schema the keeper checks", () => {
+    const parsed = parseOptionDeployment(withForkProof(deployment, `0x${"ab".repeat(32)}`));
+    expect(parsed.forkProof).toEqual({ blockNumber: 123, blockHash: `0x${"ab".repeat(32)}` });
+    expect(() => withForkProof(deployment, "0x12")).toThrow();
+  });
+});
 
 describe("rpc cache keys", () => {
   test("only block-pinned reads are cached", () => {

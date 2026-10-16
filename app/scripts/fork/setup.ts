@@ -9,7 +9,7 @@
 //      past the 26 h production limit and every name would read HALTED. Freshness flows (HALTED, stale feed) are still
 //      exercised with a mock feed swapped in for one name.
 import { randomBytes } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAddress, type Address } from "viem";
 import { PriceGuardAbi } from "@/abi/PriceGuard";
@@ -35,6 +35,21 @@ async function relax(): Promise<void> {
     console.log(`setup: fork relaxation PriceGuard maxAge 30 days for ${s.name} (${hash})`);
   }
   await test.stopImpersonatingAccount({ address: timelock });
+}
+
+/** DeploySystem's fork profile writes no `forkProof`, but the keeper refuses a fork deployment without one (it checks the
+ * node it talks to is the fork the system was deployed on). The proof is the deploy block's number and hash on this node. */
+export function withForkProof<T extends { deployBlock: number | string }>(raw: T, blockHash: string): T & { forkProof: { blockNumber: number; blockHash: string } } {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(blockHash)) throw new Error(`not a block hash: ${blockHash}`);
+  return { ...raw, forkProof: { blockNumber: Number(raw.deployBlock), blockHash: blockHash.toLowerCase() } };
+}
+
+async function addProof(): Promise<void> {
+  const file = join(FORK_DIR, "deployment.json");
+  const raw = JSON.parse(readFileSync(file, "utf8")) as { deployBlock: number };
+  const block = await forkClients().pub.getBlock({ blockNumber: BigInt(raw.deployBlock) });
+  writeFileSync(file, `${JSON.stringify(withForkProof(raw, block.hash!), null, 1)}\n`);
+  console.log(`setup: forkProof = block ${raw.deployBlock} ${block.hash}`);
 }
 
 export function envText(vars: Record<string, string | number>): string {
@@ -77,6 +92,7 @@ export function serviceEnv(): Record<string, Record<string, string | number>> {
 }
 
 if (import.meta.main) {
+  if (process.argv.includes("--proof")) await addProof();
   if (process.argv.includes("--relax")) await relax();
   if (process.argv.includes("--env")) {
     mkdirSync(join(FORK_DIR, "env"), { recursive: true });
