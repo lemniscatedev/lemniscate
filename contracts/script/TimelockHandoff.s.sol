@@ -19,8 +19,7 @@ import {LemniscateScript} from "./lib/LemniscateScript.sol";
 /// these independent of DEFAULT_ADMIN_ROLE, so the guardian can stay with a fast EOA or Safe outside the timelock:
 /// a guardian can only pause buys (`setBuysPaused` / `setGlobalBuysPaused`), and pausing buys never blocks sells, so
 /// an instant guardian cannot trap user funds. Granting or revoking those roles later goes through the timelock.
-/// @dev Run it twice: first without REVOKE_EOA_ADMIN to deploy and grant, verify with PostDeployCheck (TIMELOCK and
-/// ALLOW_EOA_ADMIN=1), then again with TIMELOCK=<deployed> REVOKE_EOA_ADMIN=1. One combined run also works.
+/// @dev Run it twice: first without REVOKE_EOA_ADMIN to deploy and grant, verify the role grants on chain, then again with TIMELOCK=<deployed> REVOKE_EOA_ADMIN=1. One combined run also works.
 contract TimelockHandoff is LemniscateScript {
     uint256 private constant DEFAULT_MIN_DELAY = 172_800; // 48 hours
 

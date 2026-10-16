@@ -528,4 +528,79 @@ contract PriceGuardTwapTest is Test {
         // 60k; bound it so a regression in either part shows up.
         assertLt(avg, 75_000, "read() with the TWAP check, storage-light mocks");
     }
+
+    // ------------------------------------------------------------------ todo 07 R19 readLite
+
+    function _sameExceptPause(PriceReading memory a, PriceReading memory b) internal pure {
+        assertEq(a.s, b.s, "S");
+        assertEq(uint256(a.session), uint256(b.session), "session");
+        assertEq(a.fresh, b.fresh, "fresh");
+        assertEq(a.updatedAt, b.updatedAt, "updatedAt");
+    }
+
+    /// @dev readLite == read in every field; only the TWAP pause is absent from readLite's buysPaused.
+    function test_R19_readLiteEqualsReadExceptTwap() public {
+        uint256 t = _twap();
+        // In band: identical, nothing paused.
+        PriceReading memory full = guard.read(address(stock));
+        PriceReading memory lite = guard.readLite(address(stock));
+        _sameExceptPause(full, lite);
+        assertEq(full.buysPaused, lite.buysPaused);
+
+        // TWAP disagreement: read pauses buys, readLite does not; S/session/fresh identical.
+        feed.push(_answerAt(t, 120));
+        full = guard.read(address(stock));
+        lite = guard.readLite(address(stock));
+        _sameExceptPause(full, lite);
+        assertTrue(full.buysPaused, "full read pauses on TWAP");
+        assertFalse(lite.buysPaused, "lite read skips the TWAP check");
+
+        // TWAP unavailable: same.
+        pool.setRevert(true);
+        full = guard.read(address(stock));
+        lite = guard.readLite(address(stock));
+        _sameExceptPause(full, lite);
+        assertTrue(full.buysPaused);
+        assertFalse(lite.buysPaused);
+
+        // Every other pause reason shows in both (manual pause here).
+        vm.prank(admin);
+        guard.setBuysPaused(address(stock), true);
+        assertTrue(guard.readLite(address(stock)).buysPaused, "manual pause in lite");
+
+        // Closed and halted: identical.
+        hours_.setKind(SessionKind.CLOSED);
+        _sameExceptPause(guard.read(address(stock)), guard.readLite(address(stock)));
+        hours_.setKind(SessionKind.REGULAR);
+        skip(27 hours);
+        full = guard.read(address(stock));
+        lite = guard.readLite(address(stock));
+        _sameExceptPause(full, lite);
+        assertEq(uint256(lite.session), uint256(SessionKind.HALTED));
+    }
+
+    function testFuzz_R19_readLiteEqualsReadExceptTwap(int256 bps, uint8 kind) public {
+        bps = bound(bps, -1500, 1500);
+        hours_.setKind(SessionKind(bound(kind, 0, 3)));
+        feed.push(_answerAt(_twap(), bps));
+        PriceReading memory full = guard.read(address(stock));
+        PriceReading memory lite = guard.readLite(address(stock));
+        _sameExceptPause(full, lite);
+        bytes32 reason = guard.buysPausedReason(address(stock));
+        bool twapOnly = reason == guard.REASON_TWAP() || reason == guard.REASON_TWAP_UNAVAILABLE();
+        assertEq(lite.buysPaused, full.buysPaused && !twapOnly);
+    }
+
+    function test_R19_readLiteGas() public {
+        feed.push(100e8);
+        uint256 g = gasleft();
+        guard.read(address(stock));
+        uint256 full = g - gasleft();
+        g = gasleft();
+        guard.readLite(address(stock));
+        uint256 lite = g - gasleft();
+        emit log_named_uint("read() gas (mock deps, TWAP pool)", full);
+        emit log_named_uint("readLite() gas (mock deps)", lite);
+        assertLt(lite, full);
+    }
 }

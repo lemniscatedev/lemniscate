@@ -40,4 +40,11 @@ interface IPriceGuard {
     /// @return twap WAD USDG per whole Stock Token over the configured window (0 when unavailable or not configured)
     /// @return ok true when a live (REGULAR/EXTENDED, not halted) feed price exists and lies within the band of `twap`
     function twapCheck(address stock) external view returns (uint256 twap, bool ok);
+
+    // ---- added by todo 07 (engine valuation reads), additive only
+
+    /// @dev `read` without the TWAP cross-check: the same S, session, fresh flag and updatedAt, and buysPaused for every
+    /// reason except TWAP / TWAP_UNAVAILABLE. About one feed read instead of a feed read plus a pool observe, so the
+    /// engine uses it for valuation (sells, accrual, liability); buys and shield keep the full `read`.
+    function readLite(address stock) external view returns (PriceReading memory);
 }

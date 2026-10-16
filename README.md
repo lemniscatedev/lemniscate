@@ -16,15 +16,17 @@ app/         Bun services: API, indexer, keeper, migrations
 
 | Contract | What it does |
 | --- | --- |
-| `LemniscateEngine` | Market list, price checks, funding accrual, quotes, buy/sell |
-| `OptionToken` | ERC-20 position token. Only the engine can mint/burn |
-| `OptionTokenFactory` | Deploys new `OptionToken`s for the engine |
-| `EngineHelper` | Admin checks and view math moved out of the engine (size limit) |
+| `LemniscateEngine` | Buys and sells everlasting options at the model price plus spread, accrues in-kind funding, caps, stress budget, the HALTED sell queue, Shield (UUPS) |
+| `engine/EngineTradeLib`, `engine/EngineOpsLib` | The engine's trade, accrual and valuation logic, as linked libraries (size limit) |
+| `EngineHelper` | Pure pricing, risk and parameter bounds used by the engine |
+| `SeriesRegistry` | Option series (stock, Up/Down, strike, Daily/Weekly) and their funding state |
+| `OptionToken` | ERC-20 clone per series. Only the engine can mint/burn; every transfer accrues funding first |
+| `OptionTokenFactory` | Deploys an `OptionToken` clone per series for the registry |
+| `PriceGuard`, `VolOracle` | The underlying price with session and freshness, and the signed volatility posts |
 | `WriterPool` | ERC-4626 vault over USDG. Counterparty for all trades, holds the hedges |
 | `MarketHours` | Market session calendar, pushed by the keeper |
 | `UniswapV3HedgeAdapter` | Swaps through Uniswap v3 `SwapRouter02` for hedging |
 | `UniswapV3TwapReference` | Pool TWAP that floors the pool's forced hedge sales |
-| `LemniscateLens` | Read-only batched views for markets, the pool and accounts |
 
 OpenZeppelin v5.4.0 and forge-std v1.9.7 are vendored in `contracts/lib`.
 

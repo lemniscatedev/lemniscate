@@ -36,7 +36,7 @@ cp -r "$ROOT/src" "$ROOT/lib" "$WORK/"
 cd "$WORK"
 REMAPS="@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/ @openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/"
 status=0
-for target in src/LemniscateEngine.sol src/WriterPool.sol src/MarketHours.sol src/LemniscateLens.sol \
+for target in src/LemniscateEngine.sol src/WriterPool.sol src/MarketHours.sol \
   src/UniswapV3HedgeAdapter.sol src/UniswapV3TwapReference.sol src/OptionToken.sol; do
   echo "::group::slither $target"
   if ! slither "$target" --solc "$SOLC" --solc-remaps "$REMAPS" --solc-args "--via-ir --optimize --evm-version cancun" \

@@ -76,7 +76,7 @@ contract SeriesRegistryTest is Test {
         assertEq(s.norm, 1e18);
         assertEq(s.lastAccrual, block.timestamp);
         assertEq(s.listedAt, block.timestamp);
-        assertTrue(s.buyable);
+        assertFalse(s.buyable, "listed non-buyable until SeriesBuyableSet");
         assertFalse(s.archived);
         assertEq(s.token, registry.predictToken(id));
         assertEq(IOptionToken(s.token).seriesId(), id);
@@ -241,6 +241,8 @@ contract SeriesRegistryTest is Test {
 
     function test_R10_archivedSeriesStaysSellableData() public {
         bytes32 id = _list(true, 110e18, WEEKLY);
+        vm.prank(lister);
+        registry.setBuyable(id, true);
         Series memory before = registry.seriesOf(id);
         address holder = makeAddr("holder");
         engine.mint(id, holder, 5e18);

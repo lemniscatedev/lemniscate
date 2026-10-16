@@ -29,6 +29,10 @@ contract MockLastGoodPrice is IPriceGuard {
         r.updatedAt = block.timestamp;
     }
 
+    function readLite(address stock) external view returns (PriceReading memory) {
+        return read(stock);
+    }
+
     function config(address) external pure returns (StockConfig memory c) {
         return c;
     }

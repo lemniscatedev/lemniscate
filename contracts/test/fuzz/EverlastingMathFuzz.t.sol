@@ -61,9 +61,10 @@ contract EverlastingMathFuzzTest is Test {
         int256 a = bound(aRaw, -20e18, 130e18);
         assertApproxEqAbs(h.lnWad(h.expWad(a)), a, 1e9, "ln(exp a)");
 
-        // exp(a) exp(b) = exp(a + b) for a, b in [-20, 60].
-        int256 a2 = bound(aRaw, -20e18, 60e18);
-        int256 b2 = bound(bRaw, -20e18, 60e18);
+        // exp(a) exp(b) = exp(a + b) for a, b in [-10, 60] (a + b >= -20, so exp(a + b) >= 2e9 wei and one wei of
+        // output rounding stays under 1e-9; at a = b = -20 the product is ~4 wei and the relative check is meaningless).
+        int256 a2 = bound(aRaw, -10e18, 60e18);
+        int256 b2 = bound(bRaw, -10e18, 60e18);
         uint256 lhs = Math.mulDiv(h.expWad(a2), h.expWad(b2), WAD);
         assertTrue(_relClose(lhs, h.expWad(a2 + b2), REL_1E9), "exp(a)exp(b)");
 

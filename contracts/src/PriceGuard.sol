@@ -292,6 +292,11 @@ contract PriceGuard is AccessControl, IPriceGuard {
     }
 
     /// @inheritdoc IPriceGuard
+    function readLite(address stock) external view override returns (PriceReading memory) {
+        return _evaluate(stock, false).r;
+    }
+
+    /// @inheritdoc IPriceGuard
     function config(address stock) external view override returns (StockConfig memory) {
         return _configs[stock];
     }
@@ -370,6 +375,12 @@ contract PriceGuard is AccessControl, IPriceGuard {
     // ------------------------------------------------------------------ evaluation
 
     function _evaluate(address stock) private view returns (Eval memory e) {
+        return _evaluate(stock, true);
+    }
+
+    /// @dev `withTwap` false skips the pool observe (readLite): the reading is identical except that TWAP / TWAP_UNAVAILABLE
+    /// never pause buys.
+    function _evaluate(address stock, bool withTwap) private view returns (Eval memory e) {
         StockConfig memory cfg = _requireKnown(stock);
         StockState memory st = _states[stock];
         e.kind = _sessionKind();
@@ -405,7 +416,7 @@ contract PriceGuard is AccessControl, IPriceGuard {
                         if (_explainedByMultiplier(s, st, t, cfg.continuityBps)) halted = true;
                         else if (!st.contPaused) e.jump = true; // a latched jump is handled by poke's confirmations
                     }
-                    if (!halted) {
+                    if (!halted && withTwap) {
                         TwapSource memory src = _twap[stock];
                         if (src.pool != address(0)) {
                             e.twap = _twapPrice(src);

@@ -7,11 +7,13 @@ import {ISeriesRegistry} from "./interfaces/ISeriesRegistry.sol";
 import {IPriceGuard} from "./interfaces/IPriceGuard.sol";
 import {PriceReading, Series, Speed} from "./libs/OptionTypes.sol";
 import {Roles} from "./libs/Roles.sol";
-import {OptionTokenCloneFactory} from "./OptionTokenCloneFactory.sol";
+import {OptionTokenFactory} from "./OptionTokenFactory.sol";
 
 /// @title SeriesRegistry
 /// @notice The list of option series (stock, Up/Down, strike, Daily/Weekly) and their funding state. Listing a series
 /// deploys its ERC-20 as an EIP-1167 clone, e.g. "Lemniscate NVDA Up 110 Weekly" / "eNVDA-C-110-W".
+/// New series start non-buyable: the lister turns them on with `setBuyable` (the indexer assumes listed series are
+/// non-buyable until a SeriesBuyableSet event).
 /// @dev Roles: DEFAULT_ADMIN_ROLE (timelock) allows stocks, sets strike steps and the engine once; KEEPER_ROLE (keeper)
 /// lists series, toggles buyable and archives; only the engine stores accruals. Archived series keep their data and
 /// token forever so holders can always sell.
@@ -46,7 +48,7 @@ contract SeriesRegistry is ISeriesRegistry, AccessControl {
     error AccrualBackwards(uint64 current, uint64 proposed);
 
     IPriceGuard public immutable priceGuard;
-    OptionTokenCloneFactory public immutable factory;
+    OptionTokenFactory public immutable factory;
     address public engine;
 
     mapping(address stock => StockInfo) private _stocks;
@@ -56,7 +58,7 @@ contract SeriesRegistry is ISeriesRegistry, AccessControl {
     constructor(address admin, IPriceGuard priceGuard_) {
         if (admin == address(0) || address(priceGuard_) == address(0)) revert ZeroAddress();
         priceGuard = priceGuard_;
-        factory = new OptionTokenCloneFactory();
+        factory = new OptionTokenFactory();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }
 
@@ -116,7 +118,7 @@ contract SeriesRegistry is ISeriesRegistry, AccessControl {
             norm: INITIAL_NORM,
             lastAccrual: uint64(block.timestamp),
             listedAt: uint64(block.timestamp),
-            buyable: true,
+            buyable: false,
             archived: false
         });
         _ids.push(id);

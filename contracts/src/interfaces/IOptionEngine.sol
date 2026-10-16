@@ -56,4 +56,31 @@ interface IOptionEngine {
     function netGreeks(address stock) external view returns (int256 deltaWad, int256 gammaWad, int256 vegaWad);
     function setBuysPaused(bool globalPaused) external; // GUARDIAN
     function setSeriesBuysPaused(bytes32 id, bool paused) external; // GUARDIAN
+
+    // ---- added by todo 07 (HALTED sell queue, auto-pause clearing), additive only
+
+    /// @dev A sell in a HALTED session, or one whose payout transfer failed (issuer pause/freeze), escrows the tokens in
+    /// the engine (they keep paying funding) and opens a ticket.
+    event SellQueued(uint256 indexed ticket, bytes32 indexed id, address indexed seller, address recipient, uint128 tokens, uint64 queuedAt);
+    event QueuedSellFilled(uint256 indexed ticket, address filler, uint256 usdgOut);
+    event QueuedSellCancelled(uint256 indexed ticket);
+    /// @dev An automatic buy pause (`AutoPaused` reason "STRESS" or "DRAWDOWN") cleared by itself.
+    event AutoResumed(bytes32 indexed reason);
+
+    /// @dev The pool rejected a funding report; the amount is carried into the next report.
+    event FundingReportFailed(bytes32 indexed id, uint256 fundingUsdg);
+
+    error UnknownSeries(bytes32 id);
+    error NotTicketSeller(uint256 ticket);
+    error ShieldExceedsHolding(uint256 held, uint256 wanted);
+
+    /// @dev Buys refused by a pause: "GLOBAL", "SERIES", "PRICE", "STRESS", "DRAWDOWN", "HEDGE".
+    error BuysArePaused(bytes32 reason);
+    error QueueNotFillable(uint256 ticket);
+
+    /// @dev Fills a queued sell at the current price (any session but HALTED); anyone may call, proceeds go to the
+    /// ticket's recipient.
+    function fillQueued(uint256 ticket) external returns (uint256 usdgOut);
+    /// @dev The seller takes the escrowed tokens back before the ticket is filled.
+    function cancelQueued(uint256 ticket) external;
 }
