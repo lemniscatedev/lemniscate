@@ -31,10 +31,10 @@ Copy this folder's contents into your repository, including the hidden `.gitigno
 
 ## Where to begin
 
-- [Developer handoff](docs/HANDOFF.md): architecture, editing locations, and dashboard integration boundaries.
-- [Deployment](docs/DEPLOYMENT.md): static hosting, route handling, and cache requirements.
-- [Routes](docs/ROUTES.md): all 18 pages and the native module map.
-- [Assets and branding](docs/ASSETS.md): images, fonts, logo, provenance, and source PDFs.
+- [Developer handoff](handoff/HANDOFF.md): architecture, editing locations, and dashboard integration boundaries.
+- [Deployment](handoff/DEPLOYMENT.md): static hosting, route handling, and cache requirements.
+- [Routes](handoff/ROUTES.md): all 18 pages and the native module map.
+- [Assets and branding](handoff/ASSETS.md): images, fonts, logo, provenance, and source PDFs.
 - `HANDOFF-MANIFEST.json`: file sizes and SHA-256 checksums for the delivered snapshot.
 
 The native layout layer is adapted generated Framer/React JavaScript. Its modules are included, but this is not an original Framer editor project or a conventional component-based React/Vite project. The custom application layer is editable plain JavaScript and CSS. See the handoff guide before reorganizing the generated modules.
