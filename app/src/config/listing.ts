@@ -40,12 +40,16 @@ export function moneynessBps(strikeWad: bigint, spotWad: bigint): bigint {
   return diff * 10_000n / spotWad;
 }
 
-/** ISeriesRegistry id: keccak256(abi.encode(stock, isCall, strike, tauSeconds)). */
-export function seriesId(stock: Address, isCall: boolean, strike: bigint, tauSeconds: number): Hex {
+/** ISeriesRegistry id of one epoch (decision 27, todo 07b): keccak256(abi.encode(stock, isCall, strike, tauSeconds, epoch)).
+ * The registry's ids always carry the epoch; there is no epoch-less id on chain. */
+export function seriesId(stock: Address, isCall: boolean, strike: bigint, tauSeconds: number, epoch = 0): Hex {
   return keccak256(encodeAbiParameters(
-    [{ type: "address" }, { type: "bool" }, { type: "uint128" }, { type: "uint32" }],
-    [stock, isCall, strike, tauSeconds],
+    [{ type: "address" }, { type: "bool" }, { type: "uint128" }, { type: "uint32" }, { type: "uint32" }],
+    [stock, isCall, strike, tauSeconds, epoch],
   ));
 }
+
+/** SeriesRegistry.relistNormThreshold default: below this norm the keeper lists the strike's next epoch. */
+export const RELIST_NORM = 10n ** 15n;
 
 export { WAD };

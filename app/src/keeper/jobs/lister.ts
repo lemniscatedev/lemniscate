@@ -1,7 +1,7 @@
 import { encodeFunctionData, type Address, type Hex } from "viem";
 import { PriceGuardAbi, SeriesRegistryAbi } from "../../abi";
 import {
-  ARCHIVE_MONEYNESS_BPS, SPEEDS, STRIKE_STEP_USD, gridStrikes, moneynessBps, seriesId,
+  ARCHIVE_MONEYNESS_BPS, RELIST_NORM, SPEEDS, STRIKE_STEP_USD, gridStrikes, moneynessBps, seriesId,
 } from "../../config/listing";
 import { safeErrorSummary } from "../../log";
 import { saveJobMeta, type KeeperContext } from "../context";
@@ -36,7 +36,16 @@ export function planListings(input: {
   nowSeconds: bigint;
 }): ListerPlan {
   const plan: ListerPlan = { list: [], setBuyable: [], archive: [], skipped: [] };
-  const byId = new Map(input.existing.map((series) => [series.id, series]));
+  // Registry ids carry the epoch (decision 27, todo 07b). Match the grid by (stock, side, strike, tau); the registry
+  // returns epochs in listing order, so the last one per key is the current epoch.
+  const key = (stock: string, isCall: boolean, strike: bigint, tau: number) => `${stock.toLowerCase()}:${isCall}:${strike}:${tau}`;
+  const current = new Map<string, ChainSeries>();
+  const epochs = new Map<string, number>();
+  for (const series of input.existing) {
+    const k = key(series.stock, series.isCall, series.strike, series.tauSeconds);
+    current.set(k, series);
+    epochs.set(k, (epochs.get(k) ?? 0) + 1);
+  }
   for (const { name, stock } of input.stocks) {
     const price = input.prices.get(stock);
     if (!price || price.s === 0n) { plan.skipped.push({ name, reason: "no price reading" }); continue; }
@@ -50,11 +59,13 @@ export function planListings(input: {
     for (const { speed, tauSeconds } of SPEEDS) {
       for (const strike of gridStrikes(price.s, step)) {
         for (const isCall of [true, false]) {
-          const id = seriesId(stock, isCall, strike, tauSeconds);
-          const found = byId.get(id);
-          if (!found) plan.list.push({ stock, name, isCall, speed, strike, tauSeconds, id });
-          else if (!found.archived && !found.buyable && input.nowSeconds - found.listedAt < RECENT_LISTING_SECONDS) {
-            plan.setBuyable.push({ id, name });
+          const k = key(stock, isCall, strike, tauSeconds);
+          const found = current.get(k);
+          // Nothing live at this strike, or the live epoch is archived or has decayed below the relist norm: list the next epoch.
+          if (!found || found.archived || found.norm < RELIST_NORM) {
+            plan.list.push({ stock, name, isCall, speed, strike, tauSeconds, id: seriesId(stock, isCall, strike, tauSeconds, epochs.get(k) ?? 0) });
+          } else if (!found.buyable && input.nowSeconds - found.listedAt < RECENT_LISTING_SECONDS) {
+            plan.setBuyable.push({ id: found.id, name });
           }
         }
       }

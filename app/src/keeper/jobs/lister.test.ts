@@ -105,3 +105,34 @@ describe("lister", () => {
     expect(await job()).toEqual({ skipped: "done today", completedDay: first.completedDay });
   });
 });
+
+describe("lister and series epochs (todo 23 fork bug: ids carry the epoch since 07b)", () => {
+  test("a second run finds the listed epoch-0 series, lists nothing and turns them buyable", async () => {
+    const chain = chainWith();
+    chain.listDefaultBuyable = false;
+    const job = createListerJob(chain.context());
+    await job({ force: true });
+    const listed = chain.sent.filter((tx) => tx.name === "listSeries").length;
+    const second = await job({ force: true });
+    expect(second.listed).toBe(0);
+    expect(second.failures).toEqual([]);
+    expect(chain.sent.filter((tx) => tx.name === "listSeries").length).toBe(listed);
+    // every listing was followed by setBuyable on the series the registry actually created
+    expect(chain.sent.filter((tx) => tx.name === "setBuyable").length).toBe(listed);
+    expect([...chain.series.values()].every((s) => s.buyable)).toBe(true);
+  });
+
+  test("a strike whose live epoch decayed below norm 0.001 gets its next epoch listed (decision 27)", async () => {
+    const chain = chainWith();
+    chain.prices.delete(A.spy);
+    await createListerJob(chain.context())({ force: true });
+    const first = [...chain.series.values()].find((s) => s.isCall && s.tauSeconds === 86_400 && !s.archived)!;
+    first.norm = 10n ** 14n;
+    chain.sent.length = 0;
+    const result = await createListerJob(chain.context())({ force: true });
+    expect(result.listed).toBe(1);
+    expect(chain.series.get(first.id)!.archived).toBe(true);
+    const next = [...chain.series.values()].find((s) => s.stock === first.stock && s.isCall && s.strike === first.strike && s.tauSeconds === 86_400 && !s.archived)!;
+    expect(next.id).not.toBe(first.id);
+  });
+});

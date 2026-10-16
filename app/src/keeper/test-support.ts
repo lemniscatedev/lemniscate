@@ -1,7 +1,10 @@
-import { decodeFunctionData, type Address, type Hex } from "viem";
+import { decodeFunctionData, encodeAbiParameters, keccak256, type Address, type Hex } from "viem";
 import { OptionEngineAbi, PriceGuardAbi, SeriesRegistryAbi } from "../abi";
 import { createLogger } from "../log";
-import { seriesId } from "../config/listing";
+
+/** SeriesRegistry.idOfEpoch, written out here on purpose (not imported from the code under test). */
+const seriesId = (stock: Address, isCall: boolean, strike: bigint, tau: number, epoch: number): Hex => keccak256(encodeAbiParameters(
+  [{ type: "address" }, { type: "bool" }, { type: "uint128" }, { type: "uint32" }, { type: "uint32" }], [stock, isCall, strike, tau, epoch]));
 import type { KeeperContext } from "./context";
 
 export const WAD = 10n ** 18n;
@@ -36,8 +39,14 @@ export class FakeChain {
   listDefaultBuyable = true;
   multicalls = 0;
 
+  /** Epochs per (stock, isCall, strike, tau), as SeriesRegistry keeps them (todo 07b): ids carry the epoch. */
+  epochs = new Map<string, number>();
+
   addSeries(partial: Partial<FakeSeries> & { stock: Address; isCall: boolean; strike: bigint; tauSeconds: number }): FakeSeries {
-    const id = seriesId(partial.stock, partial.isCall, partial.strike, partial.tauSeconds);
+    const key = `${partial.stock.toLowerCase()}:${partial.isCall}:${partial.strike}:${partial.tauSeconds}`;
+    const epoch = this.epochs.get(key) ?? 0;
+    this.epochs.set(key, epoch + 1);
+    const id = seriesId(partial.stock, partial.isCall, partial.strike, partial.tauSeconds, epoch);
     const series: FakeSeries = {
       id, speed: partial.tauSeconds === 86_400 ? 0 : 1, token: `0x${(this.order.length + 1).toString(16).padStart(40, "c")}` as Address,
       norm: WAD, lastAccrual: this.nowSeconds, listedAt: this.nowSeconds - 10_000n, buyable: true, archived: false, supply: 0n, ...partial,
@@ -107,6 +116,14 @@ export class FakeChain {
         if (this.dryRun) return { simulated: true };
         if (name === "listSeries") {
           const [stock, isCall, strike, tau] = args as [Address, boolean, bigint, number];
+          // SeriesRegistry.listSeries: the current epoch must be archived or nearly worthless (norm < 1e15) to list again.
+          const count = this.epochs.get(`${stock.toLowerCase()}:${isCall}:${strike}:${tau}`) ?? 0;
+          if (count > 0) {
+            const previous = this.series.get(seriesId(stock, isCall, strike, tau, count - 1))!;
+            if (!previous.archived && previous.norm >= 10n ** 15n) throw new Error(`execution reverted: SeriesExists(${previous.id})`);
+            previous.archived = true;
+            previous.buyable = false;
+          }
           this.addSeries({ stock, isCall, strike, tauSeconds: tau, listedAt: this.nowSeconds, buyable: this.listDefaultBuyable });
         } else if (name === "setBuyable") this.series.get(args[0] as Hex)!.buyable = args[1] as boolean;
         else if (name === "archive") { const s = this.series.get(args[0] as Hex)!; s.archived = true; s.buyable = false; }
