@@ -249,6 +249,12 @@ library EngineCore {
         }
     }
 
+    /// @dev Todo 19: tells the pool that `tokens` of `c`'s series were sold back (supply before the burn, the trade's S
+    /// and spread) so the writer vaults covering it settle. A failing pool call never blocks the sell.
+    function reportBuyback(Ctx memory c, uint256 tokens, uint256 spread) internal {
+        try EngineStorage.layout().pool.onBuyback(c.id, tokens, c.supply, c.s, spread) {} catch {}
+    }
+
     function liab(uint256 supply, uint256 norm, uint256 v) internal pure returns (uint256) {
         return Math.mulDiv(Math.mulDiv(supply, norm, WAD), v, WAD);
     }

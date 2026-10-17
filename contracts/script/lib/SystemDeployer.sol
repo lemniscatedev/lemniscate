@@ -28,6 +28,11 @@ import {IReserve} from "../../src/interfaces/IReserve.sol";
 import {IFeeRouter} from "../../src/interfaces/IFeeRouter.sol";
 import {IHedgeAdapter} from "../../src/interfaces/IHedgeAdapter.sol";
 import {Roles as RoleIds} from "../../src/libs/Roles.sol";
+import {VaultRegistry} from "../../src/vaults/VaultRegistry.sol";
+import {WriterVault} from "../../src/vaults/WriterVault.sol";
+import {CoveredUpVault} from "../../src/vaults/CoveredUpVault.sol";
+import {CashDownVault} from "../../src/vaults/CashDownVault.sol";
+import {IVaultRegistry} from "../../src/interfaces/IWriterVault.sol";
 import {SystemConfig} from "./SystemConfig.sol";
 import {TestnetUSDG, TestnetStockToken, TestnetFeed, TestnetSwapRouter} from "../testnet/TestnetMocks.sol";
 import {ForkSafe} from "../fork/ForkSafe.sol";
@@ -73,6 +78,8 @@ abstract contract SystemDeployer is SystemConfig {
         string[] names;
         address[] stocks;
         address[] feeds;
+        address vaultRegistry; // zero unless config.vaults.enabled (todo 19, phase 2)
+        address[] vaults; // per stock: CoveredUpVault, CashDownVault (Weekly), all closed
     }
 
     function _deploySystem(Config memory c, address deployer) internal returns (Deployed memory d) {
@@ -92,6 +99,7 @@ abstract contract SystemDeployer is SystemConfig {
         _params(c, d);
         _grantRoles(c, d);
         d.agentRouter = address(new AgentRouter(d.engine));
+        if (c.vaults.enabled) _deployVaults(c, d);
         if (c.handoff) _handoff(c, d);
     }
 
@@ -270,11 +278,57 @@ abstract contract SystemDeployer is SystemConfig {
         // MarketHours.initialize already granted KEEPER_ROLE to the keeper.
     }
 
+    // -------------------------------------------------------------------------------------------- vaults
+
+    /// @dev Writer vaults behind the `vaults.enabled` flag (off by default): the registry as the pool's vault hook, the
+    /// keeper as allocator, and per stock a CoveredUpVault (calls, 105%-130% of S) and a CashDownVault (puts, 70%-95%)
+    /// at the Weekly speed. Every vault deploys closed (open = false).
+    function _deployVaults(Config memory c, Deployed memory d) private {
+        VaultRegistry reg = new VaultRegistry(
+            d.deployer, d.pool, ISeriesRegistry(d.registry), IPriceGuard(d.priceGuard), IERC20(d.usdg)
+        );
+        d.vaultRegistry = address(reg);
+        WriterPool(d.pool).setVaultHook(address(reg));
+        reg.grantRole(reg.ALLOCATOR_ROLE(), c.roles.keeper);
+        d.vaults = new address[](d.stocks.length * 2);
+        for (uint256 i; i < d.stocks.length; ++i) {
+            for (uint256 k; k < 2; ++k) {
+                bool isCall = k == 0;
+                WriterVault.Params memory p = WriterVault.Params({
+                    admin: d.deployer,
+                    asset: isCall ? IERC20(d.stocks[i]) : IERC20(d.usdg),
+                    usdg: IERC20(d.usdg),
+                    stock: d.stocks[i],
+                    tauSeconds: 604_800,
+                    minMoneynessBps: isCall ? 10_500 : 7_000,
+                    maxMoneynessBps: isCall ? 13_000 : 9_500,
+                    registry: IVaultRegistry(address(reg)),
+                    priceGuard: IPriceGuard(d.priceGuard),
+                    epoch: c.vaults.epoch,
+                    minDeposit: isCall ? 1e15 : 1e6,
+                    name: string.concat("Lemniscate ", d.names[i], isCall ? " Covered Up" : " Cash Down"),
+                    symbol: string.concat(isCall ? "lcUP-" : "lcDN-", d.names[i])
+                });
+                address v = isCall ? address(new CoveredUpVault(p)) : address(new CashDownVault(p));
+                reg.addVault(v);
+                IAccessControl(v).grantRole(GUARDIAN, c.roles.guardian);
+                d.vaults[2 * i + k] = v;
+            }
+        }
+    }
+
     // ------------------------------------------------------------------------------------------------- handoff
 
-    /// @notice Every contract whose DEFAULT_ADMIN_ROLE the handoff moves.
+    /// @notice Every contract whose DEFAULT_ADMIN_ROLE the handoff moves (vault registry and vaults when deployed).
     function adminTargets(Deployed memory d) internal pure returns (address[] memory t) {
-        t = new address[](8);
+        uint256 extra = d.vaultRegistry == address(0) ? 0 : 1 + d.vaults.length;
+        t = new address[](8 + extra);
+        if (extra != 0) {
+            t[8] = d.vaultRegistry;
+            for (uint256 i; i < d.vaults.length; ++i) {
+                t[9 + i] = d.vaults[i];
+            }
+        }
         t[0] = d.engine;
         t[1] = d.pool;
         t[2] = d.registry;
@@ -375,6 +429,8 @@ abstract contract SystemDeployer is SystemConfig {
             vm.toString(d.marketHoursImpl),
             '","timelock":"',
             vm.toString(d.timelock),
+            '","vaultRegistry":"',
+            vm.toString(d.vaultRegistry),
             '"}'
         );
         return string.concat(

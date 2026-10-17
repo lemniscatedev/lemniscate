@@ -32,6 +32,8 @@ abstract contract SystemConfig is CommonBase {
     uint64 internal constant FULL_VOL_MIN_POST_INTERVAL = 5 minutes;
     uint256 internal constant FULL_SPLIT_LEAD = 24 hours;
     uint256 internal constant FULL_SPLIT_TAIL = 1 hours;
+    /// @dev Writer vault epoch (todo 19, phase 2): 7 days on fork and mainnet, minutes on testnet (contract minimum 5 min).
+    uint256 internal constant FULL_VAULT_EPOCH = 7 days;
 
     /// @dev Engine param ceilings used for "unlimited" access caps (decision 24; EngineHelper.validate bounds).
     uint128 internal constant UNLIMITED_ENGINE_CAP = 1e27;
@@ -86,6 +88,13 @@ abstract contract SystemConfig is CommonBase {
         bool publicDeposits;
     }
 
+    /// @dev Writer vaults (todo 19, phase 2). OFF unless `.vaults.enabled` is true; even then every vault deploys closed
+    /// (open = false) and the pool routes nothing until the allocator assigns slices.
+    struct VaultCfg {
+        bool enabled;
+        uint256 epoch; // testnet only from `.vaults.epoch`; fork/mainnet always FULL_VAULT_EPOCH
+    }
+
     struct Config {
         string profileName;
         uint8 profile;
@@ -98,6 +107,7 @@ abstract contract SystemConfig is CommonBase {
         Timers timers;
         Limits limits;
         StockCfg[] stocks;
+        VaultCfg vaults;
     }
 
     // ------------------------------------------------------------------------------------------------- loading
@@ -156,6 +166,14 @@ abstract contract SystemConfig is CommonBase {
         c.limits.accountCapWad = uint128(_uint(json, ".limits.accountCapWad", 0));
         c.limits.publicDeposits =
             vm.keyExistsJson(json, ".limits.publicDeposits") ? vm.parseJsonBool(json, ".limits.publicDeposits") : false;
+
+        c.vaults.enabled = vm.keyExistsJson(json, ".vaults.enabled") ? vm.parseJsonBool(json, ".vaults.enabled") : false;
+        if (c.profile == PROFILE_TESTNET) {
+            c.vaults.epoch = _uint(json, ".vaults.epoch", 0);
+        } else {
+            c.vaults.epoch = FULL_VAULT_EPOCH;
+            require(!vm.keyExistsJson(json, ".vaults.epoch"), "SystemConfig: fork/mainnet use the full vault epoch");
+        }
 
         uint256 n;
         while (vm.keyExistsJson(json, string.concat(".stocks[", vm.toString(n), "]"))) ++n;

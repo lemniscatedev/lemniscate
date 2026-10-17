@@ -17,6 +17,8 @@ import {IAggregatorV3} from "../../src/interfaces/IAggregatorV3.sol";
 import {IHedgeAdapter} from "../../src/interfaces/IHedgeAdapter.sol";
 import {SessionKind} from "../../src/libs/OptionTypes.sol";
 import {SystemDeployer} from "./SystemDeployer.sol";
+import {VaultRegistry} from "../../src/vaults/VaultRegistry.sol";
+import {WriterVault} from "../../src/vaults/WriterVault.sol";
 
 /// @title SystemChecks
 /// @notice The post-deploy check (todo 10 R3): every failure is a named reason, so a misconfiguration says what is
@@ -40,6 +42,7 @@ abstract contract SystemChecks is SystemDeployer {
         _checkTimers(c, d);
         _checkStocks(c, d);
         _checkPool(c, d);
+        _checkVaults(c, d);
         out = _fails;
     }
 
@@ -285,6 +288,26 @@ abstract contract SystemChecks is SystemDeployer {
         return uint64(uint256(vm.load(impl, INITIALIZABLE_SLOT))) == type(uint64).max;
     }
 
+    /// @dev Todo 19: vaults off unless the flag is on; when on, wired to this pool and every vault closed on its epoch.
+    function _checkVaults(Config memory c, Deployed memory d) private {
+        address hook = WriterPool(d.pool).vaultHook();
+        if (!c.vaults.enabled) {
+            _failIf(hook != address(0), "VAULTS_NOT_OFF");
+            return;
+        }
+        _failIf(hook == address(0) || hook != d.vaultRegistry, "VAULT_HOOK");
+        if (d.vaultRegistry.code.length == 0) return;
+        VaultRegistry reg = VaultRegistry(d.vaultRegistry);
+        _failIf(reg.pool() != d.pool || reg.vaultCount() != d.vaults.length, "VAULT_REGISTRY_WIRING");
+        _failIf(!reg.hasRole(reg.ALLOCATOR_ROLE(), c.roles.keeper), "VAULT_ALLOCATOR");
+        for (uint256 i; i < d.vaults.length; ++i) {
+            WriterVault v = WriterVault(d.vaults[i]);
+            _failIf(v.open(), "VAULT_OPEN");
+            _failIf(v.EPOCH() != c.vaults.epoch, "TIMER:vaultEpoch");
+            _failIf(!reg.isVault(address(v)) || v.registry() != d.vaultRegistry, "VAULT_NOT_REGISTERED");
+        }
+    }
+
     // ------------------------------------------------------------------------------------------- file input
 
     /// @notice Reads a deployment file written by DeploySystem (deploymentJson).
@@ -312,6 +335,17 @@ abstract contract SystemChecks is SystemDeployer {
         d.poolImpl = vm.parseJsonAddress(json, ".contracts.poolImpl");
         d.marketHoursImpl = vm.parseJsonAddress(json, ".contracts.marketHoursImpl");
         d.timelock = vm.parseJsonAddress(json, ".contracts.timelock");
+        if (vm.keyExistsJson(json, ".contracts.vaultRegistry")) {
+            d.vaultRegistry = vm.parseJsonAddress(json, ".contracts.vaultRegistry");
+            if (d.vaultRegistry != address(0)) {
+                VaultRegistry reg = VaultRegistry(d.vaultRegistry);
+                uint256 nv = reg.vaultCount();
+                d.vaults = new address[](nv);
+                for (uint256 i; i < nv; ++i) {
+                    d.vaults[i] = reg.vaults(i);
+                }
+            }
+        }
         uint256 n;
         while (vm.keyExistsJson(json, string.concat(".stocks[", vm.toString(n), "]"))) ++n;
         d.names = new string[](n);

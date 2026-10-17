@@ -24,6 +24,8 @@ import {MockStockToken} from "../mocks/MockStockToken.sol";
 import {MockPausableUSDG} from "../mocks/EngineMocks.sol";
 import {MockSwapRouter} from "../mocks/MockSwapRouter.sol";
 import {MockObservingPool} from "../mocks/TwapMocks.sol";
+import {VaultRegistry} from "../../src/vaults/VaultRegistry.sol";
+import {WriterVault} from "../../src/vaults/WriterVault.sol";
 
 contract MockV3Factory {
     mapping(bytes32 => address) internal _pools;
@@ -748,5 +750,74 @@ contract DeploySystemTest is Test, SystemChecks {
         assertEq(c.stocks[0].twapBandBps, 75, "default band");
         assertEq(c.stocks[0].maxAgeRegular, 26 hours, "default maxAge");
         assertTrue(c.handoff, "handoff defaults on");
+    }
+
+    // ------------------------------------------------------------------------------- todo 19 vaults flag
+
+    function test_T19_vaultsOffByDefault() public {
+        Config memory c = _forkConfig();
+        assertFalse(c.vaults.enabled);
+        Deployed memory d = _deploy(c);
+        assertEq(WriterPool(d.pool).vaultHook(), address(0), "no vault hook");
+        assertEq(d.vaultRegistry, address(0));
+        _assertClean(c, d);
+    }
+
+    function test_T19_vaultsFlagDeploysClosedVaults_fork() public {
+        Config memory c = _forkConfig();
+        c.vaults = VaultCfg({enabled: true, epoch: FULL_VAULT_EPOCH});
+        Deployed memory d = _deploy(c);
+        assertEq(WriterPool(d.pool).vaultHook(), d.vaultRegistry);
+        assertEq(d.vaults.length, 2 * NAMES.length);
+        for (uint256 i; i < d.vaults.length; ++i) {
+            WriterVault v = WriterVault(d.vaults[i]);
+            assertFalse(v.open(), "closed by default");
+            assertEq(v.EPOCH(), 7 days);
+            assertTrue(IAccessControl(address(v)).hasRole(bytes32(0), d.timelock), "timelock administers the vault");
+            assertFalse(IAccessControl(address(v)).hasRole(bytes32(0), deployer));
+        }
+        VaultRegistry reg = VaultRegistry(d.vaultRegistry);
+        assertTrue(reg.hasRole(bytes32(0), d.timelock));
+        assertTrue(reg.hasRole(reg.ALLOCATOR_ROLE(), keeper));
+        _assertClean(c, d);
+        // the post-deploy check catches an open vault
+        vm.prank(d.timelock);
+        WriterVault(d.vaults[0]).setOpen(true);
+        _expectFail(c, d, "VAULT_OPEN");
+    }
+
+    function test_T19_vaultsFlagTestnetShortEpoch() public {
+        vm.chainId(CHAIN_TESTNET);
+        Config memory c = _testnetConfig();
+        c.vaults = VaultCfg({enabled: true, epoch: 10 minutes});
+        Deployed memory d = _deploy(c);
+        assertEq(WriterVault(d.vaults[0]).EPOCH(), 10 minutes);
+        _assertClean(c, d);
+        (bytes32 id,) = _smoke(c, d); // trading works with the hook set and no slices
+        assertGt(_sellAll(d, id), 0);
+        // below the contract's hard minimum the deploy is refused
+        vm.chainId(CHAIN_TESTNET);
+        Config memory bad = _testnetConfig();
+        bad.vaults = VaultCfg({enabled: true, epoch: 5 minutes - 1});
+        vm.expectRevert();
+        this.doDeploy(bad);
+    }
+
+    function test_T19_vaultConfigJson() public view {
+        string memory forkJson = string.concat(
+            '{"profile":"fork","usdg":"', vm.toString(address(0xA11CE)), '","vaults":{"enabled":true,"epoch":600},"stocks":[]}'
+        );
+        try this.doParse(forkJson) {
+            revert("fork config with a vault epoch was accepted");
+        } catch Error(string memory reason) {
+            assertEq(reason, "SystemConfig: fork/mainnet use the full vault epoch");
+        }
+        Config memory c = this.doParse('{"profile":"fork","vaults":{"enabled":true},"stocks":[]}');
+        assertTrue(c.vaults.enabled);
+        assertEq(c.vaults.epoch, 7 days);
+        c = this.doParse('{"profile":"testnet","vaults":{"enabled":true,"epoch":600},"stocks":[]}');
+        assertEq(c.vaults.epoch, 600);
+        c = this.doParse('{"profile":"testnet","stocks":[]}');
+        assertFalse(c.vaults.enabled, "off by default");
     }
 }

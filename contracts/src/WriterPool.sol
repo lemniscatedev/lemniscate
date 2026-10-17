@@ -19,6 +19,7 @@ import {IPriceReference} from "./interfaces/IPriceReference.sol";
 import {IHedgeAdapter} from "./interfaces/IHedgeAdapter.sol";
 import {IReserve} from "./interfaces/IReserve.sol";
 import {IFeeRouter} from "./interfaces/IFeeRouter.sol";
+import {IVaultRegistry} from "./interfaces/IWriterVault.sol";
 import {PoolHedging} from "./libs/PoolHedging.sol";
 import {Roles} from "./libs/Roles.sol";
 
@@ -146,6 +147,10 @@ contract WriterPool is
 
     bool private transient _escrowing;
 
+    /// @inheritdoc IPool
+    /// @dev Writer-vault registry (todo 19, phase 2). Unset at launch: every vault path is then a no-op.
+    address public override vaultHook;
+
     /// @param queueDelay_ withdrawal queue delay in seconds, inside [MIN_QUEUE_DELAY, MAX_QUEUE_DELAY]. Immutable in
     /// the implementation: an upgrade must construct the new implementation with the same value.
     /// @custom:oz-upgrades-unsafe-allow constructor state-variable-immutable
@@ -192,12 +197,42 @@ contract WriterPool is
     function onSale(bytes32 seriesId, uint256 usdgIn, uint256 spreadUsdg) external override onlyEngine nonReentrant {
         emit SaleRecorded(seriesId, usdgIn, spreadUsdg);
         _takeIncome(spreadUsdg, true);
+        _payVaults(seriesId, spreadUsdg, 0);
     }
 
     /// @inheritdoc IPool
     function onFunding(bytes32 seriesId, uint256 fundingUsdg) external override onlyEngine nonReentrant {
         emit FundingRecorded(seriesId, fundingUsdg);
         _takeIncome(fundingUsdg, false);
+        _payVaults(seriesId, fundingUsdg, 0);
+    }
+
+    /// @inheritdoc IPool
+    function onBuyback(bytes32 seriesId, uint256 tokens, uint256 supplyBefore, uint256 sWad, uint256 spreadUsdg)
+        external
+        override
+        onlyEngine
+        nonReentrant
+    {
+        address h = vaultHook;
+        if (h == address(0)) return;
+        _payVaults(seriesId, spreadUsdg, supplyBefore);
+        try IVaultRegistry(h).onBuyback(seriesId, tokens, supplyBefore, sWad) {}
+        catch {
+            emit VaultHookFailed(seriesId);
+        }
+    }
+
+    /// @inheritdoc IPool
+    /// @dev Not behind the reentrancy lock: the hook calls it while settling inside `onBuyback`.
+    function creditVaultStock(address stock, uint256 units) external override {
+        if (msg.sender != vaultHook || msg.sender == address(0)) revert NotVaultHook();
+        uint256 u = _book.units[stock] + units;
+        if (address(_book.routes[stock].adapter) == address(0) || IERC20(stock).balanceOf(address(this)) < u) {
+            revert InvalidParams();
+        }
+        _book.units[stock] = u;
+        emit VaultStockCredited(stock, units);
     }
 
     /// @inheritdoc IPool
@@ -375,6 +410,13 @@ contract WriterPool is
         feeRouter = feeRouter_;
         priceReference = priceReference_;
         emit ModulesSet(address(engine_), address(reserve_), address(feeRouter_), address(priceReference_));
+    }
+
+    /// @notice Sets the writer-vault registry (todo 19). address(0) switches the vault paths off.
+    function setVaultHook(address hook) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (hook != address(0) && IVaultRegistry(hook).pool() != address(this)) revert InvalidParams();
+        vaultHook = hook;
+        emit VaultHookSet(hook);
     }
 
     function setDepositor(address account, bool allowed) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -678,6 +720,27 @@ contract WriterPool is
         if (income != 0 || sent != 0) emit IncomeSplit(income, sent, toReserve, feeOwed);
     }
 
+    /// @dev Sends the vaults' net share of `income` on `id` (gross share less the protocol fee, which `_takeIncome`
+    /// already charged on the whole income) to the hook, as far as cash allows. A failing hook never blocks the caller.
+    function _payVaults(bytes32 id, uint256 income, uint256 supply) private {
+        address h = vaultHook;
+        if (h == address(0) || income == 0) return;
+        try IVaultRegistry(h).shareOf(id, income, supply) returns (uint256 gross) {
+            IFeeRouter router = feeRouter;
+            uint256 net = address(router) == address(0) ? gross : gross - Math.mulDiv(gross, router.protocolFeeBps(), BPS);
+            uint256 cash = usdg.balanceOf(address(this));
+            if (net > cash) net = cash;
+            if (net == 0 || !usdg.trySafeTransfer(h, net)) return;
+            try IVaultRegistry(h).routeFunding(id, net) {
+                emit VaultFundingPaid(id, net);
+            } catch {
+                emit VaultHookFailed(id);
+            }
+        } catch {
+            emit VaultHookFailed(id);
+        }
+    }
+
     function _drawReserve(uint256 amount) private {
         if (amount == 0 || address(reserve) == address(0)) return;
         uint256 sent = reserve.cover(amount);
@@ -724,5 +787,5 @@ contract WriterPool is
 
     function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
-    uint256[30] private __gap;
+    uint256[29] private __gap;
 }

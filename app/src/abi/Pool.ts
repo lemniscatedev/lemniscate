@@ -325,6 +325,24 @@ export const PoolAbi = [
   },
   {
     "type": "function",
+    "name": "creditVaultStock",
+    "inputs": [
+      {
+        "name": "stock",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "units",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "decimals",
     "inputs": [],
     "outputs": [
@@ -933,6 +951,39 @@ export const PoolAbi = [
   },
   {
     "type": "function",
+    "name": "onBuyback",
+    "inputs": [
+      {
+        "name": "seriesId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "tokens",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "supplyBefore",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "sWad",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "spreadUsdg",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "onFunding",
     "inputs": [
       {
@@ -1452,6 +1503,19 @@ export const PoolAbi = [
   },
   {
     "type": "function",
+    "name": "setVaultHook",
+    "inputs": [
+      {
+        "name": "hook",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "supportsInterface",
     "inputs": [
       {
@@ -1649,6 +1713,19 @@ export const PoolAbi = [
         "name": "",
         "type": "address",
         "internalType": "contract IERC20"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "vaultHook",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "stateMutability": "view"
@@ -2236,6 +2313,70 @@ export const PoolAbi = [
   },
   {
     "type": "event",
+    "name": "VaultFundingPaid",
+    "inputs": [
+      {
+        "name": "seriesId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "usdg",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "VaultHookFailed",
+    "inputs": [
+      {
+        "name": "seriesId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "VaultHookSet",
+    "inputs": [
+      {
+        "name": "hook",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "VaultStockCredited",
+    "inputs": [
+      {
+        "name": "stock",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "units",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "Withdraw",
     "inputs": [
       {
@@ -2642,6 +2783,11 @@ export const PoolAbi = [
   {
     "type": "error",
     "name": "NotInitializing",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotVaultHook",
     "inputs": []
   },
   {

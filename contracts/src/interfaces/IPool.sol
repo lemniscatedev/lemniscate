@@ -58,4 +58,26 @@ interface IPool {
     function rebalance(address stock, uint256 targetUnits, uint256 minOutOrMaxIn) external returns (int256 unitsDelta);
     /// @dev Spot hedge units the pool tracks for `stock` (valued at the PriceGuard S inside NAV).
     function hedgeUnits(address stock) external view returns (uint256);
+
+    // ---- added by todo 19 (writer vaults, phase 2), additive only. No vault hook is set at launch.
+
+    event VaultHookSet(address hook);
+    /// @dev The vaults' net share (after the protocol fee) of funding and spread on `seriesId`, sent to the hook.
+    event VaultFundingPaid(bytes32 indexed seriesId, uint256 usdg);
+    /// @dev Stock Token collateral a covered-call vault paid to the pool, added to the pool's hedge units.
+    event VaultStockCredited(address indexed stock, uint256 units);
+    /// @dev A hook call failed; the trade, accrual or sale it belonged to went ahead.
+    event VaultHookFailed(bytes32 indexed seriesId);
+
+    error NotVaultHook();
+
+    /// @dev Engine only, after a sell or a queued-sell fill of `tokens` of `seriesId` (supply before the burn
+    /// `supplyBefore`, underlying `sWad` used by the trade, spread `spreadUsdg`). Pays the vaults' share of the spread and
+    /// lets the hook settle the covering vaults' slices. Never reverts because of the hook; a no-op without one.
+    function onBuyback(bytes32 seriesId, uint256 tokens, uint256 supplyBefore, uint256 sWad, uint256 spreadUsdg)
+        external;
+    /// @dev Hook only. `units` raw Stock Token units arrived from a vault; added to the tracked hedge (must be held).
+    function creditVaultStock(address stock, uint256 units) external;
+    /// @dev The writer-vault registry (address(0) = vaults off).
+    function vaultHook() external view returns (address);
 }

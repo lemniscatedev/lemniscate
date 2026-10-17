@@ -78,6 +78,7 @@ library EngineTradeLib {
             IOptionToken(c.token).burn(msg.sender, tokens);
             EngineCore.dropIfEmpty(id, c.stock, c.token);
             EngineCore.storeBook(c, b);
+            EngineCore.reportBuyback(c, tokens, spread);
             emit IOptionEngine.Sold(id, msg.sender, recipient, units, tokens, proceeds, q.vMarkWad, q.sigmaBps, c.session);
             EngineCore.recheck(h, false);
         } catch {

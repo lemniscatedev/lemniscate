@@ -55,6 +55,7 @@ library EngineOpsLib {
         IOptionToken(c.token).burn(address(this), tokens);
         EngineCore.dropIfEmpty(t.id, c.stock, c.token);
         EngineCore.storeBook(c, b);
+        EngineCore.reportBuyback(c, tokens, spread);
         emit IOptionEngine.Sold(t.id, t.seller, t.recipient, units, tokens, usdgOut, q.vMarkWad, q.sigmaBps, c.session);
         emit IOptionEngine.QueuedSellFilled(ticket, msg.sender, usdgOut);
         EngineCore.recheck(h, false);

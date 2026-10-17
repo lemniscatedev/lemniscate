@@ -290,4 +290,19 @@ contract MockEnginePool is IPool {
     function hedgeUnits(address stock) external view returns (uint256) {
         return IERC20(stock).balanceOf(address(this));
     }
+
+    uint256 public buybackCalls;
+    uint256 public buybackTokens;
+
+    function onBuyback(bytes32, uint256 tokens, uint256, uint256, uint256) external {
+        if (msg.sender != engine) revert NotEngine();
+        ++buybackCalls;
+        buybackTokens += tokens;
+    }
+
+    function creditVaultStock(address, uint256) external pure {}
+
+    function vaultHook() external pure returns (address) {
+        return address(0);
+    }
 }
