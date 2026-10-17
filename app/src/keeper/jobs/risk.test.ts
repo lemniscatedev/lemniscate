@@ -23,6 +23,15 @@ function inputs(patch: Partial<RiskInputs> = {}): RiskInputs {
 }
 
 describe("evaluateRisk", () => {
+  test("on a fork moved ahead in time, a live indexer is still trusted (its stamps are wall time; todo 23)", () => {
+    const chainAhead = new Date(NOW.getTime() + 3 * 86_400_000);
+    const names = inputs().names.map((n) => ({ ...n, limitsAt: new Date(chainAhead.getTime() - 120_000) })); // block time
+    const e = evaluateRisk(inputs({ now: chainAhead, wallNow: NOW, names }));
+    expect(e.dataTrusted).toBe(true);
+    expect(e.warnings).toEqual([]);
+    // and a silent indexer is still caught on the wall clock
+    expect(evaluateRisk(inputs({ now: chainAhead, wallNow: new Date(NOW.getTime() + 3_600_000), names })).dataTrusted).toBe(false);
+  });
   test("a healthy book triggers nothing", () => {
     const e = evaluateRisk(inputs());
     expect(e.triggers).toEqual([]);

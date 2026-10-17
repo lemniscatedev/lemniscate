@@ -34,6 +34,9 @@ export interface RiskTrigger {
 
 export interface RiskInputs {
   now: Date;
+  /** The keeper process's wall clock. The indexer stamps its liveness (last clean poll, last snapshot) in wall time,
+   * which differs from the chain clock `now` on a fork moved with evm_increaseTime. Defaults to `now`. */
+  wallNow?: Date;
   indexer: Pick<IndexerMetadata, "indexerLastOk" | "indexerLastError" | "lastSnapshotAt" | "lagBlocks">;
   pool: { current: number; peak: number; latestAt: Date | null };
   names: {
@@ -64,10 +67,11 @@ export function evaluateRisk(input: RiskInputs): RiskEvaluation {
   const okAt = Date.parse(input.indexer.indexerLastOk ?? "");
   const snapshotAt = Date.parse(input.indexer.lastSnapshotAt ?? "");
   const lag = Number(input.indexer.lagBlocks ?? 0);
+  const wall = (input.wallNow ?? now).getTime();
   let dataTrusted = true;
-  if (!Number.isFinite(okAt) || now.getTime() - okAt > INDEXER_SILENCE_MS || input.indexer.indexerLastError) {
+  if (!Number.isFinite(okAt) || wall - okAt > INDEXER_SILENCE_MS || input.indexer.indexerLastError) {
     dataTrusted = false; warnings.push("Indexer has not reported a clean poll recently; indexed risk data is not trusted");
-  } else if (!Number.isFinite(snapshotAt) || now.getTime() - snapshotAt > INDEXED_DATA_MAX_AGE_MS) {
+  } else if (!Number.isFinite(snapshotAt) || wall - snapshotAt > INDEXED_DATA_MAX_AGE_MS) {
     dataTrusted = false; warnings.push("Latest indexer snapshot is too old; indexed risk data is not trusted");
   } else if (Number.isFinite(lag) && lag > 60) {
     dataTrusted = false; warnings.push("Indexer is more than 60 blocks behind; indexed risk data is not trusted");
@@ -201,7 +205,8 @@ export function createRiskJob(context: KeeperContext) {
       balance = await context.clients.txClient.getBalance({ address: signer });
       nextBalanceCheck = Date.now() + 30 * 60_000;
     }
-    const inputs = await load(now, metadata);
+    // chainClock() is wall time except on the fork; there the indexer's liveness stamps are still wall time.
+    const inputs = { ...(await load(now, metadata)), wallNow: context.config.NETWORK === "fork" ? new Date() : now };
     const evaluation = evaluateRisk(inputs);
     const warnings = [...evaluation.warnings];
     if (signer && balance < 2_000_000_000_000_000n) warnings.push("Keeper ETH balance is below 0.002");
