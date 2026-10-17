@@ -153,7 +153,7 @@ admin unpauses, vol posts that move sigma, and hedge-equity posts. Deep run: `FO
 | R4 | Epoch accounting; the epoch timer is deploy-time with a hard minimum; roll only after the epoch; withdrawals are never blocked | `WriterVault.t.sol::test_R4_*` |
 | R5 | The vaults' share of funding and spread is conserved; hook checks; no hook = no change (the share is paid from pool cash only, no carry-forward: see SECURITY.md) | `WriterVault.t.sol::test_R5_*` |
 | R6 | Closed by default; closing blocks deposits only; minimum deposit | `WriterVault.t.sol::test_R6_*` |
-| R7 | Buckets backed by balances, coverage within supply, locked within collateral, stock conserved, no dangling approvals, no panics (deep 500x200) | `VaultInvariant.t.sol::invariant_R7_*`, `WriterVault.t.sol::test_R7_*` |
+| R7 | Every bucket held in balances, coverage within supply, locked within collateral, stock conserved, no dangling approvals, no panics (deep 500x200) | `VaultInvariant.t.sol::invariant_R7_*`, `WriterVault.t.sol::test_R7_*` |
 | 20c | A buyback report that runs out of gas reverts the sell; DeploySystem leaves vaults off unless flagged and `$LMNS` unwired (`LMNS_NOT_OFF`) | `EngineAccrue.t.sol::test_R20_buybackReportCannotBeSkippedWithTightGas`, `DeploySystem.t.sol::test_T19_*`, `::test_T20_lmnsOffByDefaultAndChecked` |
 
 ## $LMNS staking, fee tiers and burn (todo 20, phase 2; module off until the admin turns it on)
