@@ -80,6 +80,9 @@ suite("handlersStoreEvents", () => {
       ev.withdrawalQueued(ADDR.alice, 1n, 40n * 10n ** 12n, 1_790_259_200n),
     ]);
     blocks.claimed = chain.mine([ev.withdrawalClaimed(ADDR.alice, 1n, 41_000_000n), ev.poolWithdraw(ADDR.alice, ADDR.alice, ADDR.alice, 41_000_000n, 40n * 10n ** 12n)]);
+    // F12(c): an unclaimed ticket past its window is re-queued: a second WithdrawalQueued for the same ticket.
+    blocks.requeued = chain.mine([ev.withdrawalQueued(ADDR.bob, 2n, 10n * 10n ** 12n, 1_790_259_200n)]);
+    blocks.requeued2 = chain.mine([ev.withdrawalQueued(ADDR.bob, 2n, 10n * 10n ** 12n, 1_790_900_000n)]);
     blocks.queue = chain.mine([
       ev.sellQueued(1n, SERIES_CALL, ADDR.alice, ADDR.alice, WAD, 1_790_000_100n),
       ev.sellQueued(2n, SERIES_CALL, ADDR.bob, ADDR.bob, 2n * WAD, 1_790_000_101n),
@@ -167,12 +170,18 @@ suite("handlersStoreEvents", () => {
   });
 
   test("WithdrawalQueued then WithdrawalClaimed leave one claimed ticket", async () => {
-    expect(await rows(db, "SELECT owner, ticket, shares, claimable_at, status, usdg FROM withdrawals")).toEqual([
+    expect(await rows(db, "SELECT owner, ticket, shares, claimable_at, status, usdg FROM withdrawals WHERE ticket = '1'")).toEqual([
       { owner: ADDR.alice, ticket: "1", shares: "40.000000000000000000", claimable_at: new Date(1_790_259_200_000), status: "claimed", usdg: "41.000000000000000000" },
     ]);
     expect(await rows(db, "SELECT kind, account, assets, shares FROM pool_events ORDER BY block")).toEqual([
       { kind: "deposit", account: ADDR.alice, assets: "100.000000000000000000", shares: "100.000000000000000000" },
       { kind: "withdraw", account: ADDR.alice, assets: "41.000000000000000000", shares: "40.000000000000000000" },
+    ]);
+  });
+
+  test("a re-queued withdrawal ticket (claim window passed) moves its claimable time", async () => {
+    expect(await rows(db, "SELECT owner, ticket, claimable_at, status FROM withdrawals WHERE ticket = '2'")).toEqual([
+      { owner: ADDR.bob, ticket: "2", claimable_at: new Date(1_790_900_000_000), status: "queued" },
     ]);
   });
 

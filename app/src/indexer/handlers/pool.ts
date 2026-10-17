@@ -45,6 +45,8 @@ export async function handlePoolEvent(context: IndexerContext, event: ChainEvent
       return;
     }
     case "WithdrawalQueued": {
+      // Review F12(c): a ticket left unclaimed past CLAIM_WINDOW is re-queued by its next claim, which emits this
+      // event again for the same ticket with a new claimable time.
       const owner = addr(event, "owner");
       await context.tx`
         INSERT INTO withdrawals (owner, ticket, shares, claimable_at, queued_at, queued_block, queued_tx, queued_log)
@@ -52,7 +54,8 @@ export async function handlePoolEvent(context: IndexerContext, event: ChainEvent
           ${owner}, ${asBigInt(event.args.ticket).toString()}, ${units(event.args.shares, shareDecimals)},
           ${iso(unixToDate(event.args.claimableAt))}, ${iso(event.ts)}, ${event.blockNumber.toString()}, ${event.txHash}, ${event.logIndex}
         )
-        ON CONFLICT (owner, ticket) DO NOTHING
+        ON CONFLICT (owner, ticket) DO UPDATE SET claimable_at = EXCLUDED.claimable_at
+          WHERE withdrawals.status = 'queued'
       `;
       await accountSeen(context.tx, event, [owner]);
       context.snapshotNeeded = true;
