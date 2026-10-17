@@ -749,8 +749,16 @@ async function main() {
     await f.send("engine.setBuysPaused(false) [timelock admin]", admin, { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "setBuysPaused", args: [false] }) });
     await test.stopImpersonatingAccount({ address: timelock });
   };
+  // Once a perp equity post exists (the hedge-stale flow made one) the hedger must keep posting or buys pause; the fork
+  // has no perp venue, so the exercise posts for it, as the hedger would.
+  const keepHedgeFresh = async (f: Flow) => {
+    if (await pub.readContract({ address: C.pool, abi: PoolAbi, functionName: "hedgeStale" })) {
+      await f.send("pool.postHedgeEquity (keep-alive)", walletFor("hedger"), { to: C.pool, data: encodeFunctionData({ abi: PoolAbi, functionName: "postHedgeEquity", args: [0n, BigInt(await chainTime()), keccak256(toHex(`fork-perp-${Date.now()}`))] }) });
+    }
+  };
   const tryBuy = async (f: Flow, row: SeriesRow, role: Role, match: string | RegExp) => {
     await liftGlobalPause(f); // no expected failure here is the global pause
+    if (!String(match).includes("HEDGE")) await keepHedgeFresh(f);
     const deadline = BigInt(await chainTime()) + 300n;
     const w = walletFor(role);
     const have = await pub.readContract({ address: C.usdg, abi: erc20Abi, functionName: "allowance", args: [addressOf(role), C.engine] });
@@ -759,11 +767,7 @@ async function main() {
   };
   const buyOk = async (f: Flow, row: SeriesRow, role: Role) => {
     await liftGlobalPause(f);
-    // Once a perp equity post exists (the hedge-stale flow made one), the hedger must keep posting or buys pause; the
-    // fork has no perp venue, so the exercise posts for it, as the hedger would.
-    if (await pub.readContract({ address: C.pool, abi: PoolAbi, functionName: "hedgeStale" })) {
-      await f.send("pool.postHedgeEquity (keep-alive)", walletFor("hedger"), { to: C.pool, data: encodeFunctionData({ abi: PoolAbi, functionName: "postHedgeEquity", args: [0n, BigInt(await chainTime()), keccak256(toHex(`fork-perp-${Date.now()}`))] }) });
-    }
+    await keepHedgeFresh(f);
     const deadline = BigInt(await chainTime()) + 300n;
     return f.send("engine.buy", walletFor(role), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "buy", args: [row.id, WAD, USD(5000), deadline, addressOf(role)] }) });
   };
@@ -876,23 +880,23 @@ async function main() {
   // Weekend: CLOSED session.
   await flow("sessions", "Weekend: buys blocked, sells at last close with the wider spread", "Saturday: session CLOSED; buy reverts SessionBlocksBuys; sell succeeds with spreadBps about 3x the regular spread", async (f) => {
     const row = atmDaily;
-    const regular = await engineRead<{ spreadBps: bigint }>("quote", [row.id, WAD, false]);
+    const regular = await engineRead<{ spreadBps: bigint; session: number }>("quote", [row.id, WAD, false]);
     await warpTo(nextNy(await chainTime(), 6, 12, 0));
     await waitVolFresh(["NVDA"]).catch(() => notes.push("weekend: NVDA vol was still stale when the weekend checks ran (sells then price at sigma x 1.2)"));
     const r = await priceReading("NVDA");
     assert(r.session === 2, `session ${r.session}, not CLOSED`);
     const [lastS] = await pub.readContract({ address: C.priceGuard, abi: PriceGuardAbi, functionName: "lastGoodPrice", args: [stockOf("NVDA")] }) as readonly [bigint, bigint];
     assert(lastS > 0n, "PriceGuard has no last good price for NVDA (the keeper's poke upkeep did not run)");
-    // the hedge-stale flow left a perp equity post behind: keep it fresh so the session rule is what blocks the buy
-    await f.send("pool.postHedgeEquity (keep-alive)", walletFor("hedger"), { to: C.pool, data: encodeFunctionData({ abi: PoolAbi, functionName: "postHedgeEquity", args: [0n, BigInt(await chainTime()), keccak256(toHex(`fork-perp-${Date.now()}`))] }) });
     const reason = await tryBuy(f, row, "alice", "SessionBlocksBuys");
     const closed = await engineRead<{ spreadBps: bigint; usdg: bigint }>("quote", [row.id, WAD, false]);
     const units = (await positionUnits(addressOf("alice"), row.id)) / 2;
     const { receipt } = await viaIntent(f, "sell", "alice", { series: row.id, units: units.toFixed(6), slippageBps: 200 });
     assert(events(receipt, OptionEngineAbi, C.engine).some((e) => e.eventName === "Sold"), "weekend sell did not settle");
+    // Session factors (canonical quote parameters): REGULAR 1, EXTENDED 1.5, CLOSED 3.
+    const before = [1, 1.5, 3, 3, 3][Number(regular.session)] ?? 1;
     const ratio = Number(closed.spreadBps) / Number(regular.spreadBps);
-    assert(ratio > 2.5, `spread ratio ${ratio}`);
-    return `CLOSED; ${reason}; sell settled; spread ${closed.spreadBps} bps vs ${regular.spreadBps} regular (x${ratio.toFixed(2)})`;
+    assert(Math.abs(ratio - 3 / before) / (3 / before) < 0.05, `spread ratio ${ratio}, expected ${3 / before}`);
+    return `CLOSED; ${reason}; sell settled; spread ${closed.spreadBps} bps vs ${regular.spreadBps} in ${["REGULAR", "EXTENDED", "CLOSED", "UNKNOWN", "HALTED"][Number(regular.session)] ?? regular.session} (x${ratio.toFixed(2)}, expected x${(3 / before).toFixed(2)})`;
   });
 
   await flow("pool", "Claim the withdrawal after the 72h queue", "claim pays USDG at claim-time NAV; WithdrawalClaimed; queue empties in the API", async (f) => {
