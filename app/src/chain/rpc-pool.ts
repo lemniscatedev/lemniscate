@@ -394,12 +394,15 @@ export class RpcPool {
     const attempted = new Set<string>();
     const now = this.now();
     const healthy = route.filter((endpoint) => endpoint.coolUntil <= now);
-    const candidates = healthy.length ? healthy : route;
+    // When every endpoint is cooling there is nothing to fail over to: try them anyway (the cool-down orders the
+    // failover, it must not stop all RPC; with one endpoint it stalled every service for minutes).
+    const allCooling = healthy.length === 0;
+    const candidates = allCooling ? route : healthy;
 
     for (const endpoint of candidates) {
       if (attempted.has(endpoint.id)) continue;
       attempted.add(endpoint.id);
-      if (endpoint.coolUntil > this.now()) continue;
+      if (!allCooling && endpoint.coolUntil > this.now()) continue;
 
       for (const request of requests) this.recordRequest(callClass, endpoint, request.method);
       try {
@@ -435,12 +438,14 @@ export class RpcPool {
     const attempted = new Set<string>();
     const now = this.now();
     const healthy = route.filter((endpoint) => endpoint.coolUntil <= now);
-    const candidates = healthy.length ? healthy : route;
+    // See requestBatch: with every endpoint cooling, try them anyway rather than failing without a request.
+    const allCooling = healthy.length === 0;
+    const candidates = allCooling ? route : healthy;
 
     for (const endpoint of candidates) {
       if (attempted.has(endpoint.id)) continue;
       attempted.add(endpoint.id);
-      if (endpoint.coolUntil > this.now()) continue;
+      if (!allCooling && endpoint.coolUntil > this.now()) continue;
       this.recordRequest(callClass, endpoint, request.method);
       try {
         const result = await endpoint.request(request);
