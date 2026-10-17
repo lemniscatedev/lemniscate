@@ -32,6 +32,15 @@ describe("evaluateRisk", () => {
     // and a silent indexer is still caught on the wall clock
     expect(evaluateRisk(inputs({ now: chainAhead, wallNow: new Date(NOW.getTime() + 3_600_000), names })).dataTrusted).toBe(false);
   });
+  test("on a fork moved ahead in time, the hedger's wall-clock stamps are compared on the wall clock (F30)", () => {
+    const chainAhead = new Date(NOW.getTime() + 2 * 86_400_000);
+    const names = inputs().names.map((n) => ({ ...n, limitsAt: new Date(chainAhead.getTime() - 120_000) }));
+    const hedger = { venueHealthy: false, venueUnhealthySince: min(1).toISOString(), unhedgedNames: { NVDA: min(1).toISOString() } };
+    const fresh = evaluateRisk(inputs({ now: chainAhead, wallNow: NOW, names, hedger }));
+    expect(fresh.triggers).toEqual([]); // one minute unhedged, not two days
+    const later = evaluateRisk(inputs({ now: chainAhead, wallNow: new Date(NOW.getTime() + 20 * 60_000), names, hedger }));
+    expect(later.triggers.map((t) => t.key).sort()).toEqual(["hedge-route:NVDA", "hedge-venue"]);
+  });
   test("a healthy book triggers nothing", () => {
     const e = evaluateRisk(inputs());
     expect(e.triggers).toEqual([]);

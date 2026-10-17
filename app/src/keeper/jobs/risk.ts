@@ -126,13 +126,15 @@ export function evaluateRisk(input: RiskInputs): RiskEvaluation {
     }
   }
 
+  // The hedger stamps venueUnhealthySince and unhedgedNames with its wall clock: compare on the wall clock (equal to
+  // the chain clock except on a fork moved ahead in time).
   const hedger = input.hedger;
   if (hedger?.venueHealthy === false) {
     const since = Date.parse(hedger.venueUnhealthySince ?? "");
-    if (Number.isFinite(since) && now.getTime() - since > HEDGE_VENUE_DOWN_MS) {
+    if (Number.isFinite(since) && wall - since > HEDGE_VENUE_DOWN_MS) {
       triggers.push({
         key: "hedge-venue", scope: { kind: "global" },
-        reason: `hedge venue unavailable for ${Math.round((now.getTime() - since) / 60_000)} minutes (limit ${HEDGE_VENUE_DOWN_MS / 60_000})`,
+        reason: `hedge venue unavailable for ${Math.round((wall - since) / 60_000)} minutes (limit ${HEDGE_VENUE_DOWN_MS / 60_000})`,
       });
     } else warnings.push("Hedge venue is reported unhealthy");
   }
@@ -142,10 +144,10 @@ export function evaluateRisk(input: RiskInputs): RiskEvaluation {
     const entry = input.names.find((candidate) => candidate.name === name);
     const since = Date.parse(sinceIso);
     if (!entry || !Number.isFinite(since)) continue;
-    if (now.getTime() - since > HEDGE_VENUE_DOWN_MS) {
+    if (wall - since > HEDGE_VENUE_DOWN_MS) {
       triggers.push({
         key: `hedge-route:${name}`, scope: { kind: "stock", stockToken: entry.stockToken, name },
-        reason: `${name} could not be hedged for ${Math.round((now.getTime() - since) / 60_000)} minutes (limit ${HEDGE_VENUE_DOWN_MS / 60_000})`,
+        reason: `${name} could not be hedged for ${Math.round((wall - since) / 60_000)} minutes (limit ${HEDGE_VENUE_DOWN_MS / 60_000})`,
       });
     } else warnings.push(`${name} could not be hedged in the last pass`);
   }
