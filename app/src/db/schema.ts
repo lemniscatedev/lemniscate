@@ -375,10 +375,58 @@ export const ticks = pgTable(
     sigmaDailyBps: integer("sigma_daily_bps"),
     sigmaWeeklyBps: integer("sigma_weekly_bps"),
     volStale: boolean("vol_stale"),
+    /** PriceGuard.tradeTwap (decision 30); null when unavailable. */
+    tradeTwap: amount("trade_twap"),
+    /** engine.settlePrice: the ORC-4 settlement price (decision 31); null when not settled. */
+    settlePrice: amount("settle_price"),
+    /** PriceGuard.haltedSince; null when no halt is latched. */
+    haltedSince: at("halted_since"),
   },
   (table) => [
     primaryKey({ name: "ticks_pk", columns: [table.stockToken, table.ts] }),
     index("ticks_block_idx").on(table.block),
+  ],
+);
+
+/** Engine safety events shown in activity and notices (decisions 31, 32, 36). kind: series_retired, stock_settled,
+ * halt_latched, hold_carried (checked in the migration). */
+export const engineEvents = pgTable(
+  "engine_events",
+  {
+    txHash: text("tx_hash").notNull(),
+    logIndex: integer("log_index").notNull(),
+    block: chainBlock().notNull(),
+    ts: at("ts").notNull(),
+    kind: text("kind").notNull(),
+    seriesId: text("series_id"),
+    stockToken: text("stock_token"),
+    account: text("account"),
+    price: amount("price"),
+    until: at("until"),
+  },
+  (table) => [
+    primaryKey({ name: "engine_events_pk", columns: [table.txHash, table.logIndex] }),
+    index("engine_events_block_idx").on(table.block),
+    index("engine_events_account_ts_idx").on(table.account, table.ts.desc()),
+    index("engine_events_series_idx").on(table.seriesId),
+    index("engine_events_stock_idx").on(table.stockToken),
+  ],
+);
+
+/** Open sell holds (engine.holdOf, decision 30) of accounts that bought or received a series recently, refreshed by the
+ * indexer's snapshot. */
+export const holds = pgTable(
+  "holds",
+  {
+    seriesId: text("series_id").notNull(),
+    account: text("account").notNull(),
+    until: at("until").notNull(),
+    s: amount("s").notNull(),
+    block: chainBlock().notNull(),
+  },
+  (table) => [
+    primaryKey({ name: "holds_pk", columns: [table.seriesId, table.account] }),
+    index("holds_block_idx").on(table.block),
   ],
 );
 
@@ -460,6 +508,12 @@ export const poolNav = pgTable(
     reserve: amount("reserve").notNull(),
     nav: amount("nav").notNull(),
     navPerShare: amount("nav_per_share").notNull(),
+    /** engine.navLiability(false) / (true): the bounds LP deposits and claims are priced at (decision 36). */
+    navLiabilityLow: amount("nav_liability_low"),
+    navLiabilityHigh: amount("nav_liability_high"),
+    /** engine.guards(): the sell hold and the ORC-4 settle delay, seconds (decisions 30, 31). */
+    holdSeconds: integer("hold_seconds"),
+    haltSettleDelaySeconds: integer("halt_settle_delay_seconds"),
   },
   (table) => [index("pool_nav_block_idx").on(table.block)],
 );

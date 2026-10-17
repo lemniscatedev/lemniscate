@@ -13,7 +13,15 @@ export interface AaChain {
   kernelOwner(validator: Address, account: Address): Promise<Address | null>;
   /** ERC-20 balance of `owner`. */
   tokenBalance(token: Address, owner: Address): Promise<bigint>;
+  /** LemniscatePaymaster.kernelAccount(account): the paymaster saw it deployed through the Kernel factory in a sponsored
+   * operation, or the owner registered it (review F26, decision 44). */
+  paymasterKnowsAccount(paymaster: Address, account: Address): Promise<boolean>;
+  /** The account's ERC-1967 implementation slot, or null when the account has no code. */
+  implementationOf(account: Address): Promise<Address | null>;
 }
+
+/** ERC-1967 implementation slot: bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1). */
+export const ERC1967_IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc" as const; // not-a-key
 
 /** Raised when the API's own outbound RPC budget is spent. Callers answer 503 instead of queueing (F32). */
 export class RpcBudgetError extends Error {
@@ -30,6 +38,8 @@ export interface RpcBudgetOptions {
 }
 
 const DEFAULT_TTL = { fees: 5_000, nonce: 1_000, notDeployed: 3_000, owner: 300_000, balance: 5_000 } as const;
+/** A paymaster that does not know an account yet may learn it (owner registration): re-read after this long. */
+const UNKNOWN_ACCOUNT_TTL_MS = 30_000;
 
 /**
  * F32: puts a hard cap and short caches in front of an AaChain. Every real read spends one token of a bucket that
@@ -71,11 +81,17 @@ export function withRpcBudget(inner: AaChain, options: RpcBudgetOptions): AaChai
     feesPerGas: () => cached("fees", ttl.fees, () => inner.feesPerGas()),
     kernelOwner: (validator, account) => cached(`owner:${account.toLowerCase()}`, ttl.owner, () => inner.kernelOwner(validator, account)),
     tokenBalance: (token, owner) => cached(`bal:${token.toLowerCase()}:${owner.toLowerCase()}`, ttl.balance, () => inner.tokenBalance(token, owner)),
+    // The paymaster never forgets a known account; an unknown one is re-read after a short while.
+    paymasterKnowsAccount: (paymaster, account) => cached(`known:${paymaster.toLowerCase()}:${account.toLowerCase()}`, UNKNOWN_ACCOUNT_TTL_MS,
+      () => inner.paymasterKnowsAccount(paymaster, account), (known) => known),
+    // An account can upgrade itself: cached like the owner, not forever.
+    implementationOf: (account) => cached(`impl:${account.toLowerCase()}`, ttl.owner, () => inner.implementationOf(account)),
   };
 }
 
 const validatorAbi = parseAbi(["function ecdsaValidatorStorage(address kernel) view returns (address owner)"]);
 const erc20BalanceAbi = parseAbi(["function balanceOf(address owner) view returns (uint256)"]);
+const paymasterAccountsAbi = parseAbi(["function kernelAccount(address account) view returns (bool)"]);
 
 export interface ViemAaChainOptions {
   readonly callsPerSecond?: number;
@@ -111,6 +127,14 @@ export function createViemAaChain(rpcUrl: string, options: ViemAaChainOptions = 
     },
     async tokenBalance(token, owner) {
       return await client.readContract({ address: token, abi: erc20BalanceAbi, functionName: "balanceOf", args: [owner] });
+    },
+    async paymasterKnowsAccount(paymaster, account) {
+      return await client.readContract({ address: paymaster, abi: paymasterAccountsAbi, functionName: "kernelAccount", args: [account] });
+    },
+    async implementationOf(account) {
+      const word = await client.getStorageAt({ address: account, slot: ERC1967_IMPLEMENTATION_SLOT });
+      if (!word || /^0x0*$/.test(word)) return null;
+      return `0x${word.slice(-40)}`.toLowerCase() as Address;
     },
   };
   return withRpcBudget(raw, { callsPerSecond: options.callsPerSecond ?? 5, burst: options.burst ?? 10 });

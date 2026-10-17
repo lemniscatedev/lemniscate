@@ -138,4 +138,44 @@ suite("queued-sells keeper job", () => {
     expect(Number(result.oldestOpenMinutes)).toBeGreaterThanOrEqual(179);
     void chain;
   });
+
+  test("F22/F23: a ticket whose minProceeds is not met (Slippage) backs off alone; its series' other tickets still fill", async () => {
+    await addSeries("a");
+    await addTicket(1, "a"); await addTicket(2, "a"); await addTicket(3, "a");
+    const { chain, context } = harness();
+    const base = context.tx;
+    let slipping = true;
+    const tried: number[] = [];
+    const tx = { submit: async (t: Parameters<typeof base.submit>[0]) => {
+      const sent = chain.sent.length;
+      const { decodeFunctionData } = await import("viem");
+      const { OptionEngineAbi } = await import("../../abi");
+      const ticket = Number((decodeFunctionData({ abi: OptionEngineAbi, data: t.data }).args as readonly unknown[])[0]);
+      tried.push(ticket);
+      if (ticket === 1 && slipping) throw new Error('The contract function "fillQueued" reverted with the following signature: Slippage(uint256 got, uint256 limit) (9, 10)');
+      void sent;
+      return base.submit(t);
+    } };
+    const job = createQueuedSellsJob({ ...context, tx } as never);
+    const first = await job();
+    expect(fills(chain).sort()).toEqual([2, 3]); // the series is not written off for the pass
+    expect(first).toMatchObject({ filled: 2, belowMinimum: 1 });
+    // no retry spam: inside its back-off the ticket is not sent again, and each further miss doubles the wait
+    tried.length = 0;
+    chain.nowSeconds += 5n * 60n;
+    await job();
+    expect(tried).toEqual([]);
+    chain.nowSeconds += 6n * 60n; // 11 min after the first miss
+    await job();
+    expect(tried).toEqual([1]);
+    tried.length = 0;
+    chain.nowSeconds += 11n * 60n; // 11 min after the second miss: still backing off (20 min now)
+    await job();
+    expect(tried).toEqual([]);
+    chain.nowSeconds += 10n * 60n;
+    slipping = false;
+    await job();
+    expect(tried).toEqual([1]);
+    expect(fills(chain)).toContain(1);
+  });
 });

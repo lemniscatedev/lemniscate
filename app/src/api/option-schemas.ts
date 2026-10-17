@@ -92,7 +92,17 @@ export const quoteBodySchema = z.object({
   series: hex32,
   units: unitsText,
   side: z.enum(["buy", "sell"]),
+  /** Sells: the selling account, so a sell inside its hold after a buy is priced as the engine will (decision 30). */
+  account: address.optional(),
 });
+
+/** The seller's open hold (decision 30): until then a sell is priced at the less favourable of the current trade price
+ * and the price when the account bought. `applied` says whether that changes this quote. */
+export const holdSchema = z.object({ until: isoDateTime, buyPrice: decimal, applied: z.boolean() });
+
+/** Decision 31 notice: the name's feed is HALTED (latched since `since`). From `settleableAt` anyone may settle it at its
+ * last good price (ORC-4), after which sells and queued sells go through at that price; `settledPrice` once settled. */
+export const haltSchema = z.object({ since: isoDateTime, settleableAt: isoDateTime, settledPrice: decimal.nullable() });
 
 /** The fields of IOptionEngine.Quote, as integer strings in the contract's own units. */
 export const engineQuoteSchema = z.object({
@@ -120,9 +130,14 @@ export const quoteResponseSchema = z.object({
     displayCost: z.string(),
     breakeven: decimal,
     vMark: decimal,
+    /** The underlying price the trade is priced at: the worse for the trader of the feed price and the trade TWAP
+     * (and, for a sell inside the hold, the buy-time price). */
+    tradeSpot: decimal,
   }),
   blockReason: buyBlockSchema.nullable(),
   sellQueued: z.boolean(),
+  hold: holdSchema.nullable(),
+  halt: haltSchema.nullable(),
   asOf: isoDateTime,
 });
 
@@ -163,6 +178,10 @@ export const intentResponseSchema = z.object({
   /** A sell during a halt: the order queues and fills at the first fresh price. */
   queued: z.boolean(),
   note: z.string().nullable(),
+  /** Sells: the account's open hold, if any (decision 30). */
+  hold: holdSchema.nullable().optional(),
+  /** The name's halt notice, if its feed is halted (decision 31). */
+  halt: haltSchema.nullable().optional(),
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -225,6 +244,8 @@ export const poolResponseSchema = z.object({
   hedgeEquity: decimal,
   optionLiability: decimal,
   reserve: decimal,
+  /** engine.navLiability (decision 36): deposits are priced at the low bound, claims at the high one. */
+  navLiability: z.object({ low: decimal, high: decimal }).nullable().optional(),
   /** Funding that moved from option holders to the pool over the window, estimated from norm changes. */
   fundingReceived: z.object({ windowHours: z.number().int(), usdg: decimal, estimate: z.literal(true) }),
   /** netDelta, netGamma and netVega are the OUTSTANDING OPTIONS' Greeks (the holders' long side, as the engine's netGreeks
@@ -282,6 +303,9 @@ export const activityItemSchema = z.object({
   kind: z.enum([
     "buy", "sell", "shield", "sell_queued", "sell_filled", "sell_cancelled", "pool_deposit", "pool_withdraw",
     "withdraw_requested", "withdraw_claimed", "agent_buy", "agent_sell",
+    // Decisions 30-32: a sell hold received with a transfer (amount: the buy-time price when known), a held series
+    // retired as dust, a held name's feed halt latched, and its ORC-4 settlement (amount: the settlement price).
+    "hold_carried", "series_retired", "halt_latched", "stock_settled",
   ]),
   ts: isoDateTime,
   block: rawInt,

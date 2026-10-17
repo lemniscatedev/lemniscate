@@ -113,6 +113,20 @@
       "when": 1790780000014,
       "tag": "0015_sponsorship_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1790780000015,
+      "tag": "0016_trade_price_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1790780000016,
+      "tag": "0017_engine_safety_events",
+      "breakpoints": true
     }
   ]
 }

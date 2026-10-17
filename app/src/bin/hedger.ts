@@ -113,7 +113,7 @@ if (perpVenues.length > 0) scheduler.add({
     const lastPostedAsOf = Math.max(lastEquityAsOf, await lastEquityPostAsOf(sql));
     const outcome = await postHedgeEquityOnce({
       venues: perpVenues, stocks: [...routes.keys()], nowSeconds: Math.floor(Date.now() / 1000), lastPostedAsOf,
-      intervalSeconds: settings.equityIntervalSeconds, dryRun: settings.dryRun,
+      intervalSeconds: settings.equityIntervalSeconds, dryRun: settings.dryRun, state,
       post: async (equity, asOf, ref) => {
         const result = await tx.submit({
           label: "hedger:equity", to: deployment.contracts.pool as Address,
@@ -124,6 +124,9 @@ if (perpVenues.length > 0) scheduler.add({
       },
     });
     if (!outcome.posted && outcome.reason === "venue_unhealthy") logger.warn({ unhealthy: outcome.unhealthy }, "Hedge equity not posted: venue unhealthy (failing closed)");
+    if (!outcome.posted && outcome.reason === "halted") {
+      logger.error({ alert: true, reason: state.equityHalted?.reason, until: outcome.until }, "ALERT: the pool refuses hedge equity posts (PerpEquityCap or HedgerFrozen); posts are paused for an hour");
+    }
     return { equity: { ...outcome, equityUsdg: outcome.equityUsdg?.toString() } };
   },
 });

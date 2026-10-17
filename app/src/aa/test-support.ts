@@ -4,6 +4,7 @@ import type { AaChain } from "./chain";
 import { KERNEL_ECDSA_VALIDATOR, KERNEL_V33_FACTORY, type AaConfig } from "./config";
 import { createMockBundler, type MockBundlerOptions } from "./mock-bundler";
 import { createSponsor } from "./paymaster";
+import { KERNEL_V33_IMPLEMENTATION } from "./counterfactual";
 import type { AaServices } from "./userop";
 
 export const ENGINE = "0x00000000000000000000000000000000000000e1" as Address;
@@ -39,12 +40,17 @@ export interface FakeChainState {
   owners: Map<string, Address | null>;
   /** USDG-style balances per `${token}:${owner}` (lower case). */
   balances: Map<string, bigint>;
+  /** LemniscatePaymaster.kernelAccount: null = every deployed account is known. */
+  kernelAccounts: Set<string> | null;
+  /** ERC-1967 implementation per account (lower case); absent = the Kernel v3.3 implementation. */
+  implementations: Map<string, Address>;
 }
 
 export function createFakeChain(state: Partial<FakeChainState> = {}) {
   const s: FakeChainState = {
     deployed: new Set([ACCOUNT.toLowerCase()]), nonces: new Map(), predicted: ACCOUNT, fees: { maxFeePerGas: 1_000_000_000n, maxPriorityFeePerGas: 100_000_000n },
-    reads: [], down: false, owners: new Map([[ACCOUNT.toLowerCase(), OWNER.toLowerCase() as Address]]), balances: new Map(), ...state,
+    reads: [], down: false, owners: new Map([[ACCOUNT.toLowerCase(), OWNER.toLowerCase() as Address]]), balances: new Map(),
+    kernelAccounts: null, implementations: new Map(), ...state,
   };
   const chain: AaChain = {
     async isDeployed(account) { if (s.down) throw new Error("rpc down"); s.reads.push("code"); return s.deployed.has(account.toLowerCase()); },
@@ -57,6 +63,17 @@ export function createFakeChain(state: Partial<FakeChainState> = {}) {
     async feesPerGas() { return s.fees; },
     async kernelOwner(_validator, account) { if (s.down) throw new Error("rpc down"); s.reads.push("owner"); return s.owners.get(account.toLowerCase()) ?? null; },
     async tokenBalance(token, owner) { if (s.down) throw new Error("rpc down"); s.reads.push("balance"); return s.balances.get(`${token.toLowerCase()}:${owner.toLowerCase()}`) ?? 0n; },
+    async paymasterKnowsAccount(_paymaster, account) {
+      if (s.down) throw new Error("rpc down");
+      s.reads.push("kernelAccount");
+      return s.kernelAccounts ? s.kernelAccounts.has(account.toLowerCase()) : s.deployed.has(account.toLowerCase());
+    },
+    async implementationOf(account) {
+      if (s.down) throw new Error("rpc down");
+      s.reads.push("implementation");
+      if (!s.deployed.has(account.toLowerCase())) return null;
+      return (s.implementations.get(account.toLowerCase()) ?? KERNEL_V33_IMPLEMENTATION.toLowerCase()) as Address;
+    },
   };
   return { chain, state: s };
 }

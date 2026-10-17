@@ -1,4 +1,4 @@
-import { encodeFunctionData, type Address } from "viem";
+import { encodeFunctionData, toFunctionSelector, type Address } from "viem";
 import { OptionEngineAbi } from "../../abi";
 import { safeErrorSummary } from "../../log";
 import type { KeeperContext } from "../context";
@@ -9,6 +9,12 @@ export const QUEUED_SELLS_MAX_PER_PASS = 25;
 /** After a ticket fails (not fillable yet, or a blocked payout) it is not retried for this long, so a few stuck tickets
  * cannot take every slot of every pass and starve fillable ones behind them. */
 export const QUEUED_SELLS_RETRY_AFTER_MS = 10 * 60_000;
+/** Review F22/F23: a ticket keeps the seller's minProceeds and `fillQueued` reverts with Slippage below it. That says
+ * "not fillable at this price" about that ticket only (the series is fine), so it backs off alone, starting at
+ * QUEUED_SELLS_RETRY_AFTER_MS and doubling per further miss up to this cap: a far-off minimum is never retry-spammed. */
+export const QUEUED_SELLS_SLIPPAGE_MAX_BACKOFF_MS = 6 * 3600_000;
+const SLIPPAGE = new RegExp(`\\bSlippage\\b|${toFunctionSelector("Slippage(uint256,uint256)")}`, "i");
+
 /** At most this many dust tickets (worth less than KEEPER_QUEUED_DUST_USDG) are filled per pass, and only with spare capacity. */
 export const QUEUED_SELLS_DUST_PER_PASS = 1;
 
@@ -25,6 +31,8 @@ interface OpenTicket { ticket: string; series_id?: string; dust?: boolean; queue
 export function createQueuedSellsJob(context: KeeperContext, maxPerPass = QUEUED_SELLS_MAX_PER_PASS) {
   const engine = context.deployment.contracts.engine as Address;
   const retryAt = new Map<string, number>();
+  /** Consecutive Slippage misses per ticket (drives its doubling back-off). */
+  const slipped = new Map<string, number>();
   return async (): Promise<Record<string, unknown>> => {
     const nowMs = context.now(await context.metadata()).getTime();
     for (const [ticket, at] of retryAt) if (at <= nowMs) retryAt.delete(ticket);
@@ -54,6 +62,7 @@ export function createQueuedSellsJob(context: KeeperContext, maxPerPass = QUEUED
     let simulated = false;
     const failed: { ticket: string; error: string }[] = [];
     const deadSeries = new Set<string>();
+    let belowMinimum = 0;
     for (const { ticket, series_id: seriesId } of batch) {
       // One revert on a series (HALTED, CLOSED) says the rest of its tickets will revert too: try them on a later pass.
       if (seriesId && deadSeries.has(seriesId)) continue;
@@ -66,15 +75,26 @@ export function createQueuedSellsJob(context: KeeperContext, maxPerPass = QUEUED
         simulated ||= result.simulated;
         filled++;
         retryAt.delete(ticket);
+        slipped.delete(ticket);
       } catch (error) {
         const summary = safeErrorSummary(error);
         // A held nonce or a missing signer is not the ticket's fault: stop and let the scheduler retry the whole pass.
         if (/nonce .* (is held|is unresolved|remains held)|local signer is not configured|existing pending transaction/i.test(summary.message)) throw error;
-        retryAt.set(ticket, nowMs + QUEUED_SELLS_RETRY_AFTER_MS);
-        if (seriesId) deadSeries.add(seriesId);
+        if (SLIPPAGE.test(summary.message)) {
+          // The ticket's own minimum is above what the series pays now: back this ticket off, keep its series going.
+          const misses = (slipped.get(ticket) ?? 0) + 1;
+          slipped.set(ticket, misses);
+          retryAt.set(ticket, nowMs + Math.min(QUEUED_SELLS_SLIPPAGE_MAX_BACKOFF_MS, QUEUED_SELLS_RETRY_AFTER_MS * 2 ** (misses - 1)));
+          belowMinimum++;
+        } else {
+          retryAt.set(ticket, nowMs + QUEUED_SELLS_RETRY_AFTER_MS);
+          if (seriesId) deadSeries.add(seriesId);
+        }
         failed.push({ ticket, error: summary.message.slice(0, 160) });
       }
     }
+    // Bounded memory: a ticket filled or cancelled elsewhere is forgotten once the map grows large.
+    if (slipped.size > 10_000) for (const ticket of slipped.keys()) if (!retryAt.has(ticket)) slipped.delete(ticket);
     if (failed.length) context.logger.info({ failed: failed.length, first: failed[0] }, "Queued sells not fillable yet; retried later");
 
     // An escrowed seller keeps paying funding while a ticket waits: say so when the oldest open ticket gets old.
@@ -86,7 +106,7 @@ export function createQueuedSellsJob(context: KeeperContext, maxPerPass = QUEUED
       context.logger.warn({ oldestMinutes, backingOff: backingOff.length }, "A queued sell has been waiting for a long time");
     }
     return {
-      open: rows.length, attempted, filled, notFillable: failed.length, deferred: candidates.length - attempted,
+      open: rows.length, attempted, filled, notFillable: failed.length, belowMinimum, deferred: candidates.length - attempted,
       dust: dust.length, oldestOpenMinutes: oldestMinutes, dryRun: simulated,
     };
   };

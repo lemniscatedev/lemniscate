@@ -6,13 +6,16 @@ import {
   apiErrorSchema, buyIntentBodySchema, intentResponseSchema, quoteBodySchema, quoteResponseSchema,
   sellIntentBodySchema, shieldIntentBodySchema,
 } from "../option-schemas";
-import { loadNameContext, marketInputs, seriesInputs, type NameContext } from "../quote/context";
+import { haltNotice, loadNameContext, marketInputs, seriesInputs, type NameContext } from "../quote/context";
 import {
   displayCost, looseWad, parseWad, quoteUnits, usdgText, wadText, type BuyBlock, type EngineQuote, type SessionName, normDecimal, projectedNorm,
 } from "../quote/model";
 import { OptionEngineAbi } from "../../abi";
 import { inviteGate } from "./invites";
 import { getSeries, listSeries, type SeriesView } from "../../db/queries/series";
+import { activeHold } from "../../db/queries/market";
+import { trimDecimal } from "../quote/rows";
+import type { MarketInputs } from "../quote/model";
 
 const WAD = 10n ** 18n;
 const UINT128_MAX = (1n << 128n) - 1n;
@@ -52,6 +55,19 @@ async function prepare(deps: ApiDependencies, series: SeriesView | null): Promis
 }
 
 const failed = (value: Prepared | Failure): value is Failure => "status" in value;
+
+/** The selling account's open hold on the series (decision 30), from the indexer's last read of engine.holdOf. */
+async function sellHold(deps: ApiDependencies, series: SeriesView, account: string | undefined, now: Date): Promise<{ s: string; until: string } | null> {
+  return account ? activeHold(deps, series.id, account, now) : null;
+}
+
+const withHold = (market: MarketInputs, hold: { s: string; until: string } | null): MarketInputs =>
+  (hold ? { ...market, hold: { s: Number(hold.s), untilMs: Date.parse(hold.until) } } : market);
+
+const holdView = (hold: { s: string; until: string } | null, quote: EngineQuote) =>
+  (hold ? { until: hold.until, buyPrice: trimDecimal(hold.s), applied: quote.holdApplied } : null);
+
+const holdNote = (until: string) => `You bought this option recently. Until ${until} (the hold after a purchase, 30 minutes by default) a sell is priced at the less favourable of the current price and the price when you bought.`;
 
 function rawQuote(quote: EngineQuote) {
   return {
@@ -102,18 +118,21 @@ export function registerQuoteRoutes(app: OpenAPIHono, deps: ApiDependencies): vo
     if (!unitsWad) return context.json({ error: "BAD_REQUEST", message: "Units must be a positive number." }, 422 as never);
     const prepared = await prepare(deps, await getSeries(deps, body.series));
     if (failed(prepared)) return context.json(prepared.body, prepared.status as 404);
-    const { series, ctx } = prepared;
-    const quote = quoteUnits(seriesInputs(series), marketInputs(ctx, series), unitsWad, body.side === "buy");
+    const { series, ctx, now } = prepared;
+    const hold = body.side === "sell" ? await sellHold(deps, series, body.account, now) : null;
+    const quote = quoteUnits(seriesInputs(series), withHold(marketInputs(ctx, series), hold), unitsWad, body.side === "buy");
     if (!quote) return context.json({ error: "NO_VOL", message: "No volatility inputs are indexed for this series yet." }, 503);
     return context.json({
       series: series.id, side: body.side, unitsWad: unitsWad.toString(), quote: rawQuote(quote),
       display: {
         session: quote.session, usdg: usdgText(quote.usdg), feeUsdg: usdgText(quote.feeUsdg),
         dailyCostUsdg: usdgText(quote.dailyCostUsdg), displayCost: displayCost(quote.dailyCostUsdg),
-        breakeven: wadText(quote.breakevenWad), vMark: wadText(quote.vMarkWad),
+        breakeven: wadText(quote.breakevenWad), vMark: wadText(quote.vMarkWad), tradeSpot: trimDecimal(quote.tradeSpot.toFixed(6)),
       },
       blockReason: body.side === "buy" ? quote.buyBlock : null,
       sellQueued: quote.sellQueued,
+      hold: holdView(hold, quote),
+      halt: haltNotice(ctx),
       asOf: ctx.tick.ts,
     }, 200);
   });
@@ -155,7 +174,8 @@ export function registerQuoteRoutes(app: OpenAPIHono, deps: ApiDependencies): vo
     const prepared = await prepare(deps, await getSeries(deps, body.series));
     if (failed(prepared)) return context.json(prepared.body, prepared.status);
     const { series, ctx, now } = prepared;
-    const market = marketInputs(ctx, series);
+    const hold = await sellHold(deps, series, body.account, now);
+    const market = withHold(marketInputs(ctx, series), hold);
     const quote = quoteUnits(seriesInputs(series), market, unitsWad, false);
     if (!quote) return context.json({ error: "NO_VOL", message: "No volatility inputs are indexed for this series yet." }, 503);
     // The engine accrues before the sell: burn the tokens that hold `units` at the norm projected to now.
@@ -173,16 +193,17 @@ export function registerQuoteRoutes(app: OpenAPIHono, deps: ApiDependencies): vo
       abi: OptionEngineAbi, functionName: "sell",
       args: [series.id as `0x${string}`, tokens, minProceeds, BigInt(deadline), (body.recipient ?? body.account) as Address],
     });
+    const halt = haltNotice(ctx);
     const note = queued
-      ? "The price feed is halted. This sell joins a queue and fills at the first fresh price; no minimum is set because the fill price is not known yet."
+      ? `The price feed is halted. This sell joins a queue and fills at the first fresh price; no minimum is set because the fill price is not known yet.${halt ? ` If the feed is still halted at ${halt.settleableAt}, the name can be settled at its last good price and queued sells fill at that price.` : ""}`
       : quote.session === "CLOSED" || quote.session === "UNKNOWN"
         ? "The market is closed. This sell is priced at the last close with a wider spread."
-        : null;
+        : quote.holdApplied && hold ? holdNote(hold.until) : null;
     return context.json({
       kind: "sell" as const, to: engine, data, value: "0" as const, approvals: [],
       minProceedsUsdg: minProceeds.toString(), deadline, series: series.id, tokens: tokens.toString(), quote: rawQuote(quote),
       display: { usdg: usdgText(quote.usdg), displayCost: displayCost(quote.dailyCostUsdg), breakeven: wadText(quote.breakevenWad) },
-      queued, note,
+      queued, note, hold: holdView(hold, quote), halt,
     }, 200);
   });
 

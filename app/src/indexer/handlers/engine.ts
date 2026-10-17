@@ -107,8 +107,27 @@ async function closeQueued(context: IndexerContext, event: ChainEvent, status: "
   context.kinds.add("queue");
 }
 
+/** Engine safety events (decisions 31, 32): a dust series retired from the live list, an ORC-4 settlement. */
+async function handleSafetyEvent(context: IndexerContext, event: ChainEvent): Promise<void> {
+  const retired = event.eventName === "SeriesRetired";
+  await context.tx`
+    INSERT INTO engine_events (tx_hash, log_index, block, ts, kind, series_id, stock_token, account, price, until)
+    VALUES (
+      ${event.txHash}, ${event.logIndex}, ${event.blockNumber.toString()}, ${iso(event.ts)},
+      ${retired ? "series_retired" : "stock_settled"}, ${retired ? id32(event, "id") : null}, ${retired ? null : addr(event, "stock")},
+      NULL, ${retired ? null : wad(event.args.s)}, NULL
+    )
+    ON CONFLICT (tx_hash, log_index) DO NOTHING
+  `;
+  context.snapshotNeeded = true;
+  context.kinds.add(retired ? "series" : "oracle");
+}
+
 export async function handleEngineEvent(context: IndexerContext, event: ChainEvent): Promise<void> {
   switch (event.eventName) {
+    case "SeriesRetired":
+    case "StockSettled":
+      return handleSafetyEvent(context, event);
     case "Bought":
       return handleTrade(context, event, "buy");
     case "Sold":

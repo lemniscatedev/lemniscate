@@ -1,6 +1,7 @@
 import { decodeFunctionData, encodeAbiParameters, keccak256, type Address, type Hex } from "viem";
 import { OptionEngineAbi, PriceGuardAbi, SeriesRegistryAbi } from "../abi";
 import { createLogger } from "../log";
+import { LmnsBuyBurnKeeperAbi, LmnsStakingKeeperAbi } from "./jobs/lmns";
 
 /** SeriesRegistry.idOfEpoch, written out here on purpose (not imported from the code under test). */
 const seriesId = (stock: Address, isCall: boolean, strike: bigint, tau: number, epoch: number): Hex => keccak256(encodeAbiParameters(
@@ -20,11 +21,15 @@ export const A = {
 export interface FakeSeries {
   id: Hex; stock: Address; isCall: boolean; speed: number; tauSeconds: number; strike: bigint; token: Address;
   norm: bigint; lastAccrual: bigint; listedAt: bigint; buyable: boolean; archived: boolean; supply: bigint;
+  /** On the engine's live list (engine.liveSeries). Defaults to supply > 0. */
+  live?: boolean;
+  /** engine.seriesRisk(id).value: last-touch outstanding value (WAD USDG). Defaults to 10 USDG. */
+  riskValue?: bigint;
 }
 export interface FakePrice { s: bigint; session: number; fresh: boolean; buysPaused: boolean; updatedAt: bigint }
 export interface SentTx { label: string; to: Address; data: Hex; name: string; args: readonly unknown[] }
 
-const ABIS = [SeriesRegistryAbi, OptionEngineAbi, PriceGuardAbi];
+const ABIS = [SeriesRegistryAbi, OptionEngineAbi, PriceGuardAbi, LmnsStakingKeeperAbi, LmnsBuyBurnKeeperAbi];
 
 /** A mocked chain: registry, price guard, option tokens and a transaction queue that applies the calls it understands. */
 export class FakeChain {
@@ -44,6 +49,15 @@ export class FakeChain {
   staleLatest = false;
   private cachedCount: bigint | undefined;
   multicalls = 0;
+  /** engine.guards(): minimum trade in 6-decimal USDG ($1), hold, settle delay. */
+  guards = { minTradeUsdg: 1_000_000n, holdSeconds: 1800, haltSettleDelay: 7 * 86_400 };
+  /** PriceGuard.haltedSince per stock (unix seconds) and engine.settlePrice per stock (ORC-4). */
+  haltedSince = new Map<Address, bigint>();
+  /** ERC-20 balanceOf answers by `${token}:${holder}`. */
+  erc20Balances = new Map<string, bigint>();
+  settlePrices = new Map<Address, bigint>();
+  /** retireDust re-accrues before it decides: a value here replaces riskValue at that moment (models a refreshed mark). */
+  refreshedRisk = new Map<Hex, bigint>();
 
   /** Epochs per (stock, isCall, strike, tau), as SeriesRegistry keeps them (todo 07b): ids carry the epoch. */
   epochs = new Map<string, number>();
@@ -62,6 +76,10 @@ export class FakeChain {
     return series;
   }
 
+  isLive(s: FakeSeries): boolean {
+    return s.live ?? s.supply > 0n;
+  }
+
   private call(target: Address, functionName: string, args: readonly unknown[] = [], pinned = false): unknown {
     if (functionName === "seriesCount") {
       if (!this.staleLatest || pinned) return BigInt(this.order.length);
@@ -75,15 +93,26 @@ export class FakeChain {
       return { ...s };
     }
     if (functionName === "allowedStock") return true;
+    if (functionName === "liveSeries") {
+      return this.order.filter((id) => { const s = this.series.get(id)!; return s.stock.toLowerCase() === String(args[0]).toLowerCase() && this.isLive(s); });
+    }
+    if (functionName === "seriesRisk") {
+      const s = this.series.get(args[0] as Hex);
+      return [s?.riskValue ?? 10n * WAD, 0n, 0n, 0n, 0n, 0n, 0n, 0n];
+    }
+    if (functionName === "guards") return [BigInt(this.guards.minTradeUsdg), this.guards.holdSeconds, this.guards.haltSettleDelay];
     if (functionName === "lastGoodPrice") {
       const g = this.lastGood.get(args[0] as Address);
       return [g?.s ?? 0n, g?.at ?? 0n];
     }
-    if (functionName === "read") {
+    if (functionName === "haltedSince") return this.haltedSince.get(args[0] as Address) ?? 0n;
+    if (functionName === "settlePrice") return this.settlePrices.get(args[0] as Address) ?? 0n;
+    if (functionName === "read" || functionName === "readLite") {
       const price = this.prices.get(args[0] as Address);
       if (!price) throw new Error("unknown stock");
       return price;
     }
+    if (functionName === "balanceOf") return this.erc20Balances.get(`${target}:${String(args[0])}`) ?? 0n;
     if (functionName === "totalSupply") {
       const s = [...this.series.values()].find((x) => x.token === target);
       return s ? s.supply : 0n;
@@ -142,6 +171,25 @@ export class FakeChain {
         } else if (name === "setBuyable") this.series.get(args[0] as Hex)!.buyable = args[1] as boolean;
         else if (name === "archive") { const s = this.series.get(args[0] as Hex)!; s.archived = true; s.buyable = false; }
         else if (name === "accrueMany") for (const id of args[0] as Hex[]) this.series.get(id)!.lastAccrual = this.nowSeconds;
+        else if (name === "settleHalted") {
+          const stock = args[0] as Address;
+          const since = this.haltedSince.get(stock) ?? 0n;
+          const price = this.prices.get(stock);
+          if (since === 0n || this.nowSeconds < since + BigInt(this.guards.haltSettleDelay) || price?.session !== 4) {
+            this.sent.pop();
+            throw new Error(`execution reverted: NotSettleable(${stock})`);
+          }
+          this.settlePrices.set(stock, this.lastGood.get(stock)?.s ?? price.s);
+        }
+        else if (name === "retireDust") {
+          for (const id of args[0] as Hex[]) {
+            const s = this.series.get(id);
+            if (!s || !this.isLive(s)) continue;
+            s.lastAccrual = this.nowSeconds;
+            if (this.refreshedRisk.has(id)) s.riskValue = this.refreshedRisk.get(id)!;
+            if ((s.riskValue ?? 10n * WAD) < this.guards.minTradeUsdg * 10n ** 12n) s.live = false;
+          }
+        }
         else if (name === "poke") {
           const price = this.prices.get(args[0] as Address);
           if (price && price.fresh && price.session <= 1) this.lastGood.set(args[0] as Address, { s: price.s, at: price.updatedAt });

@@ -9,20 +9,31 @@ export interface PoolNavRow {
   reserve: string;
   nav: string;
   navPerShare: string;
+  /** engine.navLiability(false) / (true) (decision 36): the bounds LP deposits and claims are priced at. */
+  navLiabilityLow?: string | null;
+  navLiabilityHigh?: string | null;
+  /** engine.guards(): sell hold and ORC-4 settle delay, seconds (0 = engine default). */
+  holdSeconds?: number | null;
+  haltSettleDelaySeconds?: number | null;
 }
 
 interface PoolNavDbRow {
   ts: Date | string; block: string; usdg: string; hedge_equity: string; option_liability: string; reserve: string; nav: string; nav_per_share: string;
+  nav_liability_low?: string | null; nav_liability_high?: string | null; hold_seconds?: number | null; halt_settle_delay_seconds?: number | null;
 }
 
 const toNav = (row: PoolNavDbRow): PoolNavRow => ({
   ts: new Date(row.ts).toISOString(), block: String(row.block), usdg: row.usdg, hedgeEquity: row.hedge_equity,
   optionLiability: row.option_liability, reserve: row.reserve, nav: row.nav, navPerShare: row.nav_per_share,
+  navLiabilityLow: row.nav_liability_low ?? null, navLiabilityHigh: row.nav_liability_high ?? null,
+  holdSeconds: row.hold_seconds ?? null, haltSettleDelaySeconds: row.halt_settle_delay_seconds ?? null,
 });
 
 export async function latestPoolNav(deps: QueryDeps): Promise<PoolNavRow | null> {
   const rows = (await deps.sql`
-    SELECT ts, block, usdg, hedge_equity, option_liability, reserve, nav, nav_per_share FROM pool_nav ORDER BY ts DESC LIMIT 1
+    SELECT ts, block, usdg, hedge_equity, option_liability, reserve, nav, nav_per_share,
+           nav_liability_low::text AS nav_liability_low, nav_liability_high::text AS nav_liability_high, hold_seconds, halt_settle_delay_seconds
+    FROM pool_nav ORDER BY ts DESC LIMIT 1
   `) as unknown as PoolNavDbRow[];
   return rows[0] ? toNav(rows[0]) : null;
 }

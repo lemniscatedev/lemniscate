@@ -501,4 +501,56 @@ suite("option API over indexed data", () => {
       await server.stop(true);
     }
   });
+
+  test("decision 30: quotes and sells use the worse of S and the trade TWAP, and a sell inside the hold shows and uses it", async () => {
+    await db.sql`UPDATE ticks SET trade_twap = 225 WHERE name = 'NVDA'`;
+    fresh();
+    const buy = await (await post("/v1/quote", { series: id(2), units: "10", side: "buy" })).json() as any;
+    expect(buy.quote.feeUsdg).toBe("675000"); // 3 bps of 225 (the TWAP is worse for a call buyer) x 10
+    expect(buy.display.tradeSpot).toBe("225");
+    const sell = await (await post("/v1/quote", { series: id(2), units: "10", side: "sell" })).json() as any;
+    expect(sell.quote.feeUsdg).toBe("660000"); // the feed's 220 is the worse S for a call seller
+    await db.sql`UPDATE ticks SET trade_twap = NULL WHERE name = 'NVDA'`;
+
+    const until = at(10 * 60_000);
+    await db.sql`INSERT INTO holds (series_id, account, until, s, block) VALUES (${id(2)}, ${ALICE.toLowerCase()}, ${until}, 210, 200)`;
+    fresh();
+    const plain = await (await post("/v1/quote", { series: id(2), units: "9", side: "sell" })).json() as any;
+    expect(plain.hold).toBeNull();
+    const held = await (await post("/v1/quote", { series: id(2), units: "9", side: "sell", account: ALICE })).json() as any;
+    expect(held.hold).toEqual({ until: new Date(until).toISOString(), buyPrice: "210", applied: true });
+    expect(BigInt(held.quote.usdg)).toBeLessThan(BigInt(plain.quote.usdg));
+    const intent = await (await post("/v1/intent/sell", { series: id(2), units: "9", account: ALICE })).json() as any;
+    expect(intent.hold.applied).toBe(true);
+    expect(intent.quote.usdg).toBe(held.quote.usdg);
+    expect(intent.note).toContain("30 minutes");
+    // another account is not held
+    const other = await (await post("/v1/intent/sell", { series: id(2), units: "9", account: ZERO.replace(/0$/, "1") })).json() as any;
+    expect(other.hold).toBeNull();
+    await db.sql`DELETE FROM holds`;
+  });
+
+  test("decision 31/36: a halted name carries a settle notice; /v1/pool shows the navLiability bounds", async () => {
+    const latest = at(-30_000);
+    await db.sql`UPDATE pool_nav SET nav_liability_low = 49000, nav_liability_high = 52000, halt_settle_delay_seconds = 86400 WHERE ts = ${latest}`;
+    await setTick("HALTED");
+    await db.sql`UPDATE ticks SET halted_since = ${at(-3_600_000)} WHERE name = 'NVDA'`;
+    fresh();
+    const quote = await (await post("/v1/quote", { series: id(2), units: "1", side: "sell" })).json() as any;
+    expect(quote.halt).toEqual({ since: new Date(at(-3_600_000)).toISOString(), settleableAt: new Date(NOW - 3_600_000 + 86_400_000).toISOString(), settledPrice: null });
+    const sell = await (await post("/v1/intent/sell", { series: id(2), units: "1", account: ALICE })).json() as any;
+    expect(sell.queued).toBe(true);
+    expect(sell.note).toContain("last good price");
+    // settled (ORC-4): the sell is no longer queued and is priced as CLOSED at the settlement price
+    await db.sql`UPDATE ticks SET settle_price = 210 WHERE name = 'NVDA'`;
+    fresh();
+    const settled = await (await post("/v1/intent/sell", { series: id(2), units: "1", account: ALICE })).json() as any;
+    expect(settled.queued).toBe(false);
+    expect(settled.halt.settledPrice).toBe("210");
+    expect(settled.quote.session).toBe(2);
+    const pool = await (await get("/v1/pool")).json() as any;
+    expect(pool.navLiability).toEqual({ low: "49000", high: "52000" });
+    await setTick("REGULAR");
+    fresh();
+  });
 });

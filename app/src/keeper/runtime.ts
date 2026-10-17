@@ -18,6 +18,8 @@ import { createHedgeJob } from "./jobs/hedge";
 import { createRiskJob } from "./jobs/risk";
 import { updateCorporateActions } from "./jobs/corp-actions";
 import { createQueuedSellsJob } from "./jobs/queued-sells";
+import { createSettleHaltedJob } from "./jobs/settle-halted";
+import { createBuyBurnJob, createStakingSyncJob } from "./jobs/lmns";
 import { createFeeDistributeJob } from "./jobs/fee-distribute";
 import { writeReceipts } from "./jobs/receipts";
 import { updateReferencePrices } from "./jobs/reference";
@@ -43,7 +45,7 @@ const tx = createTransactionQueue(clients, {
 logger.info({ config: safeConfigSummary(config), signer: clients.walletClient?.account?.address, dryRun: config.KEEPER_DRY_RUN }, "Keeper starting");
 const enabled = new Set(config.KEEPER_ENABLED_JOBS.split(",").map((job) => job.trim()).filter(Boolean));
 // hedge is the legacy job until the hedger (todo 14) replaces it.
-const validJobs = new Set(["sessions", "lister", "accrue", "hedge", "risk", "corp-actions", "receipts", "reference", "earnings", "queued-sells", "fee-distribute"]);
+const validJobs = new Set(["sessions", "lister", "accrue", "hedge", "risk", "corp-actions", "receipts", "reference", "earnings", "queued-sells", "fee-distribute", "settle-halted", "staking-sync", "buy-burn"]);
 for (const job of enabled) if (!validJobs.has(job)) throw new Error(`Unknown keeper job: ${job}`);
 
 async function startup(): Promise<KeeperContext["deployment"]> {
@@ -59,7 +61,7 @@ async function startup(): Promise<KeeperContext["deployment"]> {
     if (block.hash?.toLowerCase() !== deployment.forkProof.blockHash.toLowerCase()) throw new Error("Fork proof does not match the node");
   }
   if (enabled.has("sessions") && !deployment.contracts.marketHours) throw new Error("The sessions job needs contracts.marketHours in the deployment");
-  const sendsTransactions = ["sessions", "lister", "risk", "corp-actions", "accrue", "queued-sells", "fee-distribute"].some((job) => enabled.has(job));
+  const sendsTransactions = ["sessions", "lister", "risk", "corp-actions", "accrue", "queued-sells", "fee-distribute", "settle-halted", "staking-sync", "buy-burn"].some((job) => enabled.has(job));
   if (sendsTransactions) {
     const account = clients.walletClient?.account;
     if (!account) throw new Error("No keeper signer configured (KEEPER_PRIVATE_KEY)");
@@ -136,6 +138,12 @@ if (context && lock && !abort.signal.aborted) {
     } },
     { name: "queued-sells", everyMs: 120000, run: createQueuedSellsJob(ctx) },
     { name: "fee-distribute", everyMs: 3600000, run: createFeeDistributeJob(ctx) },
+    // ORC-4 (decision 31): settle stocks HALTED past the engine's settle delay; permissionless, no role needed.
+    { name: "settle-halted", everyMs: 600000, run: createSettleHaltedJob(ctx) },
+    // Decision 42: hourly LmnsStaking.syncLoss (idle without staking). Decision 43: keeper-only buyAndBurn, off unless
+    // "buy-burn" is in KEEPER_ENABLED_JOBS and the deployment names the contract.
+    { name: "staking-sync", everyMs: 3600000, run: createStakingSyncJob(ctx) },
+    { name: "buy-burn", everyMs: 3600000, run: createBuyBurnJob(ctx) },
     { name: "hedge", everyMs: 900000, run: createHedgeJob(ctx) },
     { name: "risk", everyMs: 60000, run: createRiskJob(ctx) },
     { name: "corp-actions", everyMs: 600000, run: () => updateCorporateActions(ctx) },

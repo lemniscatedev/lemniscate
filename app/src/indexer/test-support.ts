@@ -23,7 +23,7 @@ import {
 import { parseOptionDeployment, type OptionDeployment } from "../chain/deployment";
 import type { ChainSource, LogRange } from "./chain-source";
 import type { IndexerSettings } from "./ingest";
-import type { PoolReading, SeriesReading, SnapshotReader, StockReading } from "./snapshot";
+import type { HoldReading, PoolReading, SeriesReading, SnapshotReader, StockReading } from "./snapshot";
 import type { BlockHeader, RpcLog } from "./types";
 
 export const a = (n: number): Address => `0x${n.toString(16).padStart(40, "0")}` as Address;
@@ -44,6 +44,7 @@ export const ADDR = {
   alice: a(0xa11ce),
   bob: a(0xb0b),
   carol: a(0xca401),
+  dave: a(0xda7e),
   agent: a(0xa6e47),
   tokenCall: a(0x4001),
   tokenPut: a(0x4002),
@@ -222,7 +223,17 @@ export class FakeReader implements SnapshotReader {
   };
   stocks: Record<string, Partial<StockReading>> = {};
   series: Record<string, Partial<SeriesReading>> = {};
+  /** engine.holdOf answers by `${seriesId}:${account}`; pairs asked for are recorded. */
+  holds: Record<string, { until: bigint; sWad: bigint }> = {};
+  holdPairs: string[] = [];
   fail = false;
+
+  async readHolds(pairs: readonly { seriesId: string; account: string }[], _block: bigint): Promise<HoldReading[]> {
+    return pairs.map(({ seriesId, account }) => {
+      this.holdPairs.push(`${seriesId}:${account}`);
+      return { seriesId, account, ...(this.holds[`${seriesId}:${account}`] ?? { until: 0n, sWad: 0n }) };
+    });
+  }
 
   async readPool(_block: bigint) {
     this.poolCalls += 1;
@@ -315,6 +326,9 @@ export const ev = {
   }),
   stockPaused: (stock: Address, paused: boolean, reason: Hex): LogSpec => ({ address: ADDR.priceGuard, abi: PriceGuardAbi as Abi, eventName: "BuysPausedSet", args: { stock, paused, reason } }),
   transfer: (token: Address, from: Address, to: Address, value: bigint): LogSpec => ({ address: token, abi: OptionTokenAbi as Abi, eventName: "Transfer", args: { from, to, value } }),
+  seriesRetired: (id: Hex): LogSpec => ({ address: ADDR.engine, abi: OptionEngineAbi as Abi, eventName: "SeriesRetired", args: { id } }),
+  stockSettled: (stock: Address, s: bigint): LogSpec => ({ address: ADDR.engine, abi: OptionEngineAbi as Abi, eventName: "StockSettled", args: { stock, s } }),
+  haltLatched: (stock: Address, since: bigint): LogSpec => ({ address: ADDR.priceGuard, abi: PriceGuardAbi as Abi, eventName: "HaltLatched", args: { stock, since } }),
 };
 
 /** All the rows of the tables the indexer writes, in a stable order, for equality checks between two runs. */

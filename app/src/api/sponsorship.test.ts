@@ -88,6 +88,24 @@ suite("F25/F31 sponsorship policy", () => {
     expect(rows.map((r) => ({ ...r }))).toEqual([{ grp: "entry", kind: "buy", account: ACCOUNT.toLowerCase(), owner: OWNER.toLowerCase() }]);
   });
 
+  test("F26 (decision 44): a deployed account the paymaster does not know, or one on another implementation, is not signed for", async () => {
+    const t = build();
+    fund(t, ACCOUNT, 100);
+    t.state.kernelAccounts = new Set(); // the paymaster never saw it deployed through the Kernel factory
+    const unknown = (await t.call("buy", { account: ACCOUNT })).json;
+    expect(unknown.sponsored).toBe(false);
+    expect(unknown.sponsorship.reason).toBe("ACCOUNT_UNREGISTERED");
+    t.state.kernelAccounts = new Set([ACCOUNT.toLowerCase()]);
+    t.state.implementations.set(ACCOUNT.toLowerCase(), "0x00000000000000000000000000000000000bad01");
+    const upgraded = (await t.call("buy", { account: ACCOUNT })).json;
+    expect(upgraded.sponsored).toBe(false);
+    expect(upgraded.sponsorship.reason).toBe("ACCOUNT_UNSUPPORTED");
+    expect(t.signed()).toBe(0);
+    expect((await db.sql`select count(*)::int as n from sponsorship_grants`)[0]!.n).toBe(0);
+    t.state.implementations.delete(ACCOUNT.toLowerCase());
+    expect((await t.call("buy", { account: ACCOUNT })).json.sponsored).toBe(true);
+  });
+
   test("F25 exploit: 1,000 fresh owners asking for sponsored sells get 0 signatures and book nothing", async () => {
     const t = build();
     for (let i = 0; i < 1000; i++) {

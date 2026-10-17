@@ -20,9 +20,33 @@ export interface HedgerState {
   unhealthySince: Map<string, number>;
   /** name -> epoch ms since which the name could not be hedged (trade_failed or no_venue, e.g. no Uniswap route). */
   unhedgedSince: Map<string, number>;
+  /** Decision 39: after the pool refuses with HedgerFrozen or HedgeLossBudget no rebalance is tried before this. */
+  halted?: HedgeHalt;
+  /** Same for equity posts (PerpEquityCap, HedgerFrozen). */
+  equityHalted?: HedgeHalt;
 }
 
+export interface HedgeHalt { readonly reason: HedgeRevert; readonly untilMs: number }
+
 export const newHedgerState = (): HedgerState => ({ lastTradeMs: new Map(), unhealthySince: new Map(), unhedgedSince: new Map() });
+
+/** The pool's hedger bounds (review F03/F17/F27, decision 39), by revert name. */
+export type HedgeRevert = "HedgerFrozen" | "HedgeLossBudget" | "PerpEquityCap";
+const HEDGE_REVERTS: readonly HedgeRevert[] = ["HedgerFrozen", "HedgeLossBudget", "PerpEquityCap"];
+/** A freeze or an equity cap is re-checked after an hour; the loss budget resets at the next UTC day. */
+export const HEDGE_HALT_RETRY_MS = 3_600_000;
+
+/** Which bound a failed pool call hit, if any (matched by error name in the revert message). */
+export function hedgeRevertOf(error: unknown): HedgeRevert | null {
+  const message = error instanceof Error ? `${error.message} ${(error as { shortMessage?: string }).shortMessage ?? ""}` : String(error);
+  return HEDGE_REVERTS.find((name) => new RegExp(`\\b${name}\\b`).test(message)) ?? null;
+}
+
+/** How long to stop after `revert`: to the next UTC midnight for the daily loss budget, an hour otherwise. */
+export function haltFor(revert: HedgeRevert, nowMs: number): HedgeHalt {
+  const untilMs = revert === "HedgeLossBudget" ? (Math.floor(nowMs / 86_400_000) + 1) * 86_400_000 : nowMs + HEDGE_HALT_RETRY_MS;
+  return { reason: revert, untilMs };
+}
 
 export interface CycleDeps {
   loadBook(): Promise<BookSnapshot>;
@@ -64,7 +88,7 @@ export interface NameReport {
   position: number;
   gapUnits: number;
   action: "traded" | "would_trade" | "hold" | "failed";
-  reason: TradeReason | HoldReason | "incomplete_inputs" | "no_venue" | "trade_failed";
+  reason: TradeReason | HoldReason | "incomplete_inputs" | "no_venue" | "trade_failed" | "hedger_halted";
   venue?: string;
   filledUnits?: number;
   /** Delta left unhedged after this cycle, in stock units and USDG. The risk monitor reads these. */
@@ -79,6 +103,8 @@ export interface CycleResult extends HedgerHealthMeta {
   /** Names that could not be hedged (trade_failed, no_venue) and since when. */
   unhedged: Record<string, string>;
   unhealthyVenues: Record<string, string>;
+  /** Set while the pool's hedger bounds stop rebalances (decision 39): which revert and until when. */
+  halted?: { reason: HedgeRevert; until: string };
 }
 
 const asUnits = (wei: bigint): number => Number(formatUnits(wei, 18));
@@ -113,6 +139,10 @@ export async function runHedgeCycle(deps: CycleDeps): Promise<CycleResult> {
   }
   const nav = await deps.navUsdg();
   const names: Record<string, NameReport> = {};
+  if (state.halted && state.halted.untilMs <= nowMs) {
+    logger.info({ reason: state.halted.reason }, "Hedger back-off over; rebalances are tried again");
+    delete state.halted;
+  }
 
   for (const [stock, exposure] of exposures) {
     const address = stock as Address;
@@ -145,6 +175,12 @@ export async function runHedgeCycle(deps: CycleDeps): Promise<CycleResult> {
       });
       report.reason = decision.reason;
       if (!decision.trade) continue;
+      if (state.halted) {
+        // Decision 39: the pool refused a rebalance with a bound; nothing is sent until the back-off ends.
+        report.action = "hold";
+        report.reason = "hedger_halted";
+        continue;
+      }
 
       const buy = gap > 0n;
       let chosen: IHedgeVenue | undefined;
@@ -187,13 +223,22 @@ export async function runHedgeCycle(deps: CycleDeps): Promise<CycleResult> {
       }
     } catch (error) {
       report.action = "failed";
+      const revert = hedgeRevertOf(error);
+      if (revert) {
+        // Decision 39 bounds: log, back off every rebalance (not just this name), alert; never a retry storm.
+        state.halted = haltFor(revert, nowMs);
+        report.reason = "hedger_halted";
+        logger.error({ alert: true, name: label, revert, until: new Date(state.halted.untilMs).toISOString() },
+          "ALERT: the pool refused a hedge rebalance with a hedger bound; rebalances are paused until the back-off ends");
+        continue;
+      }
       report.reason = "trade_failed";
       logger.warn({ name: label, err: error instanceof Error ? error.message : String(error) }, "Hedge failed for this name; will retry next cycle");
     }
   }
 
   for (const [label, report] of Object.entries(names)) {
-    if (report.reason === "trade_failed" || report.reason === "no_venue") {
+    if (report.reason === "trade_failed" || report.reason === "no_venue" || report.reason === "hedger_halted") {
       if (!state.unhedgedSince.has(label)) state.unhedgedSince.set(label, nowMs);
     } else state.unhedgedSince.delete(label);
   }
@@ -205,6 +250,7 @@ export async function runHedgeCycle(deps: CycleDeps): Promise<CycleResult> {
   return {
     cycleAt: new Date(nowMs).toISOString(), dryRun: settings.dryRun, names, unhedged, ...healthMeta(state.unhealthySince),
     unhealthyVenues: Object.fromEntries([...state.unhealthySince].map(([name, since]) => [name, new Date(since).toISOString()])),
+    ...(state.halted ? { halted: { reason: state.halted.reason, until: new Date(state.halted.untilMs).toISOString() } } : {}),
   };
 }
 

@@ -134,6 +134,11 @@ export const ABI_TARGETS: readonly AbiTarget[] = [
       "event QueuedSellFilled(uint256 indexed ticket, address indexed filler, uint256 usdgOut)",
       "event QueuedSellCancelled(uint256 indexed ticket)",
       "function fillQueued(uint256 ticket)",
+      // Emitted from the delegatecalled EngineOpsLib (review F07/F08/F21/F24, decisions 31-32): library events are not
+      // in the engine's own ABI, but the engine address emits them.
+      "event SeriesRetired(bytes32 indexed id)",
+      "event StockSettled(address indexed stock, uint256 s)",
+      "error NotSettleable(address stock)",
     ],
   },
   {

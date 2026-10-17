@@ -417,6 +417,25 @@ Off-chain services, each with a regression test that fails without the fix (find
   simulated, and fails closed. Chain reads for these routes are budgeted and cached.
 - **API (F33, F40, F41, F42).** The smart-account route never touches key material; MCP callers are counted per address; an `Origin`
   header never waives an x402 payment (the website's own server uses `X402_INTERNAL_TOKEN`); the x402 settler serialises its sends.
+- **Follow-ups to the contract fixes (F01-F03, F06-F08, F10-F12, F17, F19, F21-F24, F26, F27, F37-F39).** The keeper sends
+  `retireDust` for dust series, relists or archives every buyable series under the relist norm (1e15), accrues every live non-dust series
+  once per 5-minute slot in REGULAR and EXTENDED whatever its `lastAccrual`, keeps `accrueMany` batches at 45 or fewer, backs a queued
+  sell that reverts on `Slippage` off alone (doubling to 6 hours), settles stocks HALTED past the settle delay, calls `syncLoss` hourly
+  and the keeper-only `buyAndBurn` when enabled. The API prices quotes and sells at the worse of S and `PriceGuard.tradeTwap`, shows
+  and applies the 30-minute hold before a sell, and carries a halt notice. Gas is sponsored only for accounts the paymaster knows that
+  run the Kernel implementation, at a fee that keeps the operation under `maxCostPerOp`. The hedger backs off on `HedgerFrozen`,
+  `HedgeLossBudget` and `PerpEquityCap` with an alert instead of retrying.
+
+Accepted risks of these follow-ups:
+
+- The API reads holds and the trade TWAP from the indexer's last snapshot, not the chain. A sell quoted in the seconds between a buy
+  (or a transfer) and the next snapshot can be priced without its hold, and a TWAP that moved since the snapshot shifts the quote. The
+  engine prices the trade itself; the worst case is a sell that reverts on its own `minProceeds` and is quoted again. The quote never
+  makes a seller accept less than the slippage they chose.
+- The grid sample runs only while a name is in REGULAR or EXTENDED: outside those sessions the price guard does not move S, so there
+  is no print to pick, and the hourly catch-up still accrues every held series.
+- Market-wide events (retirement, halt latch, settlement) appear in the activity of accounts that hold the series or name now; an account
+  that sold before the event does not see it.
 
 ## Audit history
 

@@ -262,3 +262,50 @@ describe("caps in buyable and blockReason", () => {
     expect(quoteUnits(series(), m, 100n * WAD, false)!.sellQueued).toBe(false);
   });
 });
+
+describe("F01/F02/F10/F22/F23 trade price: worse of S and the trade TWAP, and the 30-minute hold (decision 30)", () => {
+  const at = (s: number) => market({ spot: s });
+  test("a call buy is priced at the higher of S and the TWAP, a call sell at the lower", () => {
+    const up = quoteUnits(series(), market({ tradeTwap: 102 }), WAD, true)!;
+    expect(up.usdg).toBe(quoteUnits(series(), at(102), WAD, true)!.usdg);
+    expect(up.tradeSpot).toBe(102);
+    // a TWAP better for the buyer is ignored
+    expect(quoteUnits(series(), market({ tradeTwap: 98 }), WAD, true)!.usdg).toBe(quoteUnits(series(), market(), WAD, true)!.usdg);
+    const down = quoteUnits(series(), market({ tradeTwap: 98 }), WAD, false)!;
+    expect(down.usdg).toBe(quoteUnits(series(), at(98), WAD, false)!.usdg);
+  });
+
+  test("puts take the mirror image: a put buy at the lower S, a put sell at the higher", () => {
+    const put = series({ isCall: false });
+    expect(quoteUnits(put, market({ tradeTwap: 97 }), WAD, true)!.usdg).toBe(quoteUnits(put, at(97), WAD, true)!.usdg);
+    expect(quoteUnits(put, market({ tradeTwap: 103 }), WAD, false)!.usdg).toBe(quoteUnits(put, at(103), WAD, false)!.usdg);
+  });
+
+  test("the fee is charged on the trade S and the valuation (caps, inventory) stays at the feed S", () => {
+    const q = quoteUnits(series(), market({ tradeTwap: 110 }), WAD, true)!;
+    expect(q.feeUsdg).toBe(33_000n);
+    expect(q.sigmaBps).toBe(quoteUnits(series(), at(110), WAD, true)!.sigmaBps);
+  });
+
+  test("a sell inside the account's hold is priced at the worse of the trade S and the buy-time S; after it, not", () => {
+    const hold = { s: 95, untilMs: 1_000_000 + 60_000 };
+    const inside = quoteUnits(series(), market({ hold }), WAD, false)!;
+    expect(inside.usdg).toBe(quoteUnits(series(), at(95), WAD, false)!.usdg);
+    expect(inside.holdApplied).toBe(true);
+    const after = quoteUnits(series(), market({ hold, nowMs: hold.untilMs }), WAD, false)!;
+    expect(after.holdApplied).toBe(false);
+    expect(after.usdg).toBe(quoteUnits(series(), market({ nowMs: hold.untilMs }), WAD, false)!.usdg);
+    // a hold never touches a buy, and a buy-time S better for the seller is ignored
+    expect(quoteUnits(series(), market({ hold }), WAD, true)!.usdg).toBe(quoteUnits(series(), market(), WAD, true)!.usdg);
+    expect(quoteUnits(series(), market({ hold: { s: 105, untilMs: hold.untilMs } }), WAD, false)!.holdApplied).toBe(false);
+  });
+
+  test("an ORC-4 settled stock quotes sells as CLOSED at the settlement price; buys stay blocked", () => {
+    const settled = market({ session: "HALTED", spot: 90, settlePrice: 80 });
+    const sell = quoteUnits(series(), settled, WAD, false)!;
+    expect(sell.session).toBe("CLOSED");
+    expect(sell.sellQueued).toBe(false);
+    expect(sell.usdg).toBe(quoteUnits(series(), market({ session: "CLOSED", spot: 80 }), WAD, false)!.usdg);
+    expect(quoteUnits(series(), settled, WAD, true)!.buyable).toBe(false);
+  });
+});

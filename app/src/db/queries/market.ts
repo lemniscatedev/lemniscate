@@ -10,23 +10,43 @@ export interface TickRow {
   fresh: boolean;
   buysPaused: boolean;
   priceUpdatedAt: string | null;
+  /** PriceGuard.tradeTwap at the snapshot (decision 30), or null when unavailable. */
+  tradeTwap?: string | null;
+  /** engine.settlePrice: ORC-4 settlement price (decision 31), or null. */
+  settlePrice?: string | null;
+  /** PriceGuard.haltedSince, or null when no halt is latched. */
+  haltedSince?: string | null;
 }
 
 interface TickDbRow {
   name: string; stock_token: string; ts: Date | string; spot: string; session: TickRow["session"]; fresh: boolean;
   buys_paused: boolean; price_updated_at: Date | string | null;
+  trade_twap?: string | null; settle_price?: string | null; halted_since?: Date | string | null;
 }
 
 const toTick = (row: TickDbRow): TickRow => ({
   name: row.name, stock: row.stock_token, ts: new Date(row.ts).toISOString(), spot: row.spot, session: row.session,
   fresh: row.fresh, buysPaused: row.buys_paused,
   priceUpdatedAt: row.price_updated_at === null ? null : new Date(row.price_updated_at).toISOString(),
+  tradeTwap: row.trade_twap ?? null,
+  settlePrice: row.settle_price ?? null,
+  haltedSince: row.halted_since ? new Date(row.halted_since).toISOString() : null,
 });
+
+/** The account's open sell hold on a series (decision 30), as the indexer last read it, or null. */
+export async function activeHold(deps: QueryDeps, seriesId: string, account: string, now: Date): Promise<{ s: string; until: string } | null> {
+  const rows = (await deps.sql`
+    SELECT s::text AS s, until FROM holds
+    WHERE series_id = ${seriesId.toLowerCase()} AND account = ${account.toLowerCase()} AND until > ${now.toISOString()}
+  `) as unknown as { s: string; until: Date | string }[];
+  return rows[0] ? { s: rows[0].s, until: new Date(rows[0].until).toISOString() } : null;
+}
 
 /** The newest price tick of one name, or null when nothing has been indexed for it. */
 export async function latestTick(deps: QueryDeps, name: string): Promise<TickRow | null> {
   const rows = (await deps.sql`
-    SELECT name, stock_token, ts, spot, session, fresh, buys_paused, price_updated_at
+    SELECT name, stock_token, ts, spot, session, fresh, buys_paused, price_updated_at,
+           trade_twap::text AS trade_twap, settle_price::text AS settle_price, halted_since
     FROM ticks WHERE name = ${name} ORDER BY ts DESC LIMIT 1
   `) as unknown as TickDbRow[];
   return rows[0] ? toTick(rows[0]) : null;
@@ -35,7 +55,8 @@ export async function latestTick(deps: QueryDeps, name: string): Promise<TickRow
 /** The newest tick of every name. */
 export async function latestTicks(deps: QueryDeps): Promise<TickRow[]> {
   const rows = (await deps.sql`
-    SELECT DISTINCT ON (name) name, stock_token, ts, spot, session, fresh, buys_paused, price_updated_at
+    SELECT DISTINCT ON (name) name, stock_token, ts, spot, session, fresh, buys_paused, price_updated_at,
+           trade_twap::text AS trade_twap, settle_price::text AS settle_price, halted_since
     FROM ticks WHERE name IS NOT NULL ORDER BY name, ts DESC
   `) as unknown as TickDbRow[];
   return rows.map(toTick);

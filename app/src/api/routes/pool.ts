@@ -84,6 +84,10 @@ export function registerPoolRoutes(app: OpenAPIHono, deps: ApiDependencies): voi
         hedgeEquity: trimDecimal(nav?.hedgeEquity ?? "0"),
         optionLiability: trimDecimal(nav?.optionLiability ?? "0"),
         reserve: trimDecimal(nav?.reserve ?? "0"),
+        // Decision 36: the liability bounds LP deposits (low) and claims (high) are priced at; null before the first read.
+        navLiability: nav?.navLiabilityLow && nav.navLiabilityHigh
+          ? { low: trimDecimal(nav.navLiabilityLow), high: trimDecimal(nav.navLiabilityHigh) }
+          : null,
         fundingReceived: { windowHours: FUNDING_WINDOW_HOURS, usdg: usd(fundingUsd), estimate: true as const },
         exposures,
         stressLossBps: worstStress.toFixed(4),

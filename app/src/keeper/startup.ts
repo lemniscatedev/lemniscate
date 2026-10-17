@@ -18,6 +18,9 @@ export function requiredRoles(enabled: ReadonlySet<string>, deployment: OptionDe
   if (enabled.has("lister")) {
     needs.push({ job: "lister", contract: "registry", address: deployment.contracts.registry as Address, role: "KEEPER_ROLE" });
   }
+  if (enabled.has("buy-burn") && (deployment.contracts as { buyBurn?: string }).buyBurn) {
+    needs.push({ job: "buy-burn", contract: "buyBurn", address: (deployment.contracts as { buyBurn: string }).buyBurn as Address, role: "KEEPER_ROLE" });
+  }
   if (enabled.has("risk")) {
     needs.push({ job: "risk", contract: "engine", address: deployment.contracts.engine as Address, role: "GUARDIAN_ROLE" });
   }

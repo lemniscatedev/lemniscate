@@ -10,6 +10,8 @@ import { AaConfigError } from "../../aa/config";
 import { BundlerError, toRpcUserOp, type Op } from "../../aa/bundler";
 import { AaError, buildUserOp, callsForIntent, hashOf, type AaServices, type IntentLike } from "../../aa/userop";
 import { PAYMASTER_DATA_LENGTH } from "../../aa/paymaster";
+import { KERNEL_V33_IMPLEMENTATION } from "../../aa/counterfactual";
+import { optionalEnv } from "../../config";
 
 /**
  * One-tap flows (todo 16): `POST /v1/intent/{buy,sell,shield}?format=userop` returns the same intent as an unsigned
@@ -106,6 +108,8 @@ export function registerIntentUserOp(app: OpenAPIHono, deps: ApiDependencies): v
     if (injected) return injected;
     return cachedGate ??= createSponsorshipGate({
       deps, chain: svc.chain, kernelValidator: svc.config.kernelValidator, usdg: contracts.usdg as Address,
+      paymaster: svc.config.paymaster?.address,
+      kernelImplementation: (optionalEnv("AA_KERNEL_IMPLEMENTATION") || KERNEL_V33_IMPLEMENTATION) as Address,
     });
   };
   const respondError = (error: unknown) => {

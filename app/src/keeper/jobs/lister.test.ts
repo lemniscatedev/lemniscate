@@ -179,3 +179,31 @@ describe("engine series sync after listing (todo 23: the first Shield paid 6.2M 
   });
 });
 
+
+describe("F06 relist threshold covers every buyable series (decision 34)", () => {
+  test("an off-grid buyable series below norm 1e15 is archived; a healthy one is kept", async () => {
+    const chain = chainWith();
+    chain.prices.delete(A.spy);
+    await createListerJob(chain.context())({ force: true });
+    const offGrid = chain.addSeries({ stock: A.nvda, isCall: true, strike: 225n * WAD, tauSeconds: 86_400, norm: 5n * 10n ** 14n });
+    const healthy = chain.addSeries({ stock: A.nvda, isCall: false, strike: 215n * WAD, tauSeconds: 86_400, norm: 2n * 10n ** 15n });
+    chain.sent.length = 0;
+    const result = await createListerJob(chain.context())({ force: true });
+    expect(chain.sent.filter((tx) => tx.name === "archive").map((tx) => tx.args[0])).toEqual([offGrid.id]);
+    expect(chain.series.get(offGrid.id)!.archived).toBe(true);
+    expect(chain.series.get(healthy.id)!.archived).toBe(false);
+    expect(result.listed).toBe(0);
+  });
+
+  test("the norm archive also runs while the name's market is closed (it needs no price)", async () => {
+    const chain = chainWith({ ...live, session: 2 });
+    const decayed = chain.addSeries({ stock: A.spy, isCall: true, strike: 770n * WAD, tauSeconds: 604_800, norm: 10n ** 14n });
+    await createListerJob(chain.context())({ force: true });
+    expect(chain.sent.map((tx) => [tx.name, tx.args[0]])).toEqual([["archive", decayed.id]]);
+  });
+
+  test("the default threshold is BUY_MIN_NORM (1e15)", async () => {
+    const { RELIST_NORM } = await import("../../config/listing");
+    expect(RELIST_NORM).toBe(10n ** 15n);
+  });
+});

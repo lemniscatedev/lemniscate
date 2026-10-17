@@ -21,11 +21,41 @@ export async function handleTransferEvent(context: IndexerContext, event: ChainE
     ON CONFLICT (tx_hash, log_index) DO NOTHING
   `;
   await accountSeen(context.tx, event, [from, to]);
+  if (seriesId && from !== ZERO_ADDRESS && to !== ZERO_ADDRESS && to !== asAddress(context.deployment.contracts.engine)) {
+    await recordCarriedHold(context, event, seriesId, from, to);
+  }
   for (const account of [from, to]) {
     if (account !== ZERO_ADDRESS) context.touchedBalances.set(`${token}:${account}`, { token, account });
   }
   if (event.source === "pool") context.snapshotNeeded = true;
   context.kinds.add("transfer");
+}
+
+/** Default engine hold (EngineCore.DEFAULT_HOLD) when no snapshot has stored the configured one yet. */
+const DEFAULT_HOLD_SECONDS = 1_800;
+
+/** Decision 30: a holder-to-holder transfer hands the sender's open sell hold to the receiver (engine.onTokenTransfer).
+ * The sender holds when the indexer stored an open hold for it (the snapshot reads engine.holdOf), or when it bought
+ * the series within the hold window (a buy the snapshot has not read yet: the buy-time S is then unknown). The receiver's
+ * exact hold is read at the next snapshot. */
+async function recordCarriedHold(context: IndexerContext, event: ChainEvent, seriesId: string, from: string, to: string): Promise<void> {
+  const at = iso(event.ts);
+  const rows = (await context.tx`
+    SELECT h.s::text AS s, h.until FROM holds h WHERE h.series_id = ${seriesId} AND h.account = ${from} AND h.until > ${at}
+    UNION ALL
+    SELECT NULL, t.ts + make_interval(secs => COALESCE((SELECT hold_seconds FROM pool_nav WHERE hold_seconds IS NOT NULL ORDER BY ts DESC LIMIT 1), ${DEFAULT_HOLD_SECONDS}))
+    FROM trades t WHERE t.series_id = ${seriesId} AND t.recipient = ${from} AND t.side = 'buy'
+      AND t.ts + make_interval(secs => COALESCE((SELECT hold_seconds FROM pool_nav WHERE hold_seconds IS NOT NULL ORDER BY ts DESC LIMIT 1), ${DEFAULT_HOLD_SECONDS})) > ${at}
+    ORDER BY 1 NULLS LAST LIMIT 1
+  `) as unknown as { s: string | null; until: Date | string }[];
+  const hold = rows[0];
+  if (!hold) return;
+  await context.tx`
+    INSERT INTO engine_events (tx_hash, log_index, block, ts, kind, series_id, stock_token, account, price, until)
+    VALUES (${event.txHash}, ${event.logIndex}, ${event.blockNumber.toString()}, ${at}, 'hold_carried', ${seriesId}, NULL, ${to},
+      ${hold.s}, ${new Date(hold.until).toISOString()})
+    ON CONFLICT (tx_hash, log_index) DO NOTHING
+  `;
 }
 
 /** balances(token, account) = sum of transfers in - sum of transfers out, for every touched pair. */

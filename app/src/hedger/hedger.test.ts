@@ -602,3 +602,54 @@ describe("ApiPerpVenue (mocked HTTP)", () => {
     expect(() => new ApiPerpVenue({ baseUrl: "x", apiKeyId: "k", seedHex: "zz", markets: new Map() })).toThrow("32 bytes");
   });
 });
+
+describe("lane B hedger bounds (review F03/F17/F27, decision 39): reverts back off instead of retrying", () => {
+  function refusing(message: string) {
+    const { port, venue } = spotVenue();
+    let calls = 0;
+    const real = port.rebalance.bind(port);
+    let refuse = true;
+    port.rebalance = async (p) => { calls++; if (refuse) throw new Error(`execution reverted: ${message}`); return real(p); };
+    return { venue, calls: () => calls, allow: () => { refuse = false; } };
+  }
+
+  test("HedgerFrozen: no trade is tried for an hour, the name is reported unhedged, then it resumes", async () => {
+    const r = refusing("HedgerFrozen()");
+    const ctx = cycleDeps([r.venue], book());
+    const first = await runHedgeCycle(ctx.deps);
+    expect(first.names.NVDA!.reason).toBe("hedger_halted");
+    expect(first.halted).toMatchObject({ reason: "HedgerFrozen" });
+    expect(Object.keys(first.unhedged)).toEqual(["NVDA"]);
+    for (let i = 0; i < 10; i++) { ctx.advance(5 * 60_000); await runHedgeCycle(ctx.deps); } // 50 minutes of cycles
+    expect(r.calls()).toBe(1);
+    r.allow();
+    ctx.advance(15 * 60_000);
+    expect((await runHedgeCycle(ctx.deps)).names.NVDA!.action).toBe("traded");
+  });
+
+  test("HedgeLossBudget: backs off until the next UTC day", async () => {
+    const r = refusing("HedgeLossBudget(5000000000, 5000000000)");
+    const ctx = cycleDeps([r.venue], book());
+    const first = await runHedgeCycle(ctx.deps);
+    const until = Date.parse(first.halted!.until);
+    expect(until % 86_400_000).toBe(0);
+    expect(until).toBeGreaterThan(1_000_000_000);
+    ctx.advance(until - 1_000_000_000 - 60_000);
+    await runHedgeCycle(ctx.deps);
+    expect(r.calls()).toBe(1);
+  });
+
+  test("PerpEquityCap on an equity post: no post for an hour, reported as halted", async () => {
+    const perp = new MockPerpVenue({ collateral: 1_000_000n, prices: new Map([[NVDA, 1n]]) });
+    let posts = 0;
+    const state = newHedgerState();
+    const input = {
+      venues: [perp], stocks: [NVDA], nowSeconds: 2_000_000, lastPostedAsOf: 0, intervalSeconds: 3600, dryRun: false, state,
+      post: async () => { posts++; throw new Error("execution reverted: PerpEquityCap(900000000, 100000000)"); },
+    };
+    expect(await postHedgeEquityOnce(input)).toMatchObject({ posted: false, reason: "halted" });
+    expect(await postHedgeEquityOnce({ ...input, nowSeconds: 2_000_000 + 1800 })).toMatchObject({ posted: false, reason: "halted" });
+    expect(posts).toBe(1);
+    await expect(postHedgeEquityOnce({ ...input, nowSeconds: 2_000_000 + 3601, post: async () => { throw new Error("rpc down"); } })).rejects.toThrow("rpc down");
+  });
+});

@@ -180,3 +180,42 @@ describe("callsForIntent", () => {
     expect(callsForIntent({ kind: "sell", to: ENGINE, data: "0x12345678", approvals: [] })).toHaveLength(1);
   });
 });
+
+describe("F38/F39 (decision 45): a sponsored operation stays under the paymaster's maxCostPerOp (0.002 ETH)", () => {
+  const CAP = 2_000_000_000_000_000n;
+  const big = {
+    preVerificationGas: 300_000n, verificationGasLimit: 1_800_000n, callGasLimit: 1_500_000n,
+    paymasterVerificationGasLimit: 200_000n, paymasterPostOpGasLimit: 80_000n,
+  };
+
+  test("the default fallback fee keeps a deploy operation with the fallback gas limits under the cap", async () => {
+    const { loadAaConfig } = await import("./config");
+    const config = loadAaConfig({});
+    const fb = config.fallback;
+    const gas = fb.preVerificationGas + fb.deployVerificationGas + fb.callGas + fb.paymasterVerificationGas + fb.paymasterPostOpGas;
+    expect(gas * fb.maxFeePerGas).toBeLessThanOrEqual(CAP);
+    expect(fb.priorityFeePerGas).toBeLessThanOrEqual(fb.maxFeePerGas);
+    expect(() => loadAaConfig({ AA_FALLBACK_MAX_FEE_PER_GAS: "2000000000" })).toThrow(/maxCostPerOp/);
+  });
+
+  test("a sponsored deploy priced with the fallback fee (the node gave none) is capped, and re-signed over the capped fee", async () => {
+    const { services, state } = createTestServices({ chain: { deployed: new Set(), fees: null }, bundler: { estimate: big } });
+    void state;
+    const built = await buildUserOp(services, { account: ACCOUNT, owner: OWNER, calls: buyCalls, sponsor: true });
+    expect(built.sponsored).toBe(true);
+    expect(built.deploysAccount).toBe(true);
+    expect(built.maxCostWei).toBeLessThanOrEqual(CAP);
+    expect(built.userOp.maxPriorityFeePerGas).toBeLessThanOrEqual(built.userOp.maxFeePerGas);
+    // the signature covers the fee actually returned
+    const data = built.userOp.paymasterData!;
+    const validUntil = Number(BigInt(`0x${data.slice(2, 14)}`));
+    const validAfter = Number(BigInt(`0x${data.slice(14, 26)}`));
+    const hash = paymasterHash(built.userOp, 4663, PAYMASTER, validUntil, validAfter);
+    expect(await recoverMessageAddress({ message: { raw: hash }, signature: `0x${data.slice(26)}` as Hex })).toBe(privateKeyToAccount(SIGNER_KEY).address);
+  });
+
+  test("when the network fee itself is above what the cap allows, nothing is signed", async () => {
+    const { services } = createTestServices({ chain: { deployed: new Set(), fees: { maxFeePerGas: 5_000_000_000n, maxPriorityFeePerGas: 1n } }, bundler: { estimate: big } });
+    await expect(buildUserOp(services, { account: ACCOUNT, owner: OWNER, calls: buyCalls, sponsor: true })).rejects.toMatchObject({ apiError: "SPONSOR_COST_CAP" });
+  });
+});

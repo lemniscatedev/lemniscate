@@ -31,9 +31,16 @@ const schema = z.object({
   AA_FALLBACK_PRE_VERIFICATION_GAS: wei.default(300_000n),
   AA_FALLBACK_PAYMASTER_VERIFICATION_GAS: wei.default(200_000n),
   AA_FALLBACK_PAYMASTER_POST_OP_GAS: wei.default(80_000n),
-  AA_FALLBACK_MAX_FEE_PER_GAS: wei.default(2_000_000_000n),
-  AA_FALLBACK_PRIORITY_FEE_PER_GAS: wei.default(1_000_000_000n),
+  /** Used only when the node gives no fee. 0.5 gwei keeps a deploy operation at the fallback gas limits (3.88M gas)
+   * under the paymaster's maxCostPerOp of 0.002 ETH (decision 45); Robinhood Chain fees are far below it. */
+  AA_FALLBACK_MAX_FEE_PER_GAS: wei.default(500_000_000n),
+  AA_FALLBACK_PRIORITY_FEE_PER_GAS: wei.default(10_000_000n),
+  /** Mirror of LemniscatePaymaster.maxCostPerOp (wei). A sponsored operation is priced under it or not signed. */
+  PAYMASTER_MAX_COST_PER_OP_WEI: wei.default(2_000_000_000_000_000n),
 });
+
+/** LemniscatePaymaster.maxCostPerOp at launch (decision 45): 0.002 ETH. */
+export const DEFAULT_MAX_COST_PER_OP_WEI = 2_000_000_000_000_000n;
 
 export interface AaConfig {
   readonly chainId: number;
@@ -41,7 +48,11 @@ export interface AaConfig {
   readonly entryPoint: `0x${string}`;
   readonly kernelFactory: `0x${string}`;
   readonly kernelValidator: `0x${string}`;
-  readonly paymaster: { readonly address: `0x${string}`; readonly signerKey: `0x${string}`; readonly validitySeconds: number } | null;
+  readonly paymaster: {
+    readonly address: `0x${string}`; readonly signerKey: `0x${string}`; readonly validitySeconds: number;
+    /** LemniscatePaymaster.maxCostPerOp mirror (default 0.002 ETH). */
+    readonly maxCostPerOpWei?: bigint;
+  } | null;
   readonly bundlerTimeoutMs: number;
   readonly fallback: {
     readonly callGas: bigint; readonly verificationGas: bigint; readonly deployVerificationGas: bigint;
@@ -86,6 +97,15 @@ export function loadAaConfig(source: Record<string, string | undefined> = proces
     if (error instanceof KeyConfigError) throw new AaConfigError(`Invalid account abstraction configuration: ${error.message}`);
     throw error;
   }
+  // Decision 45: a deploy operation at the fallback limits and fee must fit the paymaster's maxCostPerOp.
+  const deployGas = env.AA_FALLBACK_PRE_VERIFICATION_GAS + env.AA_FALLBACK_DEPLOY_VERIFICATION_GAS + env.AA_FALLBACK_CALL_GAS
+    + env.AA_FALLBACK_PAYMASTER_VERIFICATION_GAS + env.AA_FALLBACK_PAYMASTER_POST_OP_GAS;
+  if (deployGas * env.AA_FALLBACK_MAX_FEE_PER_GAS > env.PAYMASTER_MAX_COST_PER_OP_WEI) {
+    throw new AaConfigError("AA_FALLBACK_MAX_FEE_PER_GAS x the fallback deploy gas exceeds the paymaster's maxCostPerOp (PAYMASTER_MAX_COST_PER_OP_WEI)");
+  }
+  if (env.AA_FALLBACK_PRIORITY_FEE_PER_GAS > env.AA_FALLBACK_MAX_FEE_PER_GAS) {
+    throw new AaConfigError("AA_FALLBACK_PRIORITY_FEE_PER_GAS must not exceed AA_FALLBACK_MAX_FEE_PER_GAS");
+  }
   if ((env.PAYMASTER_ADDRESS === undefined) !== (signerKey === undefined)) {
     throw new AaConfigError("PAYMASTER_ADDRESS and the paymaster signer key (PAYMASTER_SIGNER_KEY or PAYMASTER_SIGNER_KEYSTORE) must be set together or both left empty");
   }
@@ -96,7 +116,7 @@ export function loadAaConfig(source: Record<string, string | undefined> = proces
     kernelFactory: env.AA_KERNEL_FACTORY,
     kernelValidator: env.AA_KERNEL_VALIDATOR,
     paymaster: env.PAYMASTER_ADDRESS && signerKey
-      ? { address: env.PAYMASTER_ADDRESS, signerKey, validitySeconds: env.PAYMASTER_VALIDITY_SECONDS }
+      ? { address: env.PAYMASTER_ADDRESS, signerKey, validitySeconds: env.PAYMASTER_VALIDITY_SECONDS, maxCostPerOpWei: env.PAYMASTER_MAX_COST_PER_OP_WEI }
       : null,
     bundlerTimeoutMs: env.AA_BUNDLER_TIMEOUT_MS,
     fallback: {

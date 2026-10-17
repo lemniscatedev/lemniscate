@@ -106,3 +106,29 @@ describe("quote parity with the engine (mocked chain side)", () => {
     expect(parityFailures(api, { ...api, buyable: !api.buyable })).toEqual([`buyable: api ${api.buyable} chain ${!api.buyable}`]);
   });
 });
+
+describe("quote parity with the worse-of trade TWAP (decision 30)", () => {
+  test("200 random cases with a trade TWAP agree with a chain priced at the worse-of S", async () => {
+    const random = prng(20261017);
+    const failures: string[] = [];
+    for (let i = 0; i < 200; i++) {
+      const spot = 20 + random() * 780;
+      const strike = Math.round(spot * (0.7 + random() * 0.6) * 100) / 100;
+      const series: SeriesInputs = { isCall: random() < 0.5, speed: random() < 0.5 ? "DAILY" : "WEEKLY", strike, buyable: true, archived: false };
+      const twap = spot * (0.97 + random() * 0.06);
+      const market: MarketInputs = {
+        spot, session: random() < 0.8 ? "REGULAR" : "EXTENDED", fresh: true, priceBuysPaused: false, engineBuysPaused: false,
+        sigmaBps: 2_000 + Math.floor(random() * 10_000), volStale: random() < 0.1, buyBlockFromMs: null, buyBlockToMs: null,
+        nowMs: 1_000_000, tradeTwap: twap,
+      };
+      const unitsWad = BigInt(Math.round((0.01 + random() * 999) * 1e6)) * 10n ** 12n;
+      const isBuy = random() < 0.5;
+      // EngineCore.tradeS, written out independently: the trader is worse off at a higher S when isBuy == isCall.
+      const worse = isBuy === series.isCall ? Math.max(spot, twap) : Math.min(spot, twap);
+      const api = quoteUnits(series, market, unitsWad, isBuy)!;
+      const chain = await mockChain(series, { ...market, spot: worse })({ id: `case-${i}`, unitsWad, isBuy });
+      for (const failure of parityFailures(toRaw(api), chain)) failures.push(`case ${i} ${isBuy ? "buy" : "sell"}: ${failure}`);
+    }
+    expect(failures).toEqual([]);
+  });
+});

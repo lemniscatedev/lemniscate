@@ -24,7 +24,8 @@ import type { ApiDependencies } from "./types";
 export type SponsorshipKind = "buy" | "sell" | "shield";
 export type DenialReason =
   | "INVITE_REQUIRED" | "BELOW_MINIMUM" | "NO_POSITION" | "INSUFFICIENT_BALANCE" | "OWNER_UNVERIFIED"
-  | "QUOTA_ACCOUNT" | "QUOTA_OWNER" | "QUOTA_NETWORK" | "QUOTA_GLOBAL" | "UNAVAILABLE";
+  | "QUOTA_ACCOUNT" | "QUOTA_OWNER" | "QUOTA_NETWORK" | "QUOTA_GLOBAL" | "UNAVAILABLE"
+  | "ACCOUNT_UNREGISTERED" | "ACCOUNT_UNSUPPORTED";
 
 export interface SponsorshipInput {
   readonly kind: SponsorshipKind;
@@ -58,6 +59,8 @@ const MESSAGES: Record<DenialReason, string> = {
   QUOTA_NETWORK: "This network used its sponsored operations for today. The operation is returned unsponsored.",
   QUOTA_GLOBAL: "Today's sponsored operations are used up. The operation is returned unsponsored.",
   UNAVAILABLE: "Sponsorship could not be checked right now, so gas is not sponsored.",
+  ACCOUNT_UNREGISTERED: "Gas is sponsored only for smart accounts the paymaster knows (created with sponsored gas or registered). The operation is returned unsponsored.",
+  ACCOUNT_UNSUPPORTED: "This smart account runs an implementation the paymaster does not sponsor. The operation is returned unsponsored.",
 };
 
 const deny = (reason: DenialReason): SponsorshipDecision => ({ granted: false, reason, message: MESSAGES[reason] });
@@ -89,6 +92,11 @@ export interface SponsorshipGateOptions {
   readonly kernelValidator: Address;
   readonly usdg: Address;
   readonly limits?: SponsorshipLimits;
+  /** F26 (decision 44): with the paymaster set, a deployed account must be one it knows (kernelAccount) and run
+   * `kernelImplementation` in its ERC-1967 slot before anything is signed. A new account is deployed by the builder
+   * through the Kernel factory in the same operation, which is what the paymaster accepts. */
+  readonly paymaster?: Address | undefined;
+  readonly kernelImplementation?: Address | undefined;
 }
 
 export function createSponsorshipGate(options: SponsorshipGateOptions): SponsorshipGate {
@@ -110,6 +118,12 @@ export function createSponsorshipGate(options: SponsorshipGateOptions): Sponsors
           const stored = await chain.kernelOwner(options.kernelValidator, input.account);
           if (!stored) return deny("OWNER_UNVERIFIED");
           owner = stored.toLowerCase();
+          if (options.paymaster) {
+            const implementation = await chain.implementationOf(input.account);
+            const expected = options.kernelImplementation?.toLowerCase();
+            if (!implementation || (expected && implementation.toLowerCase() !== expected)) return deny("ACCOUNT_UNSUPPORTED");
+            if (!await chain.paymasterKnowsAccount(options.paymaster, input.account)) return deny("ACCOUNT_UNREGISTERED");
+          }
         }
         if (group === "entry" && await invitesRequired(deps)) {
           const approved = (owner && await isApproved(deps, owner)) || await isApproved(deps, account);

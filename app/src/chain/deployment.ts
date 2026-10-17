@@ -148,6 +148,10 @@ const optionDeploymentSchema = z.object({
     /** Holds the loss-absorbing reserve in USDG; its balance is reported as pool_nav.reserve. */
     reserve: addressSchema.optional(),
     feeRouter: addressSchema.optional(),
+    /** LmnsStaking (decision 42): the keeper calls syncLoss hourly when set. */
+    staking: addressSchema.optional(),
+    /** LmnsBuyBurn (decision 43): the keeper's buy-burn job calls the keeper-only buyAndBurn when set and enabled. */
+    buyBurn: addressSchema.optional(),
   }),
   /** Decimals of the pool share token (ERC-4626 shares). The reference vault used 12 (6 asset + 6 offset). */
   poolShareDecimals: z.number().int().min(0).max(36).default(12),

@@ -1,5 +1,5 @@
 import type { Address, Hex } from "viem";
-import { SeriesRegistryAbi } from "../abi";
+import { OptionEngineAbi, SeriesRegistryAbi } from "../abi";
 import type { KeeperContext } from "./context";
 
 /** One registry entry as the chain reports it (ISeriesRegistry.seriesOf), with the id attached. */
@@ -74,4 +74,28 @@ export function createSeriesReader(context: Pick<KeeperContext, "clients" | "dep
       }));
     },
   };
+}
+
+/** The engine's live list (series with tokens outstanding that are not retired as dust) and each one's last-touch
+ * outstanding value, plus the dust line (engine guards.minTradeUsdg as WAD): what accrueMany and retireDust judge by. */
+export interface LiveRisk {
+  live: { id: Hex; stock: Address; value: bigint }[];
+  dustWad: bigint;
+}
+
+export async function readLiveRisk(context: Pick<KeeperContext, "clients" | "deployment">): Promise<LiveRisk> {
+  const engine = context.deployment.contracts.engine as Address;
+  const stocks = context.deployment.stocks.map((entry) => entry.stock.toLowerCase() as Address);
+  const [guards, ...lists] = await chunkedMulticall(context, [
+    { address: engine, abi: OptionEngineAbi, functionName: "guards" },
+    ...stocks.map((stock) => ({ address: engine, abi: OptionEngineAbi, functionName: "liveSeries", args: [stock] })),
+  ]) as [readonly [bigint, number, number], ...(readonly Hex[])[]];
+  const live = stocks.flatMap((stock, index) => (lists[index] ?? []).map((id) => ({ id, stock, value: 0n })));
+  if (live.length) {
+    const risks = await chunkedMulticall(context, live.map(({ id }) => ({
+      address: engine, abi: OptionEngineAbi, functionName: "seriesRisk", args: [id],
+    }))) as (readonly bigint[])[];
+    live.forEach((entry, index) => { entry.value = BigInt(risks[index]![0]!); });
+  }
+  return { live, dustWad: BigInt(guards[0]) * 10n ** 12n };
 }

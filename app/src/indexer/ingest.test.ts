@@ -250,6 +250,33 @@ suite("poolNavSnapshots", () => {
     expect(ticks[0]).toEqual({ name: "NVDA", spot: "120.000000000000000000", session: "REGULAR", fresh: true, sigma_daily_bps: 5000, sigma_weekly_bps: 4800, vol_stale: false });
   }));
 
+  test("decision 30: a buy or a received transfer makes the snapshot read and store the account's hold; the trade TWAP is kept", () => withDb("snap_hold", async (db) => {
+    const chain = new FakeChain();
+    chain.mine([ev.seriesListed(SERIES_CALL, ADDR.nvda, true, 1, strike, ADDR.tokenCall)]);
+    const reader = new FakeReader();
+    reader.stocks[ADDR.nvda] = { tradeTwapWad: 121n * WAD, haltedSince: 0n };
+    const { state } = await makeIndexer(db.sql, chain, { reader });
+    await syncToHead(state);
+    const far = BigInt(Math.floor(Date.now() / 1000)) + 10n ** 9n; // open for the whole test, whatever the block clock
+    reader.holds[`${SERIES_CALL}:${ADDR.alice}`] = { until: far, sWad: 120n * WAD };
+    reader.holds[`${SERIES_CALL}:${ADDR.bob}`] = { until: far, sWad: 119n * WAD };
+    chain.mine([
+      ev.transfer(ADDR.tokenCall, ZERO, ADDR.alice, WAD),
+      ev.bought(SERIES_CALL, ADDR.alice, ADDR.alice, WAD, WAD, 1_000_000n, WAD),
+    ]);
+    chain.mine([ev.transfer(ADDR.tokenCall, ADDR.alice, ADDR.bob, WAD / 2n)]);
+    await syncToHead(state);
+    const holds = await db.sql`SELECT series_id, account, s::text AS s FROM holds ORDER BY account`;
+    expect(holds.map((row) => [row.account, row.s])).toEqual([[ADDR.bob, "119.000000000000000000"], [ADDR.alice, "120.000000000000000000"]]);
+    const tick = await db.sql`SELECT trade_twap::text AS twap, settle_price, halted_since FROM ticks WHERE name = 'NVDA' ORDER BY ts DESC LIMIT 1`;
+    expect(tick[0]).toEqual({ twap: "121.000000000000000000", settle_price: null, halted_since: null });
+    // an expired hold clears the stored row at the next snapshot
+    reader.holds[`${SERIES_CALL}:${ADDR.bob}`] = { until: 1n, sWad: 119n * WAD };
+    chain.mine([ev.bought(SERIES_CALL, ADDR.carol, ADDR.carol, WAD, WAD, 1_000_000n, WAD)]);
+    await syncToHead(state);
+    expect((await db.sql`SELECT account FROM holds ORDER BY account`).map((row) => row.account)).toEqual([ADDR.alice]);
+  }));
+
   test("with no trades the indexer still snapshots at least every 10 minutes", () => withDb("snap_heartbeat", async (db) => {
     const chain = new FakeChain();
     let clock = 1_000_000;

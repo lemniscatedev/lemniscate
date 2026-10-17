@@ -32,7 +32,7 @@ const envSchema = z.object({
   INDEXER_POLL_IDLE_MS: z.coerce.number().int().positive().default(60000),
   DEPLOYMENT_FILE: z.string().min(1).default("/app/deployments/fork.json"),
   // hedge (todo 14) is opt-in until the hedger lands. receipts and lister are new in todo 13.
-  KEEPER_ENABLED_JOBS: z.string().default("sessions,lister,accrue,risk,corp-actions,receipts,reference,earnings,queued-sells,fee-distribute"),
+  KEEPER_ENABLED_JOBS: z.string().default("sessions,lister,accrue,risk,corp-actions,receipts,reference,earnings,queued-sells,fee-distribute,settle-halted,staking-sync"),
   KEEPER_DRY_RUN: z.enum(["0", "1"]).default("0").transform((value) => value === "1"),
   // Accrue a series once its last accrual is this old and somebody holds it. Spec: at least hourly, so 3600 is the cap.
   KEEPER_ACCRUE_MAX_AGE_SECONDS: z.coerce.number().int().min(300).max(3600).default(3600),
@@ -47,8 +47,10 @@ const envSchema = z.object({
   // Norm (WAD) under which the lister opens the next epoch of a strike. Must match the registry's threshold (default 1e15 = 0.001);
   // set it when the contracts move the norm floor (F06) so the keeper relists before funding stops.
   KEEPER_RELIST_NORM_WAD: z.string().regex(/^\d+$/).default("1000000000000000"),
-  // Series per engine.accrueMany transaction (a failing batch is split in half and retried).
-  KEEPER_ACCRUE_BATCH: z.coerce.number().int().min(1).max(200).default(40),
+  // Series per engine.accrueMany transaction (a failing batch is split in half and retried). At most 45 (about half a block, decision 32).
+  KEEPER_ACCRUE_BATCH: z.coerce.number().int().min(1).max(45).default(40),
+  // USDG (whole) the buy-burn job offers LmnsBuyBurn.buyAndBurn per call (the contract also caps it, decision 43).
+  KEEPER_BUY_BURN_MAX_USDG: z.coerce.number().min(1).max(1_000_000).default(1_000),
   // The lister sends at most this many listing/archive transactions per run; the rest follows on the next run.
   KEEPER_LISTER_MAX_TX: z.coerce.number().int().min(1).max(500).default(60),
   // Minimum time between two automatic pauses for the same reason (the monitor never unpauses).

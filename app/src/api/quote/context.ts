@@ -38,6 +38,8 @@ export interface NameContext {
   /** Pool NAV, the name's vega and outstanding values, from the indexer's latest snapshot (up to ~10 minutes old:
    * the inventory term and the cap checks use it as is). Null before the first pool snapshot. */
   readonly book: NameBook | null;
+  /** engine.guards().haltSettleDelay in seconds, from the latest pool snapshot (null: unknown, the engine default applies). */
+  readonly haltSettleDelaySeconds?: number | null;
 }
 
 export interface NameBook {
@@ -65,6 +67,7 @@ export async function loadNameContext(deps: ApiDependencies, name: string, now: 
     vol: { DAILY: ofName.find((p) => p.speed === "DAILY"), WEEKLY: ofName.find((p) => p.speed === "WEEKLY") },
     pauses,
     book: null,
+    haltSettleDelaySeconds: nav?.haltSettleDelaySeconds ?? null,
   };
   if (!nav) return base;
   const supplyOf = new Map(supplies.map((row) => [row.seriesId, Number(row.supply)]));
@@ -85,6 +88,22 @@ export async function loadNameContext(deps: ApiDependencies, name: string, now: 
       nameValueUsd,
       seriesValueUsd,
     },
+  };
+}
+
+/** EngineCore.DEFAULT_SETTLE_DELAY: seven days of HALTED before ORC-4 settlement (decision 31). */
+export const DEFAULT_SETTLE_DELAY_SECONDS = 7 * 86_400;
+
+/** The name's halt notice (decision 31), or null when no halt is latched. */
+export function haltNotice(ctx: NameContext): { since: string; settleableAt: string; settledPrice: string | null } | null {
+  const since = ctx.tick.haltedSince;
+  if (!since) return null;
+  const delay = ctx.haltSettleDelaySeconds || DEFAULT_SETTLE_DELAY_SECONDS;
+  const settled = ctx.tick.settlePrice && Number(ctx.tick.settlePrice) > 0 ? ctx.tick.settlePrice : null;
+  return {
+    since,
+    settleableAt: new Date(Date.parse(since) + delay * 1_000).toISOString(),
+    settledPrice: settled ? (settled.includes(".") ? settled.replace(/0+$/, "").replace(/\.$/, "") : settled) : null,
   };
 }
 
@@ -112,6 +131,8 @@ export function marketInputs(ctx: NameContext, series: Pick<SeriesView, "id" | "
     buyBlockFromMs: block?.from ?? null,
     buyBlockToMs: block?.to ?? null,
     nowMs: ctx.nowMs,
+    tradeTwap: ctx.tick.tradeTwap ? Number(ctx.tick.tradeTwap) : null,
+    settlePrice: ctx.tick.settlePrice ? Number(ctx.tick.settlePrice) : null,
     ...(ctx.book
       ? {
         book: {

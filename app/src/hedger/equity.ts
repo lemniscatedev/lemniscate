@@ -1,6 +1,7 @@
 import type { Sql } from "postgres";
 import { keccak256, stringToHex, type Address, type Hex } from "viem";
 import { type IHedgeVenue } from "./types";
+import { haltFor, hedgeRevertOf, type HedgerState } from "./service";
 
 export interface EquityDeps {
   venues: readonly IHedgeVenue[];
@@ -12,11 +13,13 @@ export interface EquityDeps {
   dryRun: boolean;
   /** Sends pool.postHedgeEquity(equityUsdg, asOf, ref). */
   post: (equityUsdg: bigint, asOf: bigint, ref: Hex) => Promise<{ hash?: string | undefined }>;
+  /** Hedger state: a post refused with PerpEquityCap or HedgerFrozen stops posts for an hour (decision 39). */
+  state?: Pick<HedgerState, "equityHalted">;
 }
 
 export type EquityOutcome =
   | { posted: true; equityUsdg: bigint; ref: Hex; hash?: string | undefined }
-  | { posted: false; reason: "interval" | "dry_run" | "venue_unhealthy" | "no_perp_venue"; equityUsdg?: bigint; ref?: Hex; unhealthy?: string[] };
+  | { posted: false; reason: "interval" | "dry_run" | "venue_unhealthy" | "no_perp_venue" | "halted"; equityUsdg?: bigint; ref?: Hex; unhealthy?: string[]; until?: string };
 
 /** The venue snapshot that is hashed into `ref`. Order and shape are fixed so the hash is reproducible. */
 export async function venueSnapshot(venues: readonly IHedgeVenue[], stocks: readonly Address[], asOf: number) {
@@ -40,6 +43,8 @@ export async function postHedgeEquityOnce(input: EquityDeps): Promise<EquityOutc
   // perp venue there is nothing to post, and posting a zero would arm pool.hedgeStale() for no reason.
   const deps = { ...input, venues: input.venues.filter((v) => v.postsEquity !== false) };
   if (!deps.venues.length) return { posted: false, reason: "no_perp_venue" };
+  const halt = input.state?.equityHalted;
+  if (halt && halt.untilMs > deps.nowSeconds * 1000) return { posted: false, reason: "halted", until: new Date(halt.untilMs).toISOString() };
   if (deps.nowSeconds - deps.lastPostedAsOf < deps.intervalSeconds) return { posted: false, reason: "interval" };
   const health = await Promise.all(deps.venues.map(async (v) => ({ name: v.name, ok: await v.healthy().catch(() => false) })));
   const unhealthy = health.filter((h) => !h.ok).map((h) => h.name);
@@ -50,8 +55,17 @@ export async function postHedgeEquityOnce(input: EquityDeps): Promise<EquityOutc
   const equityUsdg = snapshot.venues.reduce((sum, v) => sum + BigInt(v.equityUsdg), 0n);
   const ref = snapshotRef(snapshot);
   if (deps.dryRun) return { posted: false, reason: "dry_run", equityUsdg, ref };
-  const { hash } = await deps.post(equityUsdg, BigInt(deps.nowSeconds), ref);
-  return { posted: true, equityUsdg, ref, hash };
+  try {
+    const { hash } = await deps.post(equityUsdg, BigInt(deps.nowSeconds), ref);
+    if (input.state) delete input.state.equityHalted;
+    return { posted: true, equityUsdg, ref, hash };
+  } catch (error) {
+    const revert = hedgeRevertOf(error);
+    if (!revert || !input.state) throw error;
+    // Decision 39: a refused post is not retried for an hour (the cap or the freeze will not change by itself sooner).
+    input.state.equityHalted = haltFor(revert === "HedgeLossBudget" ? "PerpEquityCap" : revert, deps.nowSeconds * 1000);
+    return { posted: false, reason: "halted", equityUsdg, ref, until: new Date(input.state.equityHalted.untilMs).toISOString() };
+  }
 }
 
 /** Unix seconds of the newest indexed hedge-equity post (0 when none). Epoch is computed in SQL: the services' client is

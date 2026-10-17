@@ -70,6 +70,38 @@ export interface MarketInputs {
   readonly nowMs: number;
   /** Pool and book state from the indexer. Absent: the inventory term is off and caps are not checked. */
   readonly book?: BookInputs;
+  /** PriceGuard.tradeTwap (USDG per token): the short-window pool TWAP every trade is also priced at, worse for the
+   * trader (decision 30). Absent, null or 0: unavailable, the feed S alone prices the trade (as the engine does). */
+  readonly tradeTwap?: number | null;
+  /** The account's open hold on this series (engine.holdOf): a sell before `untilMs` is priced at the worse of the trade
+   * S and the buy-time `s` (decision 30). Only sells of that account carry it. */
+  readonly hold?: { readonly s: number; readonly untilMs: number } | null;
+  /** engine.settlePrice: an ORC-4 settled stock (decision 31) reads CLOSED at this price while its feed is HALTED. */
+  readonly settlePrice?: number | null;
+}
+
+/** EngineCore.settled: a HALTED stock with an ORC-4 settlement price reads CLOSED at that price (fresh, buys paused),
+ * so sells and queued fills go through instead of waiting for a feed that is gone. */
+export function effectiveMarket(market: MarketInputs): MarketInputs {
+  if (market.session !== "HALTED" || !(Number(market.settlePrice) > 0)) return market;
+  return { ...market, session: "CLOSED", spot: Number(market.settlePrice), fresh: true, priceBuysPaused: true };
+}
+
+/** EngineCore.tradeS: the S a trade is priced at. The worse for the trader of the feed S and the trade TWAP, and for a
+ * sell inside the account's hold also the buy-time S. The trader is worse off at a higher S when isBuy == isCall. */
+export function tradeSpot(series: Pick<SeriesInputs, "isCall">, market: MarketInputs, isBuy: boolean): { s: number; holdApplied: boolean } {
+  const up = isBuy === series.isCall;
+  const worse = (a: number, b: number) => (up ? Math.max(a, b) : Math.min(a, b));
+  let s = market.spot;
+  const twap = Number(market.tradeTwap ?? 0);
+  if (twap > 0) s = worse(s, twap);
+  let holdApplied = false;
+  if (!isBuy && market.hold && market.hold.untilMs > market.nowMs && market.hold.s > 0) {
+    const held = worse(s, market.hold.s);
+    holdApplied = held !== s;
+    s = held;
+  }
+  return { s, holdApplied };
 }
 
 /** Indexed pool and book state (pool_nav, limits_state, the transfer ledger), all USDG. */
@@ -115,7 +147,8 @@ export function capReached(market: MarketInputs, addedValueUsd: number): boolean
 
 /** Why a buy of `addedValueUsd` of option value would be refused right now, or null when it is allowed. First match
  * wins; the order is the engine's (EngineCore.buyBlock), then the caps (EngineHelper.checkCaps). */
-export function buyBlockReason(series: SeriesInputs, market: MarketInputs, addedValueUsd = 0): BuyBlock | null {
+export function buyBlockReason(series: SeriesInputs, raw: MarketInputs, addedValueUsd = 0): BuyBlock | null {
+  const market = effectiveMarket(raw);
   if (!(market.spot > 0)) return "NO_PRICE";
   if (series.archived) return "SERIES_ARCHIVED";
   if (!series.buyable) return "SERIES_NOT_BUYABLE";
@@ -196,14 +229,17 @@ export interface UnitQuote {
 }
 
 /** Per-unit numbers for one series. `forSell` applies the stale-vol sigma cut (x 0.8); `units` sizes the trade for the
- * inventory term (the engine uses the post-trade name vega). */
-export function unitQuote(series: SeriesInputs, market: MarketInputs, forSell: boolean, units = 0): UnitQuote | null {
+ * inventory term (the engine uses the post-trade name vega). `sTrade` (EngineCore.priceTrade) prices the trade at that S
+ * (sigma skew, value, payoff and spread at sTrade) while the valuation mark, Greeks and inventory stay at the feed S. */
+export function unitQuote(series: SeriesInputs, raw: MarketInputs, forSell: boolean, units = 0, sTrade?: number): UnitQuote | null {
+  const market = effectiveMarket(raw);
   if (market.sigmaBps === null || !(market.spot > 0) || !(series.strike > 0)) return null;
+  const sT = sTrade !== undefined && sTrade > 0 ? sTrade : market.spot;
   const tau = TAU_SECONDS[series.speed];
   const tauYears = tau / YEAR_S;
-  const valueAt = (sigmaBps: number): number => {
+  const valueAt = (sigmaBps: number, s: number): number => {
     const sigma = sigmaBps / 10_000;
-    return series.isCall ? callValue(market.spot, series.strike, sigma, tauYears) : putValue(market.spot, series.strike, sigma, tauYears);
+    return series.isCall ? callValue(s, series.strike, sigma, tauYears) : putValue(s, series.strike, sigma, tauYears);
   };
   const sigmaBase = skewedSigmaBps(market.sigmaBps, market.skewK, series.strike, market.spot);
   const greeks = series.isCall
@@ -211,13 +247,16 @@ export function unitQuote(series: SeriesInputs, market: MarketInputs, forSell: b
     : putGreeks(market.spot, series.strike, sigmaBase / 10_000, tauYears);
   const v = greeks.v;
   const bumped = forSell && market.volStale;
-  const sigmaBps = bumped ? skewedSigmaBps(market.sigmaBps, market.skewK, series.strike, market.spot, QUOTE_PARAMS.staleVolSellCutBps) : sigmaBase;
-  const vPrice = bumped ? valueAt(sigmaBps) : v;
-  const payoff = Math.max(series.isCall ? market.spot - series.strike : series.strike - market.spot, 0);
+  const repriced = bumped || sT !== market.spot;
+  const sigmaBps = repriced
+    ? skewedSigmaBps(market.sigmaBps, market.skewK, series.strike, sT, bumped ? QUOTE_PARAMS.staleVolSellCutBps : 0)
+    : sigmaBase;
+  const vPrice = repriced ? valueAt(sigmaBps, sT) : v;
+  const payoff = Math.max(series.isCall ? sT - series.strike : series.strike - sT, 0);
   const inventoryApplied = market.book !== undefined;
   const inventory = market.book ? inventoryN(market.book, (forSell ? -1 : 1) * units * greeks.vega) : 0;
   const vMark = vPrice * (1 + (QUOTE_PARAMS.inventoryBps / 10_000) * inventory);
-  const spreadBps = spreadBpsFor(series.strike, market.spot, market.session);
+  const spreadBps = spreadBpsFor(series.strike, sT, market.session);
   const spreadPerUnit = Math.max(QUOTE_PARAMS.minSpreadUsd, (vMark * spreadBps) / 10_000);
   // The funding rate of spec 1.4, f = (V - payoff) / tau per unit of time, over one calendar day. It is the first-order
   // limit of fundingStep (units shrink by rate x dt / tau), so "costs about $X a day" matches the overview example
@@ -255,16 +294,22 @@ export interface EngineQuote {
   readonly buyBlock: BuyBlock | null;
   /** True when a sell would be queued for a fresh price (HALTED session). */
   readonly sellQueued: boolean;
+  /** The S the trade is priced at (EngineCore.tradeS): the feed S, the trade TWAP or the hold's buy-time S. */
+  readonly tradeSpot: number;
+  /** True when the account's hold (a sell within the hold after its buy) set a worse S than the trade TWAP rule. */
+  readonly holdApplied: boolean;
 }
 
 const wadOf = (value: number): bigint => (Number.isFinite(value) && value > 0 ? BigInt(Math.round(value * 1e12)) * 10n ** 6n : 0n);
 
 /** The quote for `unitsWad` option units (WAD), shaped like IOptionEngine.Quote. Null when no vol was ever posted. */
-export function quoteUnits(series: SeriesInputs, market: MarketInputs, unitsWad: bigint, isBuy: boolean): EngineQuote | null {
+export function quoteUnits(series: SeriesInputs, raw: MarketInputs, unitsWad: bigint, isBuy: boolean): EngineQuote | null {
+  const market = effectiveMarket(raw);
   const units = Number(unitsWad) / 1e18;
-  const unit = unitQuote(series, market, !isBuy, units);
+  const trade = tradeSpot(series, market, isBuy);
+  const unit = unitQuote(series, market, !isBuy, units, trade.s);
   if (!unit) return null;
-  const feeUsd = (QUOTE_PARAMS.feeBps / 10_000) * market.spot * units;
+  const feeUsd = (QUOTE_PARAMS.feeBps / 10_000) * trade.s * units;
   const feeUsdg = toMicroUp(feeUsd);
   const allInAsk = unit.askPerUnit + feeUsd / (units || 1);
   const usdg = isBuy
@@ -287,6 +332,8 @@ export function quoteUnits(series: SeriesInputs, market: MarketInputs, unitsWad:
     buyable: buyBlock === null,
     buyBlock,
     sellQueued: !isBuy && market.session === "HALTED",
+    tradeSpot: trade.s,
+    holdApplied: trade.holdApplied,
   };
 }
 

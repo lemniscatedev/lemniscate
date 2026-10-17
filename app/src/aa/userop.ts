@@ -4,6 +4,7 @@ import type { AaConfig } from "./config";
 import type { Bundler, GasEstimate } from "./bundler";
 import { toRpcUserOp } from "./bundler";
 import { RpcBudgetError, type AaChain } from "./chain";
+import { DEFAULT_MAX_COST_PER_OP_WEI } from "./config";
 import { DUMMY_ACCOUNT_SIGNATURE, encodeKernelExecute, kernelFactoryData, kernelInitData, kernelNonceKey, approveCall, type Call } from "./kernel";
 import { callsAreSponsorable, type Op, type Sponsor, type SponsorPolicy } from "./paymaster";
 
@@ -156,6 +157,24 @@ export async function buildUserOp(services: AaServices, input: BuildInput): Prom
     // unsponsored (the user pays gas) or use the plain transaction.
     if (useSponsor) throw new AaError(409, "SPONSOR_SIMULATION_FAILED", "This operation could not be simulated, so it will not be sponsored. Retry without sponsorship or use the plain transaction.");
     // Unsponsored: keep the conservative fallbacks. The bundler re-checks everything when the signed operation is sent.
+  }
+
+  // Decision 45: the paymaster reverts MaxCostPerOpExceeded above maxCostPerOp, so a sponsored operation is priced under
+  // it: the fee is lowered to what the cap allows (and the operation re-signed), unless that is below the network's own
+  // fee, in which case nothing is signed.
+  if (useSponsor) {
+    const cap = config.paymaster?.maxCostPerOpWei ?? DEFAULT_MAX_COST_PER_OP_WEI;
+    if (maxCostOf(op) > cap) {
+      const gas = maxCostOf({ ...op, maxFeePerGas: 1n });
+      const allowed = cap / gas;
+      if (allowed === 0n || (fees && allowed < fees.maxFeePerGas)) {
+        throw new AaError(409, "SPONSOR_COST_CAP", "Network fees are above what a sponsored operation may cost right now. Retry without sponsorship or use the plain transaction.");
+      }
+      op = await withSponsor(
+        { ...op, maxFeePerGas: allowed, maxPriorityFeePerGas: op.maxPriorityFeePerGas > allowed ? allowed : op.maxPriorityFeePerGas },
+        useSponsor, op.paymasterVerificationGasLimit ?? 0n, op.paymasterPostOpGasLimit ?? 0n, now,
+      );
+    }
   }
 
   const maxCostWei = maxCostOf(op);

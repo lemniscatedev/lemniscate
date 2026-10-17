@@ -20,6 +20,8 @@ const BLOCK_TABLES = [
   "series_flag_log",
   "pool_events",
   "indexer_skipped_events",
+  "holds",
+  "engine_events",
 ] as const;
 
 export interface RollbackSummary {

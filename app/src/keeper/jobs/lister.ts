@@ -24,7 +24,9 @@ interface PriceRead {
 export interface ListerPlan {
   list: { stock: Address; name: string; isCall: boolean; speed: number; strike: bigint; tauSeconds: number; id: Hex }[];
   setBuyable: { id: Hex; name: string }[];
-  archive: { id: Hex; name: string; moneynessBps: bigint }[];
+  /** reason "moneyness": further than ARCHIVE_MONEYNESS_BPS from spot; "norm": a buyable series below the relist norm
+   * that no grid relisting replaces (decision 34: every buyable series, not only grid strikes). */
+  archive: { id: Hex; name: string; moneynessBps: bigint; reason?: "moneyness" | "norm" }[];
   skipped: { name: string; reason: string }[];
 }
 
@@ -50,6 +52,8 @@ export function planListings(input: {
     current.set(k, series);
     epochs.set(k, (epochs.get(k) ?? 0) + 1);
   }
+  const relistNorm = input.relistNorm ?? RELIST_NORM;
+  const replaced = new Set<Hex>();
   for (const { name, stock } of input.stocks) {
     const price = input.prices.get(stock);
     if (!price || price.s === 0n) { plan.skipped.push({ name, reason: "no price reading" }); continue; }
@@ -66,7 +70,8 @@ export function planListings(input: {
           const k = key(stock, isCall, strike, tauSeconds);
           const found = current.get(k);
           // Nothing live at this strike, or the live epoch is archived or has decayed below the relist norm: list the next epoch.
-          if (!found || found.archived || found.norm < (input.relistNorm ?? RELIST_NORM)) {
+          if (!found || found.archived || found.norm < relistNorm) {
+            if (found && !found.archived) replaced.add(found.id);
             plan.list.push({ stock, name, isCall, speed, strike, tauSeconds, id: seriesId(stock, isCall, strike, tauSeconds, epochs.get(k) ?? 0) });
           } else if (!found.buyable && input.nowSeconds - found.listedAt < RECENT_LISTING_SECONDS) {
             plan.setBuyable.push({ id: found.id, name });
@@ -77,8 +82,17 @@ export function planListings(input: {
     for (const series of input.existing) {
       if (series.stock !== stock || series.archived) continue;
       const away = moneynessBps(series.strike, price.s);
-      if (away > BigInt(ARCHIVE_MONEYNESS_BPS)) plan.archive.push({ id: series.id, name, moneynessBps: away });
+      if (away > BigInt(ARCHIVE_MONEYNESS_BPS)) plan.archive.push({ id: series.id, name, moneynessBps: away, reason: "moneyness" });
     }
+  }
+  // Review F06 (decision 34): every buyable series under the relist norm is relisted (grid strikes, above) or archived
+  // (everything else), whatever the session: archiving needs no price and only stops buys the engine already
+  // refuses below BUY_MIN_NORM.
+  const archiving = new Set(plan.archive.map((entry) => entry.id));
+  const names = new Map(input.stocks.map(({ name, stock }) => [stock.toLowerCase(), name]));
+  for (const series of input.existing) {
+    if (series.archived || !series.buyable || series.norm >= relistNorm || replaced.has(series.id) || archiving.has(series.id)) continue;
+    plan.archive.push({ id: series.id, name: names.get(series.stock.toLowerCase()) ?? series.stock, moneynessBps: 0n, reason: "norm" });
   }
   return plan;
 }

@@ -2,7 +2,8 @@ import type { QueryDeps } from "./series";
 
 export type ActivityKind =
   | "buy" | "sell" | "shield" | "sell_queued" | "sell_filled" | "sell_cancelled"
-  | "pool_deposit" | "pool_withdraw" | "withdraw_requested" | "withdraw_claimed" | "agent_buy" | "agent_sell";
+  | "pool_deposit" | "pool_withdraw" | "withdraw_requested" | "withdraw_claimed" | "agent_buy" | "agent_sell"
+  | "hold_carried" | "series_retired" | "halt_latched" | "stock_settled";
 
 export interface ActivityRow {
   kind: ActivityKind;
@@ -61,7 +62,7 @@ export async function accountActivity(
   const limit = Math.min(Math.max(options.limit, 1), 200);
   const cursor = options.cursor ?? null;
   const rows = (await deps.sql`
-    WITH feed AS (
+    WITH feed0 AS (
       SELECT t.side AS kind, t.ts, t.block::text AS block, t.tx_hash, t.log_index, t.series_id, t.usdg, t.units AS amount,
              NULL::text AS ticket, NULL::text AS agent, NULL::text AS filler, NULL::text AS status
       FROM trades t
@@ -97,10 +98,30 @@ export async function accountActivity(
       UNION ALL
       SELECT CASE WHEN g.is_buy THEN 'agent_buy' ELSE 'agent_sell' END, g.ts, g.block::text, g.tx_hash, g.log_index, g.series_id, g.usdg, NULL, NULL, g.agent, NULL, NULL
       FROM agent_trades g WHERE g.owner = ${who}
+    ),
+    -- Decisions 30-32: a hold handed over by a transfer (amount = the buy-time S when known), and the market-wide
+    -- engine events of series or names the account holds (series_retired; stock_settled with amount = settlement S;
+    -- halt_latched).
+    held AS (
+      SELECT DISTINCT s2.id AS series_id, s2.stock_token FROM balances b JOIN series s2 ON s2.token = b.token
+      WHERE b.account = ${who} AND b.balance > 0
+    ),
+    feed AS (
+      SELECT feed0.*, NULL::text AS stock_token FROM feed0
+      UNION ALL
+      SELECT e.kind, e.ts, e.block::text, e.tx_hash, e.log_index, e.series_id, NULL::numeric, e.price, NULL, NULL, NULL, NULL, NULL
+      FROM engine_events e WHERE e.kind = 'hold_carried' AND e.account = ${who}
+      UNION ALL
+      SELECT e.kind, e.ts, e.block::text, e.tx_hash, e.log_index, e.series_id, NULL::numeric, NULL::numeric, NULL, NULL, NULL, NULL, NULL
+      FROM engine_events e WHERE e.kind = 'series_retired' AND e.series_id IN (SELECT series_id FROM held)
+      UNION ALL
+      SELECT e.kind, e.ts, e.block::text, e.tx_hash, e.log_index, NULL, NULL::numeric, e.price, NULL, NULL, NULL, NULL, e.stock_token
+      FROM engine_events e WHERE e.kind IN ('stock_settled', 'halt_latched') AND e.stock_token IN (SELECT stock_token FROM held)
     )
-    SELECT f.kind, f.ts, f.block, f.tx_hash, f.log_index, f.series_id, s.name, s.is_call, s.speed, s.strike::text AS strike,
+    SELECT f.kind, f.ts, f.block, f.tx_hash, f.log_index, f.series_id, COALESCE(s.name, n.name) AS name, s.is_call, s.speed, s.strike::text AS strike,
            f.usdg::text AS usdg, f.amount::text AS amount, f.ticket, f.agent, f.filler, f.status
     FROM feed f LEFT JOIN series s ON s.id = f.series_id
+    LEFT JOIN LATERAL (SELECT n2.name FROM series n2 WHERE n2.stock_token = f.stock_token AND n2.name IS NOT NULL LIMIT 1) n ON f.stock_token IS NOT NULL
     WHERE ${cursor === null ? deps.sql`TRUE` : deps.sql`(f.ts, f.tx_hash, f.log_index, f.kind) < (${cursor.ts}::timestamptz, ${cursor.txHash}, ${cursor.logIndex}::int, ${cursor.kind})`}
     ORDER BY f.ts DESC, f.tx_hash DESC, f.log_index DESC, f.kind DESC
     LIMIT ${limit + 1}
