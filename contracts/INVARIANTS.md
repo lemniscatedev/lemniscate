@@ -103,8 +103,12 @@ over the real `WriterPool` (ERC1967 proxy), `Reserve`, `FeeRouter` and `UniswapV
 
 - The stress book stores, per series, the value change in each scenario (S x 0.75, 0.9, 1.1, 1.25) from a full
   revaluation at the series' last touch, not a delta-gamma approximation: for Daily options a delta-gamma estimate of a
-  25% gap overstates the loss about four times. The book is exact at the prices it was refreshed at and within 5% after
-  a 0.5% move (`testFuzz_R4_stressWithin5PctAfterHalfPctMoves`); the keeper's hourly `accrueMany` refreshes it.
+  25% gap overstates the loss about four times. The book is exact at the prices it was refreshed at. After a move from
+  S to S' it stays within a proven bound: per name, 1.25 |S' - S| per unit outstanding (option deltas lie in [0, 1] or
+  [-1, 0]) plus the hedge's |m| |S' - S| and the re-skew of sigma, and the worst case moves by at most
+  sum eps + 2 max eps (`testFuzz_R4_staleStressWithinProvenBoundAfterHalfPctMoves`). No relative bound holds in
+  general: the old "within 5% after a 0.5% move" claim failed at 5.05% (`test_R4_staleStressCounterexampleWithinProvenBound`).
+  The keeper's hourly `accrueMany` refreshes the book.
 
 ## 6. Engine + pool integration (todo 07b)
 

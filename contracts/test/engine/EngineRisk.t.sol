@@ -184,16 +184,84 @@ contract EngineRiskTest is EngineBase {
         assertApproxEqAbs(loss, brute, 1e9, "same prices: exact up to rounding");
     }
 
-    function testFuzz_R4_stressWithin5PctAfterHalfPctMoves(uint256 seed, int256 moveA, int256 moveB) public {
+    /// @dev R4 after a price move, with a proven bound instead of the old "within 5%" claim (todo 20c). The stored
+    /// scenario changes sc_k were computed at the names' last-touch price S (sigma from the skew at S); the brute force
+    /// uses the new price S' (sigma from the skew at S'). Split the difference per name and scenario in two parts:
+    ///  1. price, same sigma: [V(S'(1+m)) - V(S')] - [V(S(1+m)) - V(S)] = integral over x from S to S' of
+    ///     (1+m) delta(x(1+m)) - delta(x). An everlasting option's delta is in [0, 1] (call) or [-1, 0] (put), so the
+    ///     integrand is in [-1, 1.25] (m <= 25%) and the part is at most 1.25 |S' - S| per unit (plus the hedge term
+    ///     |m| |S' - S| per hedged stock unit, zero here).
+    ///  2. skew: the same scenario re-priced at sigma(S') instead of sigma(S), computed exactly per series.
+    /// The worst-case loss is sum_i m10_i + max_i (gap_i - m10_i), so it moves by at most sum_i eps_i + 2 max_i eps_i
+    /// when every scenario of name i moves by at most eps_i. A relative bound cannot hold in general (hedged books
+    /// make the loss a small difference of large numbers); the old 5% failed at 5.05% (regression test below).
+    function testFuzz_R4_staleStressWithinProvenBoundAfterHalfPctMoves(uint256 seed, int256 moveA, int256 moveB) public {
         _randomBook(seed);
         moveA = bound(moveA, -50, 50); // +/- 0.5%: one feed deviation step, the keeper refreshes hourly
         moveB = bound(moveB, -50, 50);
-        guard.setS(address(nvda), uint256(int256(100e18) * (10_000 + moveA) / 10_000));
-        guard.setS(address(tsla), uint256(int256(200e18) * (10_000 + moveB) / 10_000));
-        (uint256 loss,) = engine.stressLoss();
-        uint256 brute = _bruteStress();
-        if (brute < 1_000e18) return; // tiny books: relative error is meaningless
-        assertApproxEqRel(loss, brute, 0.05e18, "stale aggregates within 5% after a 0.5% move");
+        _assertStaleStressBound(moveA, moveB);
+    }
+
+    /// @dev The persisted counterexample that broke the old 5% claim (seed 3, NVDA -0.5%, TSLA -0.5%): stale 8,017.9
+    /// vs fresh 7,632.4 (5.05%). Kept as a fixed regression test of the proven bound.
+    function test_R4_staleStressCounterexampleWithinProvenBound() public {
+        _randomBook(3);
+        int256 moveA = bound(int256(4151779788931731037062097746348594670393659843899199454165130164343), -50, 50);
+        int256 moveB = bound(-57896044618658097711785492504343953926634992332820282019728792003956564819967, -50, 50);
+        (uint256 loss, uint256 brute,) = _assertStaleStressBound(moveA, moveB);
+        assertApproxEqRel(loss, 8017897742935844051633, 1e12, "the counterexample's stale loss");
+        assertApproxEqRel(brute, 7632425454722031570006, 1e12, "the counterexample's fresh loss");
+        assertGt((loss - brute) * 1e18 / brute, 0.05e18, "the old 5% claim really fails here");
+    }
+
+    function _assertStaleStressBound(int256 moveA, int256 moveB) internal returns (uint256 loss, uint256 brute, uint256 bnd) {
+        uint256 sA = 100e18;
+        uint256 sB = 200e18;
+        uint256 sA2 = uint256(int256(sA) * (10_000 + moveA) / 10_000);
+        uint256 sB2 = uint256(int256(sB) * (10_000 + moveB) / 10_000);
+        uint256 eA = _staleEps(address(nvda), sA, sA2);
+        uint256 eB = _staleEps(address(tsla), sB, sB2);
+        guard.setS(address(nvda), sA2);
+        guard.setS(address(tsla), sB2);
+        (loss,) = engine.stressLoss();
+        brute = _bruteStress();
+        bnd = eA + eB + 2 * (eA > eB ? eA : eB) + 1e12; // + fixed-point rounding
+        uint256 diff = loss > brute ? loss - brute : brute - loss;
+        assertLe(diff, bnd, "stale stress within the proven bound");
+    }
+
+    /// @dev eps for one name moving from s to s2: 1.25 |s2 - s| per unit outstanding (price part) plus the largest
+    /// scenario change from re-pricing at the skew of s2 instead of s (skew part). Hedge part: no hedge in these books.
+    function _staleEps(address stock, uint256 s, uint256 s2) internal view returns (uint256 eps) {
+        assertEq(IERC20(stock).balanceOf(address(pool)), 0, "these books carry no hedge");
+        uint256 d = s2 > s ? s2 - s : s - s2;
+        int256[4] memory moves = [int256(-2500), -1000, 1000, 2500];
+        int256[4] memory skew;
+        uint256 units;
+        bytes32[] memory ids = engine.seriesOfStock(stock);
+        for (uint256 j; j < ids.length; ++j) {
+            Series memory se = registry.seriesOf(ids[j]);
+            uint256 u = Math.mulDiv(IERC20(se.token).totalSupply(), se.norm, WAD);
+            if (u == 0) continue;
+            units += u;
+            (uint64 sig, uint64 sk) = _vol(stock, se.tauSeconds);
+            uint64 sigOld = helper.sigmaFor(s, se.strike, sig, sk, 0);
+            uint64 sigNew = helper.sigmaFor(s2, se.strike, sig, sk, 0);
+            (uint256 v0n,) = helper.valueAt(se.isCall, s2, se.strike, sigNew, 0, 0, se.tauSeconds);
+            (uint256 v0o,) = helper.valueAt(se.isCall, s2, se.strike, sigOld, 0, 0, se.tauSeconds);
+            for (uint256 m; m < 4; ++m) {
+                uint256 x = uint256(int256(s2) * (10_000 + moves[m]) / 10_000);
+                (uint256 vn,) = helper.valueAt(se.isCall, x, se.strike, sigNew, 0, 0, se.tauSeconds);
+                (uint256 vo,) = helper.valueAt(se.isCall, x, se.strike, sigOld, 0, 0, se.tauSeconds);
+                skew[m] += ((int256(vn) - int256(v0n)) - (int256(vo) - int256(v0o))) * int256(u) / int256(WAD);
+            }
+        }
+        uint256 worstSkew;
+        for (uint256 m; m < 4; ++m) {
+            uint256 a = uint256(skew[m] < 0 ? -skew[m] : skew[m]);
+            if (a > worstSkew) worstSkew = a;
+        }
+        eps = Math.mulDiv(units, d, WAD) * 125 / 100 + worstSkew;
     }
 
     function test_R4_stressBudget() public {
