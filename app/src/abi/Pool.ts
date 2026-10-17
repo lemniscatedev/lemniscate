@@ -1503,6 +1503,19 @@ export const PoolAbi = [
   },
   {
     "type": "function",
+    "name": "setStaking",
+    "inputs": [
+      {
+        "name": "staking_",
+        "type": "address",
+        "internalType": "contract ILmnsStaking"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setVaultHook",
     "inputs": [
       {
@@ -1513,6 +1526,19 @@ export const PoolAbi = [
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "staking",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract ILmnsStaking"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -2269,6 +2295,38 @@ export const PoolAbi = [
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "StakeSlashed",
+    "inputs": [
+      {
+        "name": "requested",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "received",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "StakingSet",
+    "inputs": [
+      {
+        "name": "staking",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
       }
     ],
     "anonymous": false

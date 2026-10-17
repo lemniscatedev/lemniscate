@@ -42,6 +42,184 @@
       "delay": "none (permissionless)",
       "note": "the owner's agent key, inside its policy"
     },
+    "CashDownVault.approve(address,uint256)": {
+      "contract": "CashDownVault",
+      "function": "approve(address,uint256)",
+      "gate": "holder",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "CashDownVault.claim()": {
+      "contract": "CashDownVault",
+      "function": "claim()",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "settles the caller's own requests"
+    },
+    "CashDownVault.creditFunding(uint256)": {
+      "contract": "CashDownVault",
+      "function": "creditFunding(uint256)",
+      "gate": "contract:registry",
+      "delay": "registry only"
+    },
+    "CashDownVault.deposit(uint256)": {
+      "contract": "CashDownVault",
+      "function": "deposit(uint256)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "the caller's own funds, only while the vault is open"
+    },
+    "CashDownVault.grantRole(bytes32,address)": {
+      "contract": "CashDownVault",
+      "function": "grantRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "CashDownVault.payLoss(address,uint256)": {
+      "contract": "CashDownVault",
+      "function": "payLoss(address,uint256)",
+      "gate": "contract:registry",
+      "delay": "registry only"
+    },
+    "CashDownVault.renounceRole(bytes32,address)": {
+      "contract": "CashDownVault",
+      "function": "renounceRole(bytes32,address)",
+      "gate": "self",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "CashDownVault.requestWithdraw(uint256)": {
+      "contract": "CashDownVault",
+      "function": "requestWithdraw(uint256)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "the caller's own shares"
+    },
+    "CashDownVault.revokeRole(bytes32,address)": {
+      "contract": "CashDownVault",
+      "function": "revokeRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "CashDownVault.roll()": {
+      "contract": "CashDownVault",
+      "function": "roll()",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "only after the epoch ends"
+    },
+    "CashDownVault.setOpen(bool)": {
+      "contract": "CashDownVault",
+      "function": "setOpen(bool)",
+      "gate": "role:DEFAULT_ADMIN_ROLE|role:GUARDIAN_ROLE",
+      "delay": "default_admin 48h timelock / guardian instant"
+    },
+    "CashDownVault.settleDebt()": {
+      "contract": "CashDownVault",
+      "function": "settleDebt()",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "pays the vault's own debt to the pool"
+    },
+    "CashDownVault.transfer(address,uint256)": {
+      "contract": "CashDownVault",
+      "function": "transfer(address,uint256)",
+      "gate": "holder",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "CashDownVault.transferFrom(address,address,uint256)": {
+      "contract": "CashDownVault",
+      "function": "transferFrom(address,address,uint256)",
+      "gate": "holder-or-approved",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "CoveredUpVault.approve(address,uint256)": {
+      "contract": "CoveredUpVault",
+      "function": "approve(address,uint256)",
+      "gate": "holder",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "CoveredUpVault.claim()": {
+      "contract": "CoveredUpVault",
+      "function": "claim()",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "settles the caller's own requests"
+    },
+    "CoveredUpVault.creditFunding(uint256)": {
+      "contract": "CoveredUpVault",
+      "function": "creditFunding(uint256)",
+      "gate": "contract:registry",
+      "delay": "registry only"
+    },
+    "CoveredUpVault.deposit(uint256)": {
+      "contract": "CoveredUpVault",
+      "function": "deposit(uint256)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "the caller's own funds, only while the vault is open"
+    },
+    "CoveredUpVault.grantRole(bytes32,address)": {
+      "contract": "CoveredUpVault",
+      "function": "grantRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "CoveredUpVault.payLoss(address,uint256)": {
+      "contract": "CoveredUpVault",
+      "function": "payLoss(address,uint256)",
+      "gate": "contract:registry",
+      "delay": "registry only"
+    },
+    "CoveredUpVault.renounceRole(bytes32,address)": {
+      "contract": "CoveredUpVault",
+      "function": "renounceRole(bytes32,address)",
+      "gate": "self",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "CoveredUpVault.requestWithdraw(uint256)": {
+      "contract": "CoveredUpVault",
+      "function": "requestWithdraw(uint256)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "the caller's own shares"
+    },
+    "CoveredUpVault.revokeRole(bytes32,address)": {
+      "contract": "CoveredUpVault",
+      "function": "revokeRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "CoveredUpVault.roll()": {
+      "contract": "CoveredUpVault",
+      "function": "roll()",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "only after the epoch ends"
+    },
+    "CoveredUpVault.setOpen(bool)": {
+      "contract": "CoveredUpVault",
+      "function": "setOpen(bool)",
+      "gate": "role:DEFAULT_ADMIN_ROLE|role:GUARDIAN_ROLE",
+      "delay": "default_admin 48h timelock / guardian instant"
+    },
+    "CoveredUpVault.settleDebt()": {
+      "contract": "CoveredUpVault",
+      "function": "settleDebt()",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "pays the vault's own debt to the pool"
+    },
+    "CoveredUpVault.transfer(address,uint256)": {
+      "contract": "CoveredUpVault",
+      "function": "transfer(address,uint256)",
+      "gate": "holder",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "CoveredUpVault.transferFrom(address,address,uint256)": {
+      "contract": "CoveredUpVault",
+      "function": "transferFrom(address,address,uint256)",
+      "gate": "holder-or-approved",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
     "FeeRouter.distribute()": {
       "contract": "FeeRouter",
       "function": "distribute()",
@@ -182,6 +360,12 @@
       "gate": "role:DEFAULT_ADMIN_ROLE|role:GUARDIAN_ROLE",
       "delay": "default_admin 48h timelock / guardian instant"
     },
+    "LemniscateEngine.setFeeTiers(address)": {
+      "contract": "LemniscateEngine",
+      "function": "setFeeTiers(address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
     "LemniscateEngine.setHedgeDepthCap(address,uint256)": {
       "contract": "LemniscateEngine",
       "function": "setHedgeDepthCap(address,uint256)",
@@ -298,6 +482,122 @@
       "function": "withdrawTo(address,uint256)",
       "gate": "owner",
       "delay": "owner (a Safe, 2-step ownership, no timelock)"
+    },
+    "LmnsBuyBurn.buyAndBurn(uint256)": {
+      "contract": "LmnsBuyBurn",
+      "function": "buyAndBurn(uint256)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "swaps only at the TWAP floor, burns what it buys"
+    },
+    "LmnsBuyBurn.grantRole(bytes32,address)": {
+      "contract": "LmnsBuyBurn",
+      "function": "grantRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "LmnsBuyBurn.renounceRole(bytes32,address)": {
+      "contract": "LmnsBuyBurn",
+      "function": "renounceRole(bytes32,address)",
+      "gate": "self",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "LmnsBuyBurn.revokeRole(bytes32,address)": {
+      "contract": "LmnsBuyBurn",
+      "function": "revokeRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "LmnsBuyBurn.setRoute(address,address,uint24,uint16)": {
+      "contract": "LmnsBuyBurn",
+      "function": "setRoute(address,address,uint24,uint16)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "LmnsStaking.cancelUnstake()": {
+      "contract": "LmnsStaking",
+      "function": "cancelUnstake()",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "the caller's own stake"
+    },
+    "LmnsStaking.claimRewards()": {
+      "contract": "LmnsStaking",
+      "function": "claimRewards()",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "the caller's own rewards"
+    },
+    "LmnsStaking.completeUnstake()": {
+      "contract": "LmnsStaking",
+      "function": "completeUnstake()",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "the caller's own stake, after the unstake delay"
+    },
+    "LmnsStaking.grantRole(bytes32,address)": {
+      "contract": "LmnsStaking",
+      "function": "grantRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "LmnsStaking.renounceRole(bytes32,address)": {
+      "contract": "LmnsStaking",
+      "function": "renounceRole(bytes32,address)",
+      "gate": "self",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "LmnsStaking.requestUnstake(uint256)": {
+      "contract": "LmnsStaking",
+      "function": "requestUnstake(uint256)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "the caller's own stake"
+    },
+    "LmnsStaking.revokeRole(bytes32,address)": {
+      "contract": "LmnsStaking",
+      "function": "revokeRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "LmnsStaking.setSlashRoute(address,address,uint24,uint16)": {
+      "contract": "LmnsStaking",
+      "function": "setSlashRoute(address,address,uint24,uint16)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "LmnsStaking.setTiers(tuple[])": {
+      "contract": "LmnsStaking",
+      "function": "setTiers(tuple[])",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "LmnsStaking.slash(uint256)": {
+      "contract": "LmnsStaking",
+      "function": "slash(uint256)",
+      "gate": "contract:pool",
+      "delay": "pool only"
+    },
+    "LmnsStaking.stake(uint256)": {
+      "contract": "LmnsStaking",
+      "function": "stake(uint256)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "the caller's own stake"
+    },
+    "LmnsStaking.stakeWithPermit(uint256,uint256,uint8,bytes32,bytes32)": {
+      "contract": "LmnsStaking",
+      "function": "stakeWithPermit(uint256,uint256,uint8,bytes32,bytes32)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "the caller's own stake"
+    },
+    "LmnsStaking.syncRewards()": {
+      "contract": "LmnsStaking",
+      "function": "syncRewards()",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "streams fees already received"
     },
     "MarketHours.grantRole(bytes32,address)": {
       "contract": "MarketHours",
@@ -546,6 +846,72 @@
       "gate": "anyone",
       "delay": "none (permissionless)"
     },
+    "VaultRegistry.addVault(address)": {
+      "contract": "VaultRegistry",
+      "function": "addVault(address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "VaultRegistry.assume(address,bytes32,uint256)": {
+      "contract": "VaultRegistry",
+      "function": "assume(address,bytes32,uint256)",
+      "gate": "role:ALLOCATOR_ROLE",
+      "delay": "allocator instant"
+    },
+    "VaultRegistry.debtPaid(uint256)": {
+      "contract": "VaultRegistry",
+      "function": "debtPaid(uint256)",
+      "gate": "contract:registered-vault",
+      "delay": "registered-vault only"
+    },
+    "VaultRegistry.grantRole(bytes32,address)": {
+      "contract": "VaultRegistry",
+      "function": "grantRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "VaultRegistry.onBuyback(bytes32,uint256,uint256,uint256)": {
+      "contract": "VaultRegistry",
+      "function": "onBuyback(bytes32,uint256,uint256,uint256)",
+      "gate": "contract:pool",
+      "delay": "pool only"
+    },
+    "VaultRegistry.release(address,bytes32,uint256)": {
+      "contract": "VaultRegistry",
+      "function": "release(address,bytes32,uint256)",
+      "gate": "role:ALLOCATOR_ROLE",
+      "delay": "allocator instant"
+    },
+    "VaultRegistry.releaseFraction(uint256)": {
+      "contract": "VaultRegistry",
+      "function": "releaseFraction(uint256)",
+      "gate": "contract:registered-vault",
+      "delay": "registered-vault only"
+    },
+    "VaultRegistry.renounceRole(bytes32,address)": {
+      "contract": "VaultRegistry",
+      "function": "renounceRole(bytes32,address)",
+      "gate": "self",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "VaultRegistry.revokeRole(bytes32,address)": {
+      "contract": "VaultRegistry",
+      "function": "revokeRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "VaultRegistry.routeFunding(bytes32,uint256)": {
+      "contract": "VaultRegistry",
+      "function": "routeFunding(bytes32,uint256)",
+      "gate": "contract:pool",
+      "delay": "pool only"
+    },
+    "VaultRegistry.sweep()": {
+      "contract": "VaultRegistry",
+      "function": "sweep()",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
     "VolOracle.grantRole(bytes32,address)": {
       "contract": "VolOracle",
       "function": "grantRole(bytes32,address)",
@@ -602,6 +968,12 @@
       "delay": "none (permissionless)",
       "note": "pays the ticket's owner"
     },
+    "WriterPool.creditVaultStock(address,uint256)": {
+      "contract": "WriterPool",
+      "function": "creditVaultStock(address,uint256)",
+      "gate": "contract:vault-registry",
+      "delay": "vault-registry only"
+    },
     "WriterPool.deposit(uint256,address)": {
       "contract": "WriterPool",
       "function": "deposit(uint256,address)",
@@ -619,6 +991,12 @@
       "function": "initialize(address,address,address,address)",
       "gate": "once:initializer",
       "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "WriterPool.onBuyback(bytes32,uint256,uint256,uint256,uint256)": {
+      "contract": "WriterPool",
+      "function": "onBuyback(bytes32,uint256,uint256,uint256,uint256)",
+      "gate": "contract:engine",
+      "delay": "engine only"
     },
     "WriterPool.onFunding(bytes32,uint256)": {
       "contract": "WriterPool",
@@ -708,6 +1086,18 @@
     "WriterPool.setPublicDeposits(bool)": {
       "contract": "WriterPool",
       "function": "setPublicDeposits(bool)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "WriterPool.setStaking(address)": {
+      "contract": "WriterPool",
+      "function": "setStaking(address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "WriterPool.setVaultHook(address)": {
+      "contract": "WriterPool",
+      "function": "setVaultHook(address)",
       "gate": "role:DEFAULT_ADMIN_ROLE",
       "delay": "default_admin 48h timelock"
     },

@@ -138,10 +138,23 @@ admin unpauses, vol posts that move sigma, and hedge-equity posts. Deep run: `FO
 |------|----------|------|
 | R1 | The deploy script's code path deploys and wires every contract (fork profile over mocks, testnet profile with its own mocks), writes the app's deployment file, and the system trades | `DeploySystem.t.sol::test_R1_deployOnAnvilWorks_forkProfile`, `::test_R1_testnetProfileDeploysMocksAndTrades` |
 | R2 | Deployer holds no role after handoff; admin = 48h timelock run by a Safe (a contract on forks); keeper, hedger, vol signer are three addresses; the guardian can only pause buys, shield and deposits | `DeploySystem.t.sol::test_R2_rolesWired`, `::test_R2_botsMustBeThreeDifferentAddresses`, `::test_R2_guardianCanOnlyPauseBuysShieldAndDeposits` |
-| R3 | Post-deploy check passes on a fresh system and names each misconfiguration | `DeploySystem.t.sol::test_R3_postDeployCheckPassesOnFreshDeployment`, `::test_R3_fails_*` (17 cases) |
+| R3 | Post-deploy check passes on a fresh system and names each misconfiguration | `DeploySystem.t.sol::test_R3_postDeployCheckPassesOnFreshDeployment`, `::test_R3_fails_*` (19 cases) |
 | R8 | Every time rule is deploy-time with a hard minimum (pool queue, deposit lock, fee period, vol validity and rate limit, split windows, timelock); fork and mainnet deploy full values | `Timers.t.sol::test_R8_*`, `DeploySystem.t.sol::test_R8_*` |
 | R9 | Profiles: mainnet refuses any chain but 4663 and any Safe below 3-of-5; testnet only on 46630; fork/mainnet configs cannot shorten timers | `DeploySystem.t.sol::test_R9_*` |
 | R5 | With `FORK_RPC_URL`: PriceGuard reads every launch name's real feed and Stock Token, S within 2% of the Uniswap v3 TWAP | `test/fork/Fork.t.sol::test_R5_forkFeedsReadable` (skipped without the variable) |
+
+## Writer vaults (todo 19, phase 2; closed and unwired at launch)
+
+| Rule | Property | Test (`test/vaults/`) |
+|------|----------|------|
+| R1 | A vault covers only its side and an out-of-the-money band, with exact collateral; pending deposits are not writable; slices shrink with funding and free collateral | `WriterVault.t.sol::test_R1_*` |
+| R2 | A vault never loses more than its collateral | `VaultFuzz.t.sol::testFuzz_R2_*` |
+| R3 | On a buyback or release the vault pays the intrinsic value of the covered slice at the trade's PriceGuard S (OTM pays nothing, partial is pro rata, queued-sell fills settle too); a failed payout becomes debt and is settled later | `WriterVault.t.sol::test_R3_*` |
+| R4 | Epoch accounting; the epoch timer is deploy-time with a hard minimum; roll only after the epoch; withdrawals are never blocked | `WriterVault.t.sol::test_R4_*` |
+| R5 | The vaults' share of funding and spread is conserved; hook checks; no hook = no change (the share is paid from pool cash only, no carry-forward: see SECURITY.md) | `WriterVault.t.sol::test_R5_*` |
+| R6 | Closed by default; closing blocks deposits only; minimum deposit | `WriterVault.t.sol::test_R6_*` |
+| R7 | Buckets backed by balances, coverage within supply, locked within collateral, stock conserved, no dangling approvals, no panics (deep 500x200) | `VaultInvariant.t.sol::invariant_R7_*`, `WriterVault.t.sol::test_R7_*` |
+| 20c | A buyback report that runs out of gas reverts the sell; DeploySystem leaves vaults off unless flagged and `$LMNS` unwired (`LMNS_NOT_OFF`) | `EngineAccrue.t.sol::test_R20_buybackReportCannotBeSkippedWithTightGas`, `DeploySystem.t.sol::test_T19_*`, `::test_T20_lmnsOffByDefaultAndChecked` |
 
 ## $LMNS staking, fee tiers and burn (todo 20, phase 2; module off until the admin turns it on)
 

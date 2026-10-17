@@ -24,6 +24,7 @@ ROLE_DELAY = {
     "GUARDIAN_ROLE": "instant",
     "KEEPER_ROLE": "instant",
     "HEDGER_ROLE": "instant",
+    "ALLOCATOR_ROLE": "instant",
 }
 # Functions inherited from OpenZeppelin that are not in the contract source.
 INHERITED = {
@@ -50,6 +51,24 @@ DEFAULT_NOTES = {
     "LemniscatePaymaster.validatePaymasterUserOp(tuple,bytes32,uint256)": "ERC-4337 entry point only",
     "LemniscatePaymaster.postOp(uint8,bytes,uint256,uint256)": "ERC-4337 entry point only",
     "PriceGuard.poke(address)": "records a price reading; cannot set one",
+    "CashDownVault.deposit(uint256)": "the caller's own funds, only while the vault is open",
+    "CashDownVault.requestWithdraw(uint256)": "the caller's own shares",
+    "CashDownVault.claim()": "settles the caller's own requests",
+    "CashDownVault.roll()": "only after the epoch ends",
+    "CashDownVault.settleDebt()": "pays the vault's own debt to the pool",
+    "CoveredUpVault.deposit(uint256)": "the caller's own funds, only while the vault is open",
+    "CoveredUpVault.requestWithdraw(uint256)": "the caller's own shares",
+    "CoveredUpVault.claim()": "settles the caller's own requests",
+    "CoveredUpVault.roll()": "only after the epoch ends",
+    "CoveredUpVault.settleDebt()": "pays the vault's own debt to the pool",
+    "LmnsStaking.stake(uint256)": "the caller's own stake",
+    "LmnsStaking.stakeWithPermit(uint256,uint256,uint8,bytes32,bytes32)": "the caller's own stake",
+    "LmnsStaking.requestUnstake(uint256)": "the caller's own stake",
+    "LmnsStaking.cancelUnstake()": "the caller's own stake",
+    "LmnsStaking.completeUnstake()": "the caller's own stake, after the unstake delay",
+    "LmnsStaking.claimRewards()": "the caller's own rewards",
+    "LmnsStaking.syncRewards()": "streams fees already received",
+    "LmnsBuyBurn.buyAndBurn(uint256)": "swaps only at the TWAP floor, burns what it buys",
 }
 
 
@@ -86,6 +105,10 @@ def classify(header: str, body: str, source: str, helpers: dict) -> str:
         gates.append("owner")
     if re.search(r"\bonlyEngine\b", header):
         gates.append("contract:engine")
+    if re.search(r"\bonlyRegistry\b", header):
+        gates.append("contract:registry")
+    if re.search(r"\bonlyPool\b", header):
+        gates.append("contract:pool")
     if re.search(r"\binitializer\b", header):
         gates.append("once:initializer")
     text = body
@@ -96,7 +119,7 @@ def classify(header: str, body: str, source: str, helpers: dict) -> str:
         name = role[0] or role[1]
         if f"role:{name}" not in gates:
             gates.append(f"role:{name}")
-    known = {"engine": "contract:engine", "pool": "contract:pool", "owner": "owner", "entry_point": "contract:entrypoint"}
+    known = {"engine": "contract:engine", "pool": "contract:pool", "_registry": "contract:registry", "registry": "contract:registry", "owner": "owner", "entry_point": "contract:entrypoint"}
     for name in re.findall(r"msg\.sender\s*(?:!=|==)\s*(?:address\()?\$?\.?([A-Za-z_]+)", text):
         gate = known.get(name.lower())
         if gate and gate not in gates:
@@ -105,6 +128,10 @@ def classify(header: str, body: str, source: str, helpers: dict) -> str:
         gates.append("contract:engine")
     if re.search(r"\bNotPool\b", text) and "contract:pool" not in gates:
         gates.append("contract:pool")
+    if re.search(r"\bNotVaultHook\b", text):
+        gates.append("contract:vault-registry")
+    if re.search(r"\bNotVault\b", text):
+        gates.append("contract:registered-vault")
     if not gates:
         return "anyone"
     # Role gates keep their order but are de-duplicated and sorted for a stable manifest.
@@ -147,8 +174,14 @@ def collect() -> dict:
         if not (CONTRACTS / path).exists():
             continue  # a stale artifact of a deleted source file
         source = (CONTRACTS / path).read_text()
-        if re.search(rf"\blibrary\s+{name}\b", source) or re.search(rf"\binterface\s+{name}\b", source):
+        if re.search(rf"\b(library|interface|abstract\s+contract)\s+{name}\b", source):
             continue
+        # A contract built on an abstract base in src/ (the writer vaults on WriterVault): the base's functions count too.
+        bases = re.search(rf"\bcontract\s+{name}\s+is\s+([^{{]+)\{{", source)
+        for base in (re.findall(r"\w+", bases.group(1)) if bases else []):
+            found = next(iter(sorted((CONTRACTS / "src").glob(f"**/{base}.sol"))), None)
+            if found is not None:
+                source += "\n" + found.read_text()
         blocks = [(n, c, h, b) for n, c, h, b in function_blocks(source)]
         helpers = {n: h + b for n, c, h, b in blocks if n.startswith(("_check", "_require", "_only"))}
         upgrade_gate = next((classify(h, b, source, helpers) for n, c, h, b in blocks if n == "_authorizeUpgrade"), None)

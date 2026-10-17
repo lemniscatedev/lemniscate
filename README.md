@@ -26,21 +26,22 @@ web/          Website (static build, subtree of the frontend repository; extra d
 | Contract | What it does | State |
 | --- | --- | --- |
 | `LemniscateEngine` | Buy, sell, accrue, quote and Shield. Spread, fee, caps, stress budget, HALTED sell queue, pauses. UUPS | built |
-| `engine/EngineTradeLib`, `engine/EngineOpsLib`, `EngineHelper` | The engine's trade, accrual, valuation, pricing and parameter-bound logic, as linked libraries (size limit) | built |
+| `engine/EngineTradeLib`, `engine/EngineOpsLib`, `engine/EngineViewLib`, `EngineHelper` | The engine's trade, accrual, valuation, pricing and parameter-bound logic, as linked libraries (size limit) | built |
 | `SeriesRegistry` | Lists series (`keccak256(stock, isCall, strike, tau)`), their strike band, buyable flag and funding state | built |
 | `OptionToken`, `OptionTokenFactory` | One ERC-20 per series (EIP-1167 clones). Only the engine mints or burns; every balance change accrues funding first | built |
 | `PriceGuard` | Reads a Chainlink feed and the Stock Token multiplier once, classifies the session, cross-checks a Uniswap v3 TWAP, never reverts on a bad read | built |
 | `VolOracle` | Stores sigma posts signed by one off-chain signer (EIP-712): step limit, rate limit, floor, expiry, nonces, earnings buy-block window | built |
 | `MarketHours` | Market session calendar, pushed by the keeper, with an NYSE calendar fallback | built |
-| `WriterPool` | ERC-4626-style USDG pool. Counterparty for all trades, holds the spot hedges (linked library `PoolHedging`), withdrawal queue paid at NAV (72h on mainnet) | built |
+| `WriterPool` | ERC-4626-style USDG pool. Counterparty for all trades, holds the spot hedges (linked library `PoolHedging`), income split and loss layers (linked library `PoolLayers`), withdrawal queue paid at NAV (72h on mainnet) | built |
 | `Reserve`, `FeeRouter` | First-loss reserve funded from a share of the spread; protocol fee split to the pool, keepers, hedger and treasury on a fixed period (7 days on mainnet) | built |
 | `LmnsStaking`, `LmnsBuyBurn` | Phase 2, off at launch. Staked `$LMNS` (token issued by the launchpad, never by these contracts) is the second loss layer after the reserve, sets fee tiers, and receives the stakers' 5% of protocol fees; the burn 5% buys and burns `$LMNS` only when a TWAP is configured. Deployed by `script/DeployLmns.s.sol` | built |
+| `vaults/CoveredUpVault`, `vaults/CashDownVault`, `vaults/VaultRegistry` | Phase 2, closed and unwired at launch (`vaults.enabled` deploy flag). Writer vaults sell covered calls or cash-secured puts on out-of-the-money bands of a series, receive their share of funding and spread, and pay the intrinsic value of the covered slice on a buyback | built |
 | `AgentRouter` | Lets an owner give an agent key a budget, an expiry and a list of names; trades only through the engine, always to the owner | built |
 | `UniswapV3HedgeAdapter`, `UniswapV3TwapReference` | Swap route for the pool's hedges and the TWAP that floors forced sales | built |
 | `LemniscatePaymaster` | Verifying paymaster for ERC-4337 one-tap transactions | built |
 | `libs/` | `FixedMath`, `EverlastingMath`, `EverlastingGreeks`, `Funding`, `NyseCalendar`, `Roles`, `TickPrice` | built |
 
-Phase 2 writer vaults are designed but not written. `$LMNS` staking is written and stays off until the token exists and the admin turns it on.
+Phase 2 writer vaults are written and stay closed and unwired until the deploy flag and the admin turn them on. `$LMNS` staking is written and stays off until the token exists and the admin turns it on.
 
 The engine, pool and market hours sit behind UUPS proxies that only the admin can upgrade; the engine's upgrades can be frozen for good. OpenZeppelin v5.4.0 and forge-std v1.9.7 are vendored in `contracts/lib`. Roles, trust assumptions and accepted risks are in [SECURITY.md](.github/SECURITY.md), what to do in an emergency in [INCIDENT.md](.github/INCIDENT.md); each invariant and the test that checks it is in [contracts/INVARIANTS.md](contracts/INVARIANTS.md).
 

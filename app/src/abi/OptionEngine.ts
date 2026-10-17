@@ -251,6 +251,43 @@ export const OptionEngineAbi = [
   },
   {
     "type": "function",
+    "name": "feeDiscountOf",
+    "inputs": [
+      {
+        "name": "account",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "feeDiscBps",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "spreadDiscBps",
+        "type": "uint16",
+        "internalType": "uint16"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "feeTiers",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "fillQueued",
     "inputs": [
       {
@@ -834,6 +871,87 @@ export const OptionEngineAbi = [
   },
   {
     "type": "function",
+    "name": "quoteFor",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "units",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "isBuy",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
+        "name": "account",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct IOptionEngine.Quote",
+        "components": [
+          {
+            "name": "usdg",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "vMarkWad",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "spreadBps",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "feeUsdg",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "dailyCostUsdg",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "breakevenWad",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "sigmaBps",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "session",
+            "type": "uint8",
+            "internalType": "enum SessionKind"
+          },
+          {
+            "name": "buyable",
+            "type": "bool",
+            "internalType": "bool"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "registry",
     "inputs": [],
     "outputs": [
@@ -1093,6 +1211,19 @@ export const OptionEngineAbi = [
         "name": "paused",
         "type": "bool",
         "internalType": "bool"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setFeeTiers",
+    "inputs": [
+      {
+        "name": "feeTiers_",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "outputs": [],
@@ -1619,6 +1750,19 @@ export const OptionEngineAbi = [
         "type": "bool",
         "indexed": false,
         "internalType": "bool"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "FeeTiersSet",
+    "inputs": [
+      {
+        "name": "feeTiers",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
       }
     ],
     "anonymous": false

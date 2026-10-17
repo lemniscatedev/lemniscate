@@ -102,6 +102,34 @@ engine and agent router, and the factory is owned by the series registry that cr
 | AgentRouter | `sellFor(address,bytes32,uint128,uint128,uint64)` | anyone (the owner's agent key, inside its policy) | none (permissionless) |
 | AgentRouter | `setPolicy(address,uint128,uint128,uint64,bool,bool,address[])` | anyone (acts on the caller's own policy) | none (permissionless) |
 | AgentRouter | `shieldFor(address,address,uint128,uint16,uint128,uint64)` | anyone (the owner's agent key, inside its policy) | none (permissionless) |
+| CashDownVault | `approve(address,uint256)` | holder | n/a (caller's own balance, role or one-time setup) |
+| CashDownVault | `claim()` | anyone (settles the caller's own requests) | none (permissionless) |
+| CashDownVault | `creditFunding(uint256)` | contract:registry | registry only |
+| CashDownVault | `deposit(uint256)` | anyone (the caller's own funds, only while the vault is open) | none (permissionless) |
+| CashDownVault | `grantRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| CashDownVault | `payLoss(address,uint256)` | contract:registry | registry only |
+| CashDownVault | `renounceRole(bytes32,address)` | self | n/a (caller's own balance, role or one-time setup) |
+| CashDownVault | `requestWithdraw(uint256)` | anyone (the caller's own shares) | none (permissionless) |
+| CashDownVault | `revokeRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| CashDownVault | `roll()` | anyone (only after the epoch ends) | none (permissionless) |
+| CashDownVault | `setOpen(bool)` | role:DEFAULT_ADMIN_ROLE or role:GUARDIAN_ROLE | default_admin 48h timelock / guardian instant |
+| CashDownVault | `settleDebt()` | anyone (pays the vault's own debt to the pool) | none (permissionless) |
+| CashDownVault | `transfer(address,uint256)` | holder | n/a (caller's own balance, role or one-time setup) |
+| CashDownVault | `transferFrom(address,address,uint256)` | holder-or-approved | n/a (caller's own balance, role or one-time setup) |
+| CoveredUpVault | `approve(address,uint256)` | holder | n/a (caller's own balance, role or one-time setup) |
+| CoveredUpVault | `claim()` | anyone (settles the caller's own requests) | none (permissionless) |
+| CoveredUpVault | `creditFunding(uint256)` | contract:registry | registry only |
+| CoveredUpVault | `deposit(uint256)` | anyone (the caller's own funds, only while the vault is open) | none (permissionless) |
+| CoveredUpVault | `grantRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| CoveredUpVault | `payLoss(address,uint256)` | contract:registry | registry only |
+| CoveredUpVault | `renounceRole(bytes32,address)` | self | n/a (caller's own balance, role or one-time setup) |
+| CoveredUpVault | `requestWithdraw(uint256)` | anyone (the caller's own shares) | none (permissionless) |
+| CoveredUpVault | `revokeRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| CoveredUpVault | `roll()` | anyone (only after the epoch ends) | none (permissionless) |
+| CoveredUpVault | `setOpen(bool)` | role:DEFAULT_ADMIN_ROLE or role:GUARDIAN_ROLE | default_admin 48h timelock / guardian instant |
+| CoveredUpVault | `settleDebt()` | anyone (pays the vault's own debt to the pool) | none (permissionless) |
+| CoveredUpVault | `transfer(address,uint256)` | holder | n/a (caller's own balance, role or one-time setup) |
+| CoveredUpVault | `transferFrom(address,address,uint256)` | holder-or-approved | n/a (caller's own balance, role or one-time setup) |
 | FeeRouter | `distribute()` | anyone | none (permissionless) |
 | FeeRouter | `grantRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | FeeRouter | `renounceRole(bytes32,address)` | self | n/a (caller's own balance, role or one-time setup) |
@@ -125,6 +153,7 @@ engine and agent router, and the factory is owned by the series registry that cr
 | LemniscateEngine | `revokeRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | LemniscateEngine | `sell(bytes32,uint128,uint128,uint64,address)` | anyone (sells the caller's own tokens; never paused) | none (permissionless) |
 | LemniscateEngine | `setBuysPaused(bool)` | role:DEFAULT_ADMIN_ROLE or role:GUARDIAN_ROLE | default_admin 48h timelock / guardian instant |
+| LemniscateEngine | `setFeeTiers(address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | LemniscateEngine | `setHedgeDepthCap(address,uint256)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | LemniscateEngine | `setParams(tuple)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | LemniscateEngine | `setSeriesBuysPaused(bytes32,bool)` | role:DEFAULT_ADMIN_ROLE or role:GUARDIAN_ROLE | default_admin 48h timelock / guardian instant |
@@ -144,6 +173,24 @@ engine and agent router, and the factory is owned by the series registry that cr
 | LemniscatePaymaster | `validatePaymasterUserOp(tuple,bytes32,uint256)` | contract:entrypoint (ERC-4337 entry point only) | entrypoint only |
 | LemniscatePaymaster | `withdrawStake(address)` | owner | owner (a Safe, 2-step ownership, no timelock) |
 | LemniscatePaymaster | `withdrawTo(address,uint256)` | owner | owner (a Safe, 2-step ownership, no timelock) |
+| LmnsBuyBurn | `buyAndBurn(uint256)` | anyone (swaps only at the TWAP floor, burns what it buys) | none (permissionless) |
+| LmnsBuyBurn | `grantRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| LmnsBuyBurn | `renounceRole(bytes32,address)` | self | n/a (caller's own balance, role or one-time setup) |
+| LmnsBuyBurn | `revokeRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| LmnsBuyBurn | `setRoute(address,address,uint24,uint16)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| LmnsStaking | `cancelUnstake()` | anyone (the caller's own stake) | none (permissionless) |
+| LmnsStaking | `claimRewards()` | anyone (the caller's own rewards) | none (permissionless) |
+| LmnsStaking | `completeUnstake()` | anyone (the caller's own stake, after the unstake delay) | none (permissionless) |
+| LmnsStaking | `grantRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| LmnsStaking | `renounceRole(bytes32,address)` | self | n/a (caller's own balance, role or one-time setup) |
+| LmnsStaking | `requestUnstake(uint256)` | anyone (the caller's own stake) | none (permissionless) |
+| LmnsStaking | `revokeRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| LmnsStaking | `setSlashRoute(address,address,uint24,uint16)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| LmnsStaking | `setTiers(tuple[])` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| LmnsStaking | `slash(uint256)` | contract:pool | pool only |
+| LmnsStaking | `stake(uint256)` | anyone (the caller's own stake) | none (permissionless) |
+| LmnsStaking | `stakeWithPermit(uint256,uint256,uint8,bytes32,bytes32)` | anyone (the caller's own stake) | none (permissionless) |
+| LmnsStaking | `syncRewards()` | anyone (streams fees already received) | none (permissionless) |
 | MarketHours | `grantRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | MarketHours | `initialize(address,address)` | once:initializer | n/a (caller's own balance, role or one-time setup) |
 | MarketHours | `renounceRole(bytes32,address)` | self | n/a (caller's own balance, role or one-time setup) |
@@ -185,6 +232,17 @@ engine and agent router, and the factory is owned by the series registry that cr
 | SeriesRegistry | `setStock(address,bool,uint128,string)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | SeriesRegistry | `storeAccrual(bytes32,uint128,uint64)` | contract:engine | engine only |
 | UniswapV3HedgeAdapter | `swapExactIn(address,address,uint24,uint256,uint256,address)` | anyone | none (permissionless) |
+| VaultRegistry | `addVault(address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| VaultRegistry | `assume(address,bytes32,uint256)` | role:ALLOCATOR_ROLE | allocator instant |
+| VaultRegistry | `debtPaid(uint256)` | contract:registered-vault | registered-vault only |
+| VaultRegistry | `grantRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| VaultRegistry | `onBuyback(bytes32,uint256,uint256,uint256)` | contract:pool | pool only |
+| VaultRegistry | `release(address,bytes32,uint256)` | role:ALLOCATOR_ROLE | allocator instant |
+| VaultRegistry | `releaseFraction(uint256)` | contract:registered-vault | registered-vault only |
+| VaultRegistry | `renounceRole(bytes32,address)` | self | n/a (caller's own balance, role or one-time setup) |
+| VaultRegistry | `revokeRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| VaultRegistry | `routeFunding(bytes32,uint256)` | contract:pool | pool only |
+| VaultRegistry | `sweep()` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | VolOracle | `grantRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | VolOracle | `post(tuple,bytes)` | anyone (needs the vol signer's EIP-712 signature) | none (permissionless) |
 | VolOracle | `renounceRole(bytes32,address)` | self | n/a (caller's own balance, role or one-time setup) |
@@ -194,9 +252,11 @@ engine and agent router, and the factory is owned by the series registry that cr
 | WriterPool | `approve(address,uint256)` | holder | n/a (caller's own balance, role or one-time setup) |
 | WriterPool | `checkpoint()` | anyone | none (permissionless) |
 | WriterPool | `claim(uint256)` | anyone (pays the ticket's owner) | none (permissionless) |
+| WriterPool | `creditVaultStock(address,uint256)` | contract:vault-registry | vault-registry only |
 | WriterPool | `deposit(uint256,address)` | anyone | none (permissionless) |
 | WriterPool | `grantRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | WriterPool | `initialize(address,address,address,address)` | once:initializer | n/a (caller's own balance, role or one-time setup) |
+| WriterPool | `onBuyback(bytes32,uint256,uint256,uint256,uint256)` | contract:engine | engine only |
 | WriterPool | `onFunding(bytes32,uint256)` | contract:engine | engine only |
 | WriterPool | `onSale(bytes32,uint256,uint256)` | contract:engine | engine only |
 | WriterPool | `pay(address,uint256,uint256)` | contract:engine | engine only |
@@ -212,6 +272,8 @@ engine and agent router, and the factory is owned by the series registry that cr
 | WriterPool | `setNavGuard(uint16,uint16)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | WriterPool | `setParams(uint32,uint16,uint16,uint128)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | WriterPool | `setPublicDeposits(bool)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| WriterPool | `setStaking(address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| WriterPool | `setVaultHook(address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | WriterPool | `syncHedgeUnits(address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | WriterPool | `transfer(address,uint256)` | holder | n/a (caller's own balance, role or one-time setup) |
 | WriterPool | `transferFrom(address,address,uint256)` | holder-or-approved | n/a (caller's own balance, role or one-time setup) |
