@@ -313,11 +313,13 @@ async function main() {
   });
 
   await flow("setup", "Keeper lists the grid and turns it buyable (R1)", "every launch name has Daily+Weekly calls and puts on the strike grid, buyable, visible in /v1/chains", async () => {
-    const rows = await waitFor("every name buyable in the API", async () => {
+    const rows = await waitFor("the whole grid listed and buyable", async () => {
+      const done = await sql`select count(*) filter (where buyable)::int as b from series`;
+      if ((done[0]!.b as number) < dep.stocks.length * 20) return false;
       const { json } = await api("/v1/chains");
       const names = json.names ?? [];
       return names.length === dep.stocks.length && names.every((n: any) => n.buyable) ? names : false;
-    }, 300_000, 5000).catch(async () => (await api("/v1/chains")).json.names);
+    }, 1_200_000, 5000).catch(async () => (await api("/v1/chains")).json.names); // the lister retries every 10 min while it cannot list
     const counts = await sql`select name, count(*)::int as n, count(*) filter (where buyable)::int as b from series group by name order by name`;
     const total = counts.reduce((a, r) => a + (r.n as number), 0);
     assert(counts.length === dep.stocks.length && counts.every((r) => r.b >= 20), `listing incomplete: ${JSON.stringify(counts)}`);
@@ -738,7 +740,17 @@ async function main() {
   // Session flows on QQQ: no earnings report (TSLA and AAPL sit in an earnings buy-block on this fork, see above).
   const qqq = await chainOf("QQQ");
   const tslaRow = qqq.rows.find((r) => r.speed === "DAILY" && r.isCall && Math.abs(r.strike - qqq.spot) === Math.min(...qqq.rows.map((x) => Math.abs(x.strike - qqq.spot))))!;
+  // A keeper risk pause from an earlier flow (all vol stale) is lifted by the timelock admin, as an operator would.
+  const liftGlobalPause = async (f: Flow) => {
+    const flags = await engineRead<readonly [boolean, boolean, boolean, boolean]>("flags");
+    if (!flags[0]) return;
+    const timelock = getAddress(C.timelock!);
+    const admin = await impersonated(test, timelock);
+    await f.send("engine.setBuysPaused(false) [timelock admin]", admin, { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "setBuysPaused", args: [false] }) });
+    await test.stopImpersonatingAccount({ address: timelock });
+  };
   const tryBuy = async (f: Flow, row: SeriesRow, role: Role, match: string | RegExp) => {
+    await liftGlobalPause(f); // no expected failure here is the global pause
     const deadline = BigInt(await chainTime()) + 300n;
     const w = walletFor(role);
     const have = await pub.readContract({ address: C.usdg, abi: erc20Abi, functionName: "allowance", args: [addressOf(role), C.engine] });
@@ -746,6 +758,7 @@ async function main() {
     return f.expectRevert("engine.buy", w, { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "buy", args: [row.id, WAD, USD(5000), deadline, addressOf(role)] }) }, match);
   };
   const buyOk = async (f: Flow, row: SeriesRow, role: Role) => {
+    await liftGlobalPause(f);
     // Once a perp equity post exists (the hedge-stale flow made one), the hedger must keep posting or buys pause; the
     // fork has no perp venue, so the exercise posts for it, as the hedger would.
     if (await pub.readContract({ address: C.pool, abi: PoolAbi, functionName: "hedgeStale" })) {
@@ -765,9 +778,21 @@ async function main() {
     const ratio = Number(q.sigmaBps) / Number(r.sigmaBps);
     await startServices();
     await waitVolFresh(["QQQ", "NVDA"]);
+    // With every name's vol stale the keeper's risk monitor pauses all buys (guardian role, never unpauses by itself).
+    let unpause = "no global pause was needed";
+    const flags = await engineRead<readonly [boolean, boolean, boolean, boolean]>("flags");
+    if (flags[0]) {
+      const logged = await sql`select reason from pause_log where scope = 'global' order by ts desc limit 1`.catch(() => []);
+      await f.expectRevert("engine.setBuysPaused(false) by the guardian", walletFor("guardian"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "setBuysPaused", args: [false] }) }, "NotGuardian");
+      const timelock = getAddress(C.timelock!);
+      const admin = await impersonated(test, timelock);
+      await f.send("engine.setBuysPaused(false) [timelock admin]", admin, { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "setBuysPaused", args: [false] }) });
+      await test.stopImpersonatingAccount({ address: timelock });
+      unpause = `the keeper's risk monitor had paused all buys (${JSON.stringify(logged[0] ?? {}).slice(0, 80)}); the guardian cannot unpause (NotGuardian), the timelock admin did`;
+    }
     await buyOk(f, tslaRow, "bob");
     assert(ratio > 1.15, `sell sigma ratio ${ratio}`);
-    return `${reason}; sell quote sigma ${q.sigmaBps} vs posted ${r.sigmaBps} base (x${ratio.toFixed(3)}, skew included); buy works after the vol-engine restarts`;
+    return `${reason}; sell quote sigma ${q.sigmaBps} vs posted ${r.sigmaBps} base (x${ratio.toFixed(3)}, skew included); ${unpause}; buy works after the vol-engine restarts`;
   });
 
   // Hedge stale: a perp equity post goes older than 2h.
@@ -778,7 +803,7 @@ async function main() {
     await warp(2 * 3600 + 120);
     await waitVolFresh(["QQQ"]);
     const stale = await pub.readContract({ address: C.pool, abi: PoolAbi, functionName: "hedgeStale" });
-    const reason = await tryBuy(f, tslaRow, "bob", /HEDGE|BuysArePaused/);
+    const reason = await tryBuy(f, tslaRow, "bob", /"HEDGE"/);
     const now2 = BigInt(await chainTime());
     await f.send("pool.postHedgeEquity", hw, { to: C.pool, data: encodeFunctionData({ abi: PoolAbi, functionName: "postHedgeEquity", args: [0n, now2, keccak256(toHex("fork-perp-snapshot-2"))] }) });
     await buyOk(f, tslaRow, "bob");
@@ -856,6 +881,10 @@ async function main() {
     await waitVolFresh(["NVDA"]).catch(() => notes.push("weekend: NVDA vol was still stale when the weekend checks ran (sells then price at sigma x 1.2)"));
     const r = await priceReading("NVDA");
     assert(r.session === 2, `session ${r.session}, not CLOSED`);
+    const [lastS] = await pub.readContract({ address: C.priceGuard, abi: PriceGuardAbi, functionName: "lastGoodPrice", args: [stockOf("NVDA")] }) as readonly [bigint, bigint];
+    assert(lastS > 0n, "PriceGuard has no last good price for NVDA (the keeper's poke upkeep did not run)");
+    // the hedge-stale flow left a perp equity post behind: keep it fresh so the session rule is what blocks the buy
+    await f.send("pool.postHedgeEquity (keep-alive)", walletFor("hedger"), { to: C.pool, data: encodeFunctionData({ abi: PoolAbi, functionName: "postHedgeEquity", args: [0n, BigInt(await chainTime()), keccak256(toHex(`fork-perp-${Date.now()}`))] }) });
     const reason = await tryBuy(f, row, "alice", "SessionBlocksBuys");
     const closed = await engineRead<{ spreadBps: bigint; usdg: bigint }>("quote", [row.id, WAD, false]);
     const units = (await positionUnits(addressOf("alice"), row.id)) / 2;
@@ -892,7 +921,7 @@ async function main() {
     const during = await priceReading("SPY");
     const ch = await chainOf("SPY");
     const row = ch.rows.find((r) => r.speed === "WEEKLY" && r.isCall)!;
-    const reason = await tryBuy(f, row, "bob", /SPLIT|BuysArePaused|PRICE/);
+    const reason = await tryBuy(f, row, "bob", /"SPLIT"|"PRICE"/);
     await warpTo(Number(effectiveAt) + 3600 + 120);
     await waitVolFresh(["SPY"]);
     await f.send("priceGuard.poke(SPY)", walletFor("carol"), { to: C.priceGuard, data: encodeFunctionData({ abi: PriceGuardAbi, functionName: "poke", args: [aapl] }) }).catch(() => undefined);
