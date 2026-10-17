@@ -8,7 +8,7 @@ import {
 } from "../option-schemas";
 import { loadNameContext, marketInputs, seriesInputs, type NameContext } from "../quote/context";
 import {
-  displayCost, parseWad, quoteUnits, usdgText, wadText, type BuyBlock, type EngineQuote, type SessionName, normDecimal, projectedNorm,
+  displayCost, looseWad, parseWad, quoteUnits, usdgText, wadText, type BuyBlock, type EngineQuote, type SessionName, normDecimal, projectedNorm,
 } from "../quote/model";
 import { OptionEngineAbi } from "../../abi";
 import { inviteGate } from "./invites";
@@ -160,8 +160,12 @@ export function registerQuoteRoutes(app: OpenAPIHono, deps: ApiDependencies): vo
     if (!quote) return context.json({ error: "NO_VOL", message: "No volatility inputs are indexed for this series yet." }, 503);
     // The engine accrues before the sell: burn the tokens that hold `units` at the norm projected to now.
     const norm = normDecimal(projectedNorm(seriesInputs(series), market, Number(series.norm), Date.parse(series.lastAccrual)));
-    const tokens = tokensForUnits(unitsWad, norm);
+    let tokens = tokensForUnits(unitsWad, norm);
     if (tokens === null || tokens > UINT128_MAX) return context.json({ error: "BAD_REQUEST", message: "Amount out of range." }, 422);
+    // "Sell everything": the units the positions view showed a moment ago need a hair more tokens now (funding kept
+    // running), which would burn more than the wallet holds and revert. Within 0.1% of the holding, sell the holding.
+    const held = await heldTokens(deps, series.token, body.account);
+    if (held !== null && tokens > held && tokens <= held + held / 1_000n) tokens = held;
     const queued = quote.sellQueued;
     const minProceeds = queued ? 0n : (quote.usdg * BigInt(10_000 - body.slippageBps)) / 10_000n;
     const deadline = Math.floor(now.getTime() / 1_000) + body.deadlineSeconds;
@@ -234,4 +238,11 @@ export function shieldPctFor(strike: number, spot: number, listedStrikes: readon
   const aim = above !== undefined ? (strike + above) / 2 : strike * 1.005;
   const pct = Math.floor((1 - aim / spot) * 10_000);
   return Math.min(9_999, Math.max(0, pct));
+}
+
+/** The account's indexed option-token balance (18 dp), or null when none is indexed. */
+async function heldTokens(deps: ApiDependencies, token: string, account: string): Promise<bigint | null> {
+  const rows = await deps.sql`SELECT balance::text AS balance FROM balances WHERE token = ${token.toLowerCase()} AND account = ${account.toLowerCase()}` as unknown as { balance: string }[];
+  const text = rows[0]?.balance;
+  return text ? looseWad(text) : null;
 }

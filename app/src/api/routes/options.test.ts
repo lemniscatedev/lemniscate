@@ -264,7 +264,7 @@ suite("option API over indexed data", () => {
     const projected = Number(9n * 10n ** 36n / tokens) / 1e18;
     const V = Number(BigInt(body.quote.vMarkWad)) / 1e18;
     const expected = fundingStep(0.9, V, 0, 3600, 604_800);
-    expect(Math.abs(projected - expected) / expected).toBeLessThan(1e-6);
+    expect(Math.abs(projected - expected) / expected).toBeLessThan(1e-5); // a few ms of extra funding since the fixture
     expect(BigInt(body.minProceedsUsdg)).toBe((BigInt(body.quote.usdg) * 9_950n) / 10_000n);
     const decoded = decodeFunctionData({ abi: OptionEngineAbi, data: body.data });
     expect(decoded.functionName).toBe("sell");
@@ -313,6 +313,18 @@ suite("option API over indexed data", () => {
     expect(await (await post("/v1/intent/shield", { name: "NVDA", tokenUnits: "5", account: ALICE })).json()).toMatchObject({ reason: "SESSION_CLOSED" });
     await setTick("REGULAR");
     fresh();
+  });
+
+  test("selling everything the positions view shows never burns more tokens than the wallet holds (todo 23 fork bug)", async () => {
+    const before = await (await get(`/v1/accounts/${ALICE}/positions`)).json() as any;
+    const position = before.positions[0];
+    await Bun.sleep(150); // funding keeps running between the two requests, as it does between a page load and a click
+    const sell = await (await post("/v1/intent/sell", { series: position.seriesId, units: position.units, account: ALICE })).json() as any;
+    expect(BigInt(sell.tokens)).toBeLessThanOrEqual(40n * 10n ** 18n);
+    expect(BigInt(sell.tokens)).toBeGreaterThan(39n * 10n ** 18n);
+    // asking for clearly more than is held is still passed through (the engine refuses it)
+    const tooMuch = await (await post("/v1/intent/sell", { series: position.seriesId, units: "100", account: ALICE })).json() as any;
+    expect(BigInt(tooMuch.tokens)).toBeGreaterThan(40n * 10n ** 18n);
   });
 
   test("GET /v1/pool: NAV, exposures, stress, caps usage, hedge age, drawdown and queue (R4)", async () => {
