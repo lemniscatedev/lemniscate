@@ -90,7 +90,8 @@ library EngineStorage {
 
     /// @dev Per-name sums that bound the liability at today's S from the last-touch book in O(1) per name: delta and
     /// delta x mark S (tangent, a lower bound by convexity), units of calls and puts (|delta| <= 1, an upper bound),
-    /// the envelope [lo, hi] of the mark prices, and per speed vega and vega x mark sigma (first-order vol term).
+    /// the envelope [lo, hi] of the mark prices, per speed vega and vega x mark sigma (first-order vol term), and per
+    /// speed book value plus the time of the last full re-mark (funding accrued since the marks, follow-up B2).
     struct NameMark {
         int256 d;
         int256 ds;
@@ -100,6 +101,8 @@ library EngineStorage {
         uint128 hi;
         uint256[2] vg;
         uint256[2] vb;
+        uint256[2] val; // B2: per speed, the book value of the name's series at their marks (WAD USDG)
+        uint64 tc; // B2: the last time every live series of the name was marked (all marks are at or after it)
     }
 
     /// @custom:storage-location erc7201:lemniscate.storage.Engine

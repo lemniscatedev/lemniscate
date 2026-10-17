@@ -162,4 +162,43 @@ contract F12NavMarkTest is SystemFixture {
         _deposit(makeAddr("carol"), 1e6);
         assertLe(pool.highWaterNavPerShare(), byCheckpoint + 1e12, "a deposit records the exit-side mark");
     }
+
+    /// @dev B2-2: funding accrued since the last mark lowers the true liability (holders pay the pool), while the book
+    /// still holds the mark. A deposit just before the keeper's accrual must not get the shares that funding is about to
+    /// lift: the entry bound subtracts the most funding could have taken since the name's last full re-mark.
+    function test_B2_depositBeforeAccrualDoesNotCaptureFunding() public {
+        _hedgedCallBook();
+        bytes32 put = _list(0, false, 100e18, WEEKLY);
+        _buy(alice, put, UNITS);
+        _accrueAll();
+        skip(50 minutes); // no price move, no keeper accrual yet
+        uint256 stale = pool.previewDeposit(100_000e6);
+        uint256 snap = vm.snapshotState();
+        _accrueAll();
+        uint256 remarked = pool.previewDeposit(100_000e6);
+        vm.revertToState(snap);
+        emit log_named_uint("shares for 100k before the accrual", stale);
+        emit log_named_uint("shares for 100k after the accrual ", remarked);
+        // 50 ppm: the guard band is built from the greeks at the marks and moves by funding x band (about 17 ppm
+        // here); without the funding term the entry got 236 ppm more shares.
+        assertLe(stale, remarked + remarked * 50 / 1e6, "an entry before the accrual must not get more shares");
+        assertGe(engine.navLiability(true), engine.totalLiability(), "the exit bound still covers the liability");
+    }
+
+    /// @dev B2-2: the funding term is a bound, not a guess: for any gap up to a day the entry bound never exceeds the
+    /// liability after the accrual.
+    function testFuzz_B2_entryBoundBelowTheAccruedLiability(uint256 gap, uint256 moveBps, bool up) public {
+        _hedgedCallBook();
+        bytes32 put = _list(0, false, 95e18, WEEKLY);
+        _buy(alice, put, UNITS);
+        _accrueAll();
+        gap = bound(gap, 1, 1 days);
+        moveBps = bound(moveBps, 0, 1000);
+        skip(gap);
+        _refreshVols();
+        _setPrice(0, up ? 100e18 * (10_000 + moveBps) / 10_000 : 100e18 * (10_000 - moveBps) / 10_000);
+        uint256 low = engine.navLiability(false);
+        _accrueAll();
+        assertLe(low, engine.bookValue() + engine.bookValue() / 1e4 + 1e6, "entry bound <= accrued liability");
+    }
 }

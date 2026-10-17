@@ -11,7 +11,8 @@ import {EngineStorage} from "./EngineStorage.sol";
 /// claim was priced on a stale liability (and a caller could re-mark only the series that suit them). This library
 /// keeps, per name, O(1) sums over the series' last marks and turns them into a bound on today's liability:
 ///  - lower bound (deposits): bookValue + sum of delta_i x (S - S_i), the tangent at each series' mark (option values
-///    are convex in S), floored at minus the name's book value;
+///    are convex in S), less the most funding can have taken since the name's last full re-mark (value x dt / tau per
+///    speed, follow-up B2), floored at minus the name's book value;
 ///  - upper bound (claims, the high-water checkpoint): bookValue + call units x max(0, S - lo) + put units x
 ///    max(0, hi - S), since |dV/dS| <= 1 per unit and every mark S_i lies in the envelope [lo, hi];
 ///  - plus a first-order vol term per speed, vega x (sigma now - sigma at the mark), 1.5x on the side that hurts the
@@ -23,6 +24,8 @@ import {EngineStorage} from "./EngineStorage.sol";
 library EngineMarkLib {
     uint256 private constant WAD = 1e18;
     uint256 private constant VOL_POINT_BPS = 100;
+    uint256 private constant DAILY = 86_400;
+    uint256 private constant WEEKLY = 604_800;
 
     /// @dev Replaces series `id`'s contribution (old delta and vega, units and mark S / sigma as stored) with the new
     /// one at mark S `s` and base sigma `sigma`. Internal: inlined into the trade and accrual libraries (gas).
@@ -33,6 +36,7 @@ library EngineMarkLib {
         bool isCall,
         int256[2] memory delta,
         uint256[2] memory vega,
+        uint256[2] memory value,
         uint256 units,
         uint256 s,
         uint64 sigma
@@ -49,6 +53,8 @@ library EngineMarkLib {
             n.vg[sp] -= vega[0];
             n.vb[sp] -= vega[0] * m.sigma;
         }
+        n.val[sp] = n.val[sp] + value[1] - value[0];
+        if (n.lo == 0) n.tc = uint64(block.timestamp);
         n.d += delta[1];
         n.ds += _smul(delta[1], s);
         if (isCall) n.uCall += units;
@@ -68,6 +74,7 @@ library EngineMarkLib {
         EngineStorage.NameMark storage n = EngineStorage.layout().marks[stock];
         n.lo = uint128(s);
         n.hi = uint128(s);
+        n.tc = uint64(block.timestamp);
     }
 
     /// @notice The liability bound at today's prices: `high` the upper bound (claims), else the lower bound (deposits).
@@ -100,6 +107,11 @@ library EngineMarkLib {
             if (vol > 0) a += vol * 3 / 2;
         } else {
             a = _smul(n.d, s) - n.ds;
+            // B2: funding since the marks only lowers the liability, by at most value x dt / tau per series (the
+            // funding rate (V - payoff) / (V tau) is at most 1 / tau, also at F11's max(start, now) rate); every
+            // non-dust mark is at or after tc.
+            uint256 dt = block.timestamp - n.tc;
+            if (dt != 0) a -= int256((n.val[0] / DAILY + n.val[1] / WEEKLY) * dt);
             int256 floor_ = -int256($.book[stock].value);
             if (a < floor_) a = floor_;
             if (vol < 0) a += vol * 3 / 2;

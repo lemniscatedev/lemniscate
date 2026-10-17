@@ -412,6 +412,7 @@ library EngineCore {
             c.isCall,
             [int256(b.sNow.delta), b.sAfter.delta],
             [b.sNow.vega, b.sAfter.vega],
+            [b.sNow.value, b.sAfter.value],
             b.unitsAfter,
             c.s,
             c.sigmaPosted

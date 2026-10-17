@@ -355,8 +355,10 @@ script's `check(address)` asserts the owner (the Safe), signer, immutables, stak
   claims an upper bound of the liability at today's price (O(names)), so an LP who exits right after a move the keeper has not
   re-marked yet may get slightly less than the exact NAV (and an entrant slightly fewer shares); after the keeper's re-mark the two
   bounds are the exact book value. The hedge leg of an entry or exit is valued at the worse for that LP of the feed S and the
-  5-minute trade TWAP, and the high-water checkpoint always uses the exit side. The vol part of the bound is first order (x1.5 on the conservative side), and funding not yet
-  accrued since the last mark is not in it (LOW).
+  5-minute trade TWAP, and the high-water checkpoint always uses the exit side. The vol part of the bound is first order (x1.5 on the conservative side). The entry bound also
+  subtracts the most funding can have taken since the name's last full re-mark (book value x elapsed / tau per speed), so a
+  deposit just before an accrual does not capture it; what remains is the NAV guard band being built from the greeks at the
+  marks (second order, tens of ppm of NAV per keeper interval) (LOW).
 - Dust (review F08/F14/F24): every buy costs at least $1 and a partial sell must move and leave at least $1 (a whole-balance sell is
   always allowed); series worth under $1 in total can be retired from the keeper's live list by anyone and accrue only when touched.
 - The off-chain signer and the issuers in items 5 and 6 are trusted parties. We cannot remove those powers; we limit what they can do to Lemniscate state.

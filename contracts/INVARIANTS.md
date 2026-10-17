@@ -191,6 +191,7 @@ itself (market closed, sybils, permanent hold, one bad user, dust).
 | F11/F34 | A gap is charged at max(rate stored at the last accrual, rate now); holder-picked accruals pay within 3% of dense sampling. | `security/F11AccrueTiming.t.sol` |
 | F12/F15 | Deposits at a lower bound, claims and the checkpoint at an upper bound of the liability at today's S, from O(1) per-name sums; a keeper re-mark collapses both to the book value; the bounds bracket the exact liability (fuzz). | `security/F12NavMark.t.sol` |
 | F12/F15 (B2) | LP entries value the hedge leg at max(S, trade TWAP), exits and the checkpoint at min(S, trade TWAP); the mid NAV keeps S; a deposit never ratchets the high-water mark above the exit side. | `security/F12NavMark.t.sol::test_B2_*` |
+| F12/F15 (B2) | The entry (lower) liability bound subtracts value x elapsed / tau per speed since the name's last full re-mark, so it stays below the liability after the accrual for any gap up to a day and any move up to 10% (fuzz). | `security/F12NavMark.t.sol::test_B2_depositBeforeAccrualDoesNotCaptureFunding`, `::testFuzz_B2_entryBoundBelowTheAccruedLiability` |
 | F20 | skewK coefficients capped (3.0 / 1.0) and stepped (0.2 per post); guardian `revokeSigner`. | `security/F20SkewBound.t.sol` |
 | F35 | `TickPrice.priceX128` saturates instead of overflowing at ticks 880341..887272; the TWAP read stays "unavailable", never a revert. | `security/F35TickPrice.t.sol` |
 
