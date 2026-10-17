@@ -95,6 +95,16 @@ pip install -e '.[dev]'
 pytest -q
 ```
 
+### Local mainnet fork
+
+`app/scripts/fork/up.sh` runs the whole stack on an anvil fork of Robinhood Chain mainnet (chain id 31337, never 4663):
+a caching proxy in front of the public RPC, the fork pinned to a block with its state saved, a local Postgres database,
+the `DeploySystem` fork profile against the real Stock Tokens, feeds and Uniswap pools, then every service. `down.sh`
+stops it and keeps the state; `reset.sh` starts over. `fund.ts` gives test wallets ETH and USDG (from a real holder,
+never by writing storage), `warp.ts` moves the fork's clock, and `exercise.ts` runs every user and admin action with
+expected failures and writes a report (`report.ts`). Ports move together with `PORT_OFFSET`; state lives in
+`~/.lemniscate/fork` (`FORK_DIR`). The fork-only relaxations are listed at the top of `scripts/fork/setup.ts`.
+
 ### Configuration
 
 All config comes from environment variables and is checked at startup (`app/src/config.ts`). `app/.env.example` lists them with safe defaults.
