@@ -1,5 +1,5 @@
 import { encodeFunctionData, type Address, type Hex } from "viem";
-import { PriceGuardAbi, SeriesRegistryAbi } from "../../abi";
+import { OptionEngineAbi, PriceGuardAbi, SeriesRegistryAbi } from "../../abi";
 import {
   ARCHIVE_MONEYNESS_BPS, RELIST_NORM, SPEEDS, STRIKE_STEP_USD, gridStrikes, moneynessBps, seriesId,
 } from "../../config/listing";
@@ -12,6 +12,8 @@ const LIVE_SESSIONS = new Set([0, 1]);
 const SESSION_LABEL = ["REGULAR", "EXTENDED", "CLOSED", "UNKNOWN", "HALTED"];
 /** A series listed less than this long ago that is still not buyable gets setBuyable(true) (a listing whose second step failed). */
 const RECENT_LISTING_SECONDS = 86_400n;
+/** Series registered with the engine per syncSeries transaction (each new one costs ~120k gas). */
+const ENGINE_SYNC_BATCH = 40;
 
 const etDate = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" });
 
@@ -172,6 +174,22 @@ export function createListerJob(context: KeeperContext) {
       }
       if (!state.buyable && !state.archived) {
         await send("lister:buyable", encodeFunctionData({ abi: SeriesRegistryAbi, functionName: "setBuyable", args: [item.id, true] }));
+      }
+    }
+    // Register the new series with the engine now (permissionless engine.syncSeries). Otherwise the first Shield after
+    // a listing run pays to register up to 64 of them (6.2M gas on the fork) and may not see the rest yet.
+    const newlyListed = listed.length;
+    if (newlyListed && !dryRun) {
+      for (let left = newlyListed; left > 0; left -= ENGINE_SYNC_BATCH) {
+        try {
+          await context.tx.submit({
+            label: "lister:sync", to: context.deployment.contracts.engine as Address,
+            data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "syncSeries", args: [BigInt(Math.min(left, ENGINE_SYNC_BATCH))] }),
+          });
+        } catch (error) {
+          context.logger.warn({ err: safeErrorSummary(error) }, "engine.syncSeries failed; Shield will register the series itself");
+          break;
+        }
       }
     }
     for (const item of plan.setBuyable) {

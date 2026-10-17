@@ -27,7 +27,7 @@ describe("lister", () => {
     const first = await job({ force: true });
     // 2 stocks x 2 speeds x 2 sides x 5 strikes = 40 (NVDA 5 distinct, SPY step 10 on 770.75: 690, 730, 770, 810, 850 = 5)
     expect(first.listed).toBe(40);
-    expect(chain.sent.every((tx) => tx.name === "listSeries")).toBe(true);
+    expect(chain.sent.filter((tx) => tx.name !== "syncSeries").every((tx) => tx.name === "listSeries")).toBe(true);
     const before = chain.sent.length;
     const second = await job({ force: true });
     expect(second.listed).toBe(0);
@@ -75,7 +75,7 @@ describe("lister", () => {
   test("respects the per-run transaction cap and asks to be run again", async () => {
     const chain = chainWith();
     const result = await createListerJob(chain.context({}, { KEEPER_LISTER_MAX_TX: 10 }))({ force: true });
-    expect(chain.sent.length).toBe(10);
+    expect(chain.sent.filter((tx) => tx.name !== "syncSeries").length).toBe(10); // the engine sync is not a registry tx
     expect(result.remaining).toBe(30);
     expect(result.retryAfterMs).toBe(30_000);
   });
@@ -145,6 +145,21 @@ describe("lister follow-up reads (todo 23 fork bug: 10 of 100 listings stayed no
     const result = await createListerJob(chain.context())({ force: true });
     expect(result.listed).toBe(40);
     expect([...chain.series.values()].filter((s) => !s.buyable).length).toBe(0);
+  });
+});
+
+describe("engine series sync after listing (todo 23: the first Shield paid 6.2M gas to sync the new series)", () => {
+  test("every listed series is registered with the engine by the keeper, in batches", async () => {
+    const chain = chainWith();
+    const result = await createListerJob(chain.context())({ force: true });
+    const syncs = chain.sent.filter((tx) => tx.name === "syncSeries");
+    expect(result.listed).toBe(40);
+    expect(syncs.length).toBeGreaterThan(0);
+    expect(syncs.reduce((sum, tx) => sum + Number(tx.args[0]), 0)).toBeGreaterThanOrEqual(40);
+    expect(syncs.every((tx) => tx.to === A.engine && Number(tx.args[0]) <= 40)).toBe(true);
+    const again = chain.sent.length;
+    await createListerJob(chain.context())({ force: true });
+    expect(chain.sent.slice(again).some((tx) => tx.name === "syncSeries")).toBe(false); // nothing new listed
   });
 });
 
