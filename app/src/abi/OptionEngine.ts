@@ -712,6 +712,16 @@ export const OptionEngineAbi = [
             "name": "vb",
             "type": "uint256[2]",
             "internalType": "uint256[2]"
+          },
+          {
+            "name": "val",
+            "type": "uint256[2]",
+            "internalType": "uint256[2]"
+          },
+          {
+            "name": "tc",
+            "type": "uint64",
+            "internalType": "uint64"
           }
         ]
       }
