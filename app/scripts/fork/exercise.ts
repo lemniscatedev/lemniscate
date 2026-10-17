@@ -194,7 +194,9 @@ async function volFresh(name: string, speed: 0 | 1): Promise<boolean> {
   const r = await pub.readContract({ address: C.volOracle, abi: VolOracleAbi, functionName: "read", args: [stockOf(name), speed] }) as { stale: boolean; sigmaBps: bigint };
   return !r.stale && r.sigmaBps > 0n;
 }
-async function waitVolFresh(names: string[], timeoutMs = 240_000) {
+// After a warp the vol-engine signs only once the indexer has a tick from the new chain time (review F43: never sign
+// from ticks older than 25 minutes); the indexer's snapshot heartbeat is 10 wall-clock minutes, so allow 15.
+async function waitVolFresh(names: string[], timeoutMs = 900_000) {
   await waitFor(`fresh vol for ${names.join(",")}`, async () => {
     for (const n of names) for (const sp of [0, 1] as const) if (!(await volFresh(n, sp))) return false;
     return true;
@@ -244,6 +246,49 @@ async function positionUnits(account: Address, seriesId: string): Promise<number
   return p ? Number(p.units) : 0;
 }
 
+
+// ------------------------------------------------------------------------------------------------ review-fix helpers (todo 27)
+const feedAbi = parseAbi(["function latestRoundData() view returns (uint80,int256,uint256,uint256,uint80)", "function setRound(int256,uint256)"]);
+/** Swaps `name`'s Chainlink feed for a MockGuardFeed at the real answer (timelock impersonated). Returns the mock, the
+ * real answer and a restore function. */
+async function mockFeed(f: Flow, name: string) {
+  const timelock = getAddress(C.timelock!);
+  const admin = await impersonated(test, timelock);
+  const art = JSON.parse(readFileSync(join(ROOT, "contracts/out/PriceGuardMocks.sol/MockGuardFeed.json"), "utf8"));
+  const cfg = await pub.readContract({ address: C.priceGuard, abi: PriceGuardAbi, functionName: "config", args: [stockOf(name)] }) as any;
+  const [, answer] = await pub.readContract({ address: cfg.feed, abi: feedAbi, functionName: "latestRoundData" });
+  const deployHash = await walletFor("deployer").deployContract({ abi: art.abi, bytecode: art.bytecode.object, args: [8, answer], chain: null, account: walletFor("deployer").account! });
+  const mock = (await pub.waitForTransactionReceipt({ hash: deployHash })).contractAddress!;
+  await f.send("mockFeed.setRound(fresh)", walletFor("deployer"), { to: mock, data: encodeFunctionData({ abi: feedAbi, functionName: "setRound", args: [answer, BigInt(await chainTime())] }) });
+  await f.send(`priceGuard.setStock(${name} mock feed) [timelock]`, admin, { to: C.priceGuard, data: encodeFunctionData({ abi: PriceGuardAbi, functionName: "setStock", args: [stockOf(name), { ...cfg, feed: mock }] }) });
+  const setRound = async (value: bigint, updatedAt?: bigint) =>
+    f.send("mockFeed.setRound", walletFor("deployer"), { to: mock, data: encodeFunctionData({ abi: feedAbi, functionName: "setRound", args: [value, updatedAt ?? BigInt(await chainTime())] }) });
+  const restore = async () => {
+    await f.send(`priceGuard.setStock(${name} real feed) [timelock]`, admin, { to: C.priceGuard, data: encodeFunctionData({ abi: PriceGuardAbi, functionName: "setStock", args: [stockOf(name), cfg] }) });
+    await test.stopImpersonatingAccount({ address: timelock });
+  };
+  return { mock, answer: answer as bigint, admin, setRound, restore };
+}
+async function liftSeriesPauses(f: Flow, name: string): Promise<number> {
+  const ch = await chainOf(name);
+  const paused: Hex[] = [];
+  for (const r of ch.rows) if (await engineRead<boolean>("seriesBuysPaused", [r.id])) paused.push(r.id);
+  if (!paused.length) return 0;
+  const timelock = getAddress(C.timelock!);
+  const admin = await impersonated(test, timelock);
+  for (const id of paused) {
+    await f.send("engine.setSeriesBuysPaused(false) [timelock admin]", admin, { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "setSeriesBuysPaused", args: [id, false] }) });
+  }
+  await test.stopImpersonatingAccount({ address: timelock });
+  return paused.length;
+}
+async function holdOf(id: Hex, who: Address) {
+  return engineRead<{ until: bigint; s: bigint }>("holdOf", [id, who]);
+}
+async function quoteFor(id: Hex, units: bigint, isBuy: boolean, who: Address) {
+  return engineRead<{ usdg: bigint }>("quoteFor", [id, units, isBuy, who]);
+}
+
 // ------------------------------------------------------------------------------------------------ service control
 function pidOf(name: string): number | undefined {
   const file = join(FORK_DIR, "pids", `${name}.pid`);
@@ -252,7 +297,14 @@ function pidOf(name: string): number | undefined {
 function alive(pid?: number) { if (!pid) return false; try { process.kill(pid, 0); return true; } catch { return false; } }
 async function stopService(name: string) {
   const pid = pidOf(name);
-  if (alive(pid)) { process.kill(pid!, "SIGTERM"); await waitFor(`${name} to stop`, async () => !alive(pid), 20_000, 250); }
+  if (!alive(pid)) return;
+  process.kill(pid!, "SIGTERM");
+  try { await waitFor(`${name} to stop`, async () => !alive(pid), 60_000, 250); }
+  catch {
+    // A job mid-transaction can outlive the grace period: this is the stack's own process (its pid file), so force it.
+    process.kill(pid!, "SIGKILL");
+    await waitFor(`${name} to stop after SIGKILL`, async () => !alive(pid), 10_000, 250);
+  }
 }
 async function startServices() {
   await new Promise<void>((resolve, reject) => {
@@ -358,12 +410,13 @@ async function main() {
       for (const [j, row] of picks.entries()) {
         const vol = await pub.readContract({ address: C.volOracle, abi: VolOracleAbi, functionName: "read", args: [stockOf(s.name), row.speed === "DAILY" ? 0 : 1] }) as any;
         const now = await chainTime();
+        const tradeTwap = Number(await pub.readContract({ address: C.priceGuard, abi: PriceGuardAbi, functionName: "tradeTwap", args: [stockOf(s.name)] }) as bigint) / 1e18;
         states.push({
           id: row.id, name: s.name, unitsWad: parseUnits(String(1 + j * 3.5), 18), isBuy: j % 2 === 0,
           series: { isCall: row.isCall, speed: row.speed, strike: row.strike, buyable: row.buyable, archived: false },
           market: {
             spot: Number(pr.s) / 1e18, session: SESS[pr.session]!, fresh: pr.fresh, priceBuysPaused: pr.buysPaused, engineBuysPaused: false,
-            sigmaBps: Number(vol.sigmaBps), skewK: BigInt(vol.skewK), volStale: vol.stale, nowMs: now * 1000,
+            sigmaBps: Number(vol.sigmaBps), skewK: BigInt(vol.skewK), volStale: vol.stale, nowMs: now * 1000, tradeTwap: tradeTwap || null,
             buyBlockFromMs: Number(vol.buyBlockFrom) ? Number(vol.buyBlockFrom) * 1000 : null, buyBlockToMs: Number(vol.buyBlockTo) ? Number(vol.buyBlockTo) * 1000 : null,
           },
         });
@@ -388,7 +441,9 @@ async function main() {
         const row = nvda.rows.find((r) => r.speed === speed && r.isCall === isCall && r.strike === strike)!;
         const pct = ((strike / nvda.spot - 1) * 100).toFixed(1);
         await flow("buy", `NVDA ${speed} ${isCall ? "call" : "put"} K=${strike} (${pct}% from spot)`, "API intent -> approve + engine.buy; Bought event; tokens minted; position in the API after indexing", async (f) => {
-          const units = "10";
+          // Review F08/F14: every buy costs at least $1; far out-of-the-money Daily units cost cents, so size up.
+          const q10 = await engineRead<{ usdg: bigint }>("quote", [row.id, 10n * WAD, true]);
+          const units = q10.usdg >= 1_500_000n ? "10" : String(Math.ceil((10 * 1.5e6) / Math.max(1, Number(q10.usdg))));
           const { receipt, intent } = await viaIntent(f, "buy", "alice", { series: row.id, units, slippageBps: 100 });
           const ev = events(receipt, OptionEngineAbi, C.engine).find((e) => e.eventName === "Bought");
           assert(ev, "no Bought event");
@@ -489,7 +544,7 @@ async function main() {
 
   // ---------------------------------------------------------------- shield
   await flow("shield", "Shield a Stock Token holding", "API shield intent -> engine.shield buys a Weekly Down option ~10% below spot for the NVDA held; ShieldBought; position indexed", async (f) => {
-    const { receipt, intent } = await viaIntent(f, "shield", "carol", { name: "NVDA", tokenUnits: "2", strikePctBelowBps: 1000, slippageBps: 100 });
+    const { receipt, intent } = await viaIntent(f, "shield", "carol", { name: "NVDA", tokenUnits: "5", strikePctBelowBps: 1000, slippageBps: 100 });
     const ev = events(receipt, OptionEngineAbi, C.engine).find((e) => e.eventName === "ShieldBought");
     assert(ev, "no ShieldBought");
     const held = await waitFor("shield position indexed", async () => { const u = await positionUnits(addressOf("carol"), ev.args.id); return u > 0 ? u : false; });
@@ -560,17 +615,22 @@ async function main() {
 
   // ---------------------------------------------------------------- sells
   for (const b of bought.filter((x) => x.role === "alice" && x.row.speed === "DAILY").slice(0, 6)) {
-    await flow("sell", `Sell half of ${b.row.name} ${b.row.speed} ${b.row.isCall ? "call" : "put"} K=${b.row.strike}`, "API sell intent -> engine.sell burns tokens, pays USDG >= minProceeds; position shrinks in the API", async (f) => {
+    await flow("sell", `Sell half (whole when half is under $1) of ${b.row.name} ${b.row.speed} ${b.row.isCall ? "call" : "put"} K=${b.row.strike}`, "API sell intent -> engine.sell burns tokens, pays USDG >= minProceeds; position shrinks in the API", async (f) => {
       const who = addressOf("alice");
-      const units = (await positionUnits(who, b.row.id)) / 2;
+      const all = await positionUnits(who, b.row.id);
+      // Review F08/F14: a partial sell must move and leave at least $1; a position worth under ~$2.4 is sold whole.
+      const halfQuote = await engineRead<{ usdg: bigint }>("quote", [b.row.id, parseUnits((all / 2).toFixed(6), 18), false]);
+      const whole = halfQuote.usdg < 1_200_000n;
       const usdgBefore = await usdgOf(who);
-      const { receipt, intent } = await viaIntent(f, "sell", "alice", { series: b.row.id, units: units.toFixed(6), slippageBps: 100 });
+      const { receipt, intent } = whole
+        ? { receipt: await f.send("engine.sell (whole balance)", walletFor("alice"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "sell", args: [b.row.id, await tokenBalance(b.row.token, who), 0n, BigInt(await chainTime()) + 600n, who] }) }), intent: { minProceedsUsdg: "0" } }
+        : await viaIntent(f, "sell", "alice", { series: b.row.id, units: (all / 2).toFixed(6), slippageBps: 100 });
       const ev = events(receipt, OptionEngineAbi, C.engine).find((e) => e.eventName === "Sold" || e.eventName === "SellQueued");
       assert(ev?.eventName === "Sold", `no Sold event (${ev?.eventName})`);
       const got = (await usdgOf(who)) - usdgBefore;
       assert(got >= BigInt(intent.minProceedsUsdg ?? 0), "paid less than minProceeds");
-      const left = await waitFor("position shrinks", async () => { const u = await positionUnits(who, b.row.id); return u < units * 1.999 ? u : false; });
-      return `received ${fmt(got)} USDG (min ${fmt(BigInt(intent.minProceedsUsdg ?? 0))}); API units left ${left}`;
+      const left = await waitFor("position shrinks", async () => { const u = await positionUnits(who, b.row.id); return u < all * 0.999 ? String(u) : false; });
+      return `${whole ? "whole position (half would be under the $1 minimum)" : "half"}: received ${fmt(got)} USDG (min ${fmt(BigInt(intent.minProceedsUsdg ?? 0))}); API units left ${left}`;
     });
   }
   await flow("sell", "Sell more tokens than held (expected failure)", "engine.sell reverts on the token burn", async (f) => {
@@ -773,7 +833,7 @@ async function main() {
   };
 
   // Vol stale: the vol-engine is stopped, the chain moves past validUntil.
-  await flow("sessions", "Vol post stale: buys pause, sells price at sigma x 1.2", "with the vol-engine stopped and validUntil passed: buy reverts StaleVol; sell quote uses sigma x 1.20; after the vol-engine restarts buys work again", async (f) => {
+  await flow("sessions", "Vol post stale: buys pause, sells price at sigma x 0.8", "with the vol-engine stopped and validUntil passed: buy reverts StaleVol; sell quote uses sigma x 0.80 (review F09/F13: a lapse lowers the bid); after the vol-engine restarts buys work again", async (f) => {
     await stopService("vol-engine");
     const r = await pub.readContract({ address: C.volOracle, abi: VolOracleAbi, functionName: "read", args: [stockOf("QQQ"), 0] }) as { validUntil: bigint; sigmaBps: bigint };
     await warpTo(Number(r.validUntil) + 60);
@@ -795,7 +855,7 @@ async function main() {
       unpause = `the keeper's risk monitor had paused all buys (${JSON.stringify(logged[0] ?? {}).slice(0, 80)}); the guardian cannot unpause (NotGuardian), the timelock admin did`;
     }
     await buyOk(f, tslaRow, "bob");
-    assert(ratio > 1.15, `sell sigma ratio ${ratio}`);
+    assert(ratio < 0.85 && ratio > 0.6, `sell sigma ratio ${ratio}`);
     return `${reason}; sell quote sigma ${q.sigmaBps} vs posted ${r.sigmaBps} base (x${ratio.toFixed(3)}, skew included); ${unpause}; buy works after the vol-engine restarts`;
   });
 
@@ -877,20 +937,93 @@ async function main() {
     return `HALTED read; ticket ${q.args.ticket} queued (API shows ${apiQueue.length}); fill while halted reverted; filled by a stranger after the fresh round, bob +${fmt(paid)} USDG; real feed restored`;
   });
 
+
+  // ---------------------------------------------------------------- review fixes (todo 27): trade price, hold, minimum trade
+  const ruleRow = nvda.rows.find((x) => x.speed === "WEEKLY" && x.isCall && x.strike === grid[Math.floor(grid.length / 2)])!;
+  await flow("rules", "Buys are priced at the worse of the feed and the 5-minute trade TWAP (F01/F02)", "a call buy records a hold whose S is max(feed S, PriceGuard.tradeTwap) and whose end is buy time + holdSeconds", async (f) => {
+    await waitVolFresh(["NVDA"]);
+    // The HALTED flow just before leaves the API's indexed NVDA tick halted until the next snapshot.
+    await f.send("priceGuard.poke(NVDA)", walletFor("carol"), { to: C.priceGuard, data: encodeFunctionData({ abi: PriceGuardAbi, functionName: "poke", args: [stockOf("NVDA")] }) });
+    await waitFor("NVDA not halted in the API", async () => {
+      const { status, json } = await api("/v1/intent/buy", { account: addressOf("bob"), series: ruleRow.id, units: "2", slippageBps: 300 });
+      return status === 200 || json?.reason !== "SESSION_HALTED";
+    }, 900_000, 5000);
+    const feed = (await priceReading("NVDA")).s;
+    const twap = await pub.readContract({ address: C.priceGuard, abi: PriceGuardAbi, functionName: "tradeTwap", args: [stockOf("NVDA")] }) as bigint;
+    const [, holdSeconds] = await engineRead<readonly [bigint, number, number]>("guards");
+    const { receipt } = await viaIntent(f, "buy", "bob", { series: ruleRow.id, units: "2", slippageBps: 300 });
+    const at = BigInt((await pub.getBlock({ blockNumber: receipt.blockNumber })).timestamp);
+    const h = await holdOf(ruleRow.id, addressOf("bob"));
+    const worse = twap > feed ? twap : feed;
+    assert(h.s >= feed, `hold S ${h.s} below the feed ${feed}`);
+    assert(twap === 0n || (h.s * 10_000n >= worse * 9_990n && h.s * 10_000n <= worse * 10_010n), `hold S ${h.s} is not max(feed ${feed}, twap ${twap})`);
+    assert(h.until === at + BigInt(holdSeconds || 1800), `hold until ${h.until}, expected ${at} + ${holdSeconds}`);
+    return `feed ${fmt(feed, 18)}, trade TWAP ${fmt(twap, 18)}, buy priced at ${fmt(h.s, 18)} (the higher); hold until buy + ${holdSeconds || 1800} s`;
+  });
+
+  await flow("rules", "A sell inside the 30-minute hold prices at the buy S (F01/F02)", "feed up 2% with no TWAP: bob (bought minutes ago) is quoted below carol (no hold) and the API sell intent shows the hold; 31 minutes later both quote the same", async (f) => {
+    const m = await mockFeed(f, "NVDA");
+    const src = await pub.readContract({ address: C.priceGuard, abi: PriceGuardAbi, functionName: "twapSource", args: [stockOf("NVDA")] }) as { pool: Address; window: number; bandBps: number };
+    try {
+      await waitVolFresh(["NVDA"]);
+      await viaIntent(f, "buy", "bob", { series: ruleRow.id, units: "2", slippageBps: 300 });
+      // Without a TWAP the trade S is the feed alone, so the hold is what binds after the print.
+      await f.send("priceGuard.setTwapSource(NVDA, none) [timelock]", m.admin, { to: C.priceGuard, data: encodeFunctionData({ abi: PriceGuardAbi, functionName: "setTwapSource", args: [stockOf("NVDA"), "0x0000000000000000000000000000000000000000", 0, 0] }) });
+      await m.setRound((m.answer * 102n) / 100n);
+      const qb = await quoteFor(ruleRow.id, WAD, false, addressOf("bob"));
+      const qc = await quoteFor(ruleRow.id, WAD, false, addressOf("carol"));
+      assert(qb.usdg < qc.usdg, `held sell ${qb.usdg} not below ${qc.usdg}`);
+      const intent = await waitFor("hold in the API sell intent", async () => {
+        const { status, json } = await api("/v1/intent/sell", { account: addressOf("bob"), series: ruleRow.id, units: "1", slippageBps: 300 });
+        return status === 200 && json.hold ? json : false;
+      }, 120_000, 3000);
+      await warp(31 * 60);
+      await waitVolFresh(["NVDA"]);
+      await m.setRound((m.answer * 102n) / 100n);
+      const qb2 = await quoteFor(ruleRow.id, WAD, false, addressOf("bob"));
+      const qc2 = await quoteFor(ruleRow.id, WAD, false, addressOf("carol"));
+      assert(qb2.usdg === qc2.usdg, `after the hold ${qb2.usdg} != ${qc2.usdg}`);
+      return `inside the hold bob ${fmt(qb.usdg)} vs carol ${fmt(qc.usdg)} USDG per unit; API sell intent hold ${JSON.stringify(intent.hold)}; after 31 min both ${fmt(qb2.usdg)}`;
+    } finally {
+      await f.send("priceGuard.setTwapSource(NVDA, restore) [timelock]", m.admin, { to: C.priceGuard, data: encodeFunctionData({ abi: PriceGuardAbi, functionName: "setTwapSource", args: [stockOf("NVDA"), src.pool, src.window, src.bandBps] }) }).catch(() => undefined);
+      await m.restore();
+    }
+  });
+
+  await flow("rules", "Minimum trade $1 (F08/F14/F24, expected failures)", "a buy costing under $1 reverts BelowMinimum; a partial sell leaving dust reverts BelowMinimum; selling the whole balance works", async (f) => {
+    await waitVolFresh(["NVDA"]);
+    const deadline = BigInt(await chainTime()) + 600n;
+    await f.send("usdg.approve(engine)", walletFor("carol"), { to: C.usdg, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [C.engine, 10n ** 12n] }) });
+    const tiny = await f.expectRevert("engine.buy (under $1)", walletFor("carol"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "buy", args: [ruleRow.id, WAD / 1000n, 10n ** 9n, deadline, addressOf("carol")] }) }, "BelowMinimum");
+    const q2 = await engineRead<{ usdg: bigint }>("quote", [ruleRow.id, 2n * WAD, true]);
+    await f.send("engine.buy (2 units)", walletFor("carol"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "buy", args: [ruleRow.id, 2n * WAD, (q2.usdg * 103n) / 100n, deadline, addressOf("carol")] }) });
+    const held = await tokenBalance(ruleRow.token, addressOf("carol"));
+    const dust = await f.expectRevert("engine.sell (leaves dust)", walletFor("carol"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "sell", args: [ruleRow.id, held - held / 100_000n, 0n, deadline, addressOf("carol")] }) }, "BelowMinimum");
+    const r = await f.send("engine.sell (whole balance)", walletFor("carol"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "sell", args: [ruleRow.id, held, 0n, deadline, addressOf("carol")] }) });
+    assert(events(r, OptionEngineAbi, C.engine).some((e) => e.eventName === "Sold"), "whole-balance sell did not settle");
+    return `${tiny}; ${dust}; whole balance sold`;
+  });
+
   // Weekend: CLOSED session.
   await flow("sessions", "Weekend: buys blocked, sells at last close with the wider spread", "Saturday: session CLOSED; buy reverts SessionBlocksBuys; sell succeeds with spreadBps about 3x the regular spread", async (f) => {
     const row = atmDaily;
     const regular = await engineRead<{ spreadBps: bigint; session: number }>("quote", [row.id, WAD, false]);
     await warpTo(nextNy(await chainTime(), 6, 12, 0));
-    await waitVolFresh(["NVDA"]).catch(() => notes.push("weekend: NVDA vol was still stale when the weekend checks ran (sells then price at sigma x 1.2)"));
+    await waitVolFresh(["NVDA"]).catch(() => notes.push("weekend: NVDA vol was still stale when the weekend checks ran (sells then price at sigma x 0.8)"));
     const r = await priceReading("NVDA");
     assert(r.session === 2, `session ${r.session}, not CLOSED`);
     const [lastS] = await pub.readContract({ address: C.priceGuard, abi: PriceGuardAbi, functionName: "lastGoodPrice", args: [stockOf("NVDA")] }) as readonly [bigint, bigint];
     assert(lastS > 0n, "PriceGuard has no last good price for NVDA (the keeper's poke upkeep did not run)");
     const reason = await tryBuy(f, row, "alice", "SessionBlocksBuys");
     const closed = await engineRead<{ spreadBps: bigint; usdg: bigint }>("quote", [row.id, WAD, false]);
-    const units = (await positionUnits(addressOf("alice"), row.id)) / 2;
-    const { receipt } = await viaIntent(f, "sell", "alice", { series: row.id, units: units.toFixed(6), slippageBps: 200 });
+    const all = await positionUnits(addressOf("alice"), row.id);
+    // Review F08/F14: half, unless half (or the rest) would be under the $1 minimum; then the whole position.
+    const half = await engineRead<{ usdg: bigint }>("quote", [row.id, parseUnits((all / 2).toFixed(6), 18), false]);
+    const whole = half.usdg < 1_200_000n;
+    // A whole-position sell sends the exact token balance (indexed units can trail the chain's and leave dust behind).
+    const receipt = whole
+      ? await f.send("engine.sell (whole balance)", walletFor("alice"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "sell", args: [row.id, await tokenBalance(row.token, addressOf("alice")), 0n, BigInt(await chainTime()) + 600n, addressOf("alice")] }) })
+      : (await viaIntent(f, "sell", "alice", { series: row.id, units: (all / 2).toFixed(6), slippageBps: 200 })).receipt;
     assert(events(receipt, OptionEngineAbi, C.engine).some((e) => e.eventName === "Sold"), "weekend sell did not settle");
     // Session factors (canonical quote parameters): REGULAR 1, EXTENDED 1.5, CLOSED 3.
     const before = [1, 1.5, 3, 3, 3][Number(regular.session)] ?? 1;
@@ -913,6 +1046,10 @@ async function main() {
   await flow("sessions", "Split fixture: multiplier x4, buys pause around it, S continuous", "issuer stages updateMultiplier(4x, effectiveAt) on SPY; PriceGuard pauses SPY buys (SPLIT) from 24h before to 1h after; afterwards uiMultiplier is 4x, S unchanged, buys resume", async (f) => {
     await warpTo(nextNy(await chainTime(), 1, 10, 0));
     await waitVolFresh(["SPY"]);
+    // After the long warps the keeper's risk monitor may have paused SPY series (vol stale past its grace while the
+    // vol-engine waited for fresh ticks). Its pauses never lift by themselves; the timelock admin lifts them here so the
+    // split's own pause is what this flow sees.
+    const lifted = await liftSeriesPauses(f, "SPY");
     const aapl = stockOf("SPY");
     const tok = parseAbi(["function uiMultiplier() view returns (uint256)", "function updateMultiplier(uint256,uint256)"]);
     const m0 = await pub.readContract({ address: aapl, abi: tok, functionName: "uiMultiplier" });
@@ -928,6 +1065,7 @@ async function main() {
     const reason = await tryBuy(f, row, "bob", /"SPLIT"|"PRICE"/);
     await warpTo(Number(effectiveAt) + 3600 + 120);
     await waitVolFresh(["SPY"]);
+    const liftedAfter = await liftSeriesPauses(f, "SPY"); // the 3-hour warp made vol "stale for hours" in chain time
     await f.send("priceGuard.poke(SPY)", walletFor("carol"), { to: C.priceGuard, data: encodeFunctionData({ abi: PriceGuardAbi, functionName: "poke", args: [aapl] }) }).catch(() => undefined);
     const m1 = await pub.readContract({ address: aapl, abi: tok, functionName: "uiMultiplier" });
     const after = await priceReading("SPY");
@@ -935,7 +1073,41 @@ async function main() {
     assert(m1 === m0 * 4n, "multiplier did not switch");
     assert(after.s === s0, `S moved ${s0} -> ${after.s}`);
     await buyOk(f, row, "bob");
-    return `before: paused=${during.buysPaused} (${reason}); after: uiMultiplier ${fmt(m0, 18)} -> ${fmt(m1, 18)}, S ${fmt(s0, 18)} unchanged, buy works`;
+    return `${lifted + liftedAfter ? `${lifted}+${liftedAfter} risk-paused SPY series (vol stale across the warps) lifted by the timelock; ` : ""}before: paused=${during.buysPaused} (${reason}); after: uiMultiplier ${fmt(m0, 18)} -> ${fmt(m1, 18)}, S ${fmt(s0, 18)} unchanged, buy works`;
+  });
+
+
+  // ORC-4 (review F07/F21): a feed HALTED for 7 days is settled at its last good price; queued sells then fill.
+  await flow("rules", "settleHalted: a feed halted for 7 days settles at its last good price (ORC-4)", "NVDA feed stale -> HALTED (poke latches haltedSince); a sell queues; settleHalted reverts NotSettleable before 7 days; after 7 days anyone settles (StockSettled) and the queued sell fills at the settlement price", async (f) => {
+    await stopService("keeper"); // the keeper's settle-halted job would race the manual steps below
+    const m = await mockFeed(f, "NVDA");
+    try {
+      await m.setRound(m.answer, BigInt(await chainTime()) - 31n * 86_400n);
+      await f.send("priceGuard.poke(NVDA) (latch the halt)", walletFor("carol"), { to: C.priceGuard, data: encodeFunctionData({ abi: PriceGuardAbi, functionName: "poke", args: [stockOf("NVDA")] }) });
+      const r = await priceReading("NVDA");
+      assert(r.session === 4, `session ${r.session}, not HALTED`);
+      const holder = (await tokenBalance(ruleRow.token, addressOf("bob"))) > 0n ? "bob" : "alice";
+      const held = await tokenBalance(ruleRow.token, addressOf(holder));
+      assert(held > 0n, "no NVDA position left to sell");
+      const deadline = BigInt(await chainTime()) + 600n;
+      const sr = await f.send("engine.sell (halted -> queued)", walletFor(holder), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "sell", args: [ruleRow.id, held, 0n, deadline, addressOf(holder)] }) });
+      const q = events(sr, OptionEngineAbi, C.engine).find((e) => e.eventName === "SellQueued");
+      assert(q, "no SellQueued");
+      const early = await f.expectRevert("engine.settleHalted (before 7 days)", walletFor("carol"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "settleHalted", args: [stockOf("NVDA")] }) }, "NotSettleable");
+      await warp(7 * 86_400 + 120);
+      const st = await f.send("engine.settleHalted (by a stranger)", walletFor("carol"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "settleHalted", args: [stockOf("NVDA")] }) });
+      const settled = events(st, OptionEngineAbi, C.engine).find((e) => e.eventName === "StockSettled");
+      assert(settled, "no StockSettled");
+      const before = await usdgOf(addressOf(holder));
+      const fr = await f.send("engine.fillQueued (settled)", walletFor("carol"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "fillQueued", args: [q.args.ticket] }) });
+      assert(events(fr, OptionEngineAbi, C.engine).some((e) => e.eventName === "QueuedSellFilled"), "no QueuedSellFilled");
+      const paid = (await usdgOf(addressOf(holder))) - before;
+      assert(paid > 0n, "settled fill paid nothing");
+      return `HALTED and latched; ticket ${q.args.ticket} queued; ${early}; after 7 days StockSettled at ${fmt(settled.args.s, 18)}; queued sell filled, ${holder} +${fmt(paid)} USDG`;
+    } finally {
+      await m.restore();
+      await startServices();
+    }
   });
 
   // ---------------------------------------------------------------- summary

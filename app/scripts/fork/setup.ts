@@ -12,6 +12,9 @@
 //      a sweeper contract, seen at the fork block). On the fork they would run that code: Permit2 treats a delegated
 //      payer as a contract and asks it for an ERC-1271 signature (x402 settlement reverted), and ETH sent to them is
 //      forwarded. The delegation code is cleared (anvil_setCode "0x") so they act as the plain test EOAs they are.
+//   3. PriceGuard maxAgeClosed = 14 days (its hard maximum; production 5 days, review F07/F21). Same reason as 1: the
+//      last good price is the fork block's round, so after a few days of warps every CLOSED/UNKNOWN read would turn
+//      HALTED. The halt path itself (latch, settleHalted) is exercised with a mock feed.
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -22,6 +25,7 @@ import {
 } from "./lib";
 
 export const FORK_MAX_AGE = 30 * 86_400;
+export const FORK_MAX_AGE_CLOSED = 14 * 86_400;
 
 export async function clearDevDelegations(): Promise<number> {
   const { pub, test } = forkClients();
@@ -49,6 +53,12 @@ async function relax(): Promise<void> {
     if (r.status !== "success") throw new Error(`relax ${s.name}: ${hash} reverted`);
     console.log(`setup: fork relaxation PriceGuard maxAge 30 days for ${s.name} (${hash})`);
   }
+  const closedHash = await admin.writeContract({
+    address: dep.contracts.priceGuard, abi: PriceGuardAbi, functionName: "setMaxAgeClosed", chain: null, account: timelock,
+    args: [FORK_MAX_AGE_CLOSED],
+  });
+  if ((await pub.waitForTransactionReceipt({ hash: closedHash })).status !== "success") throw new Error(`relax maxAgeClosed: ${closedHash} reverted`);
+  console.log(`setup: fork relaxation PriceGuard maxAgeClosed 14 days (${closedHash})`);
   await test.stopImpersonatingAccount({ address: timelock });
 }
 
