@@ -49,9 +49,12 @@ describe("bundlerInterface (R4): HTTP client against a Rundler-compatible stub",
   test("a bundler that cannot estimate leaves the builder on its fallbacks", async () => {
     const broken = createHttpBundler({ url: "http://x.invalid", fetch: (async () => new Response(JSON.stringify({ error: { code: -32500, message: "AA23 reverted" } }))) as never });
     const { services } = createTestServices();
-    const built = await buildUserOp({ ...services, bundler: broken }, { account: ACCOUNT, calls: [{ to: ENGINE, value: 0n, data: "0x12345678" }], sponsor: true });
+    const calls = [{ to: ENGINE, value: 0n, data: "0x12345678" as const }];
+    const built = await buildUserOp({ ...services, bundler: broken }, { account: ACCOUNT, calls, sponsor: false });
     expect(built.estimated).toBe(false);
     expect(built.userOp.callGasLimit).toBe(1_500_000n);
+    // F25: the same failure on a sponsored operation is refused instead of signed over the fallbacks.
+    await expect(buildUserOp({ ...services, bundler: broken }, { account: ACCOUNT, calls, sponsor: true })).rejects.toMatchObject({ apiError: "SPONSOR_SIMULATION_FAILED" });
   });
 
   test("a local Bun server speaks the same protocol (real HTTP, loopback only)", async () => {

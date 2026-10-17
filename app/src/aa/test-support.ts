@@ -35,12 +35,16 @@ export interface FakeChainState {
   fees: { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint } | null;
   reads: string[];
   down: boolean;
+  /** Stored ECDSA owner per deployed account (lower case). */
+  owners: Map<string, Address | null>;
+  /** USDG-style balances per `${token}:${owner}` (lower case). */
+  balances: Map<string, bigint>;
 }
 
 export function createFakeChain(state: Partial<FakeChainState> = {}) {
   const s: FakeChainState = {
     deployed: new Set([ACCOUNT.toLowerCase()]), nonces: new Map(), predicted: ACCOUNT, fees: { maxFeePerGas: 1_000_000_000n, maxPriorityFeePerGas: 100_000_000n },
-    reads: [], down: false, ...state,
+    reads: [], down: false, owners: new Map([[ACCOUNT.toLowerCase(), OWNER.toLowerCase() as Address]]), balances: new Map(), ...state,
   };
   const chain: AaChain = {
     async isDeployed(account) { if (s.down) throw new Error("rpc down"); s.reads.push("code"); return s.deployed.has(account.toLowerCase()); },
@@ -51,6 +55,8 @@ export function createFakeChain(state: Partial<FakeChainState> = {}) {
     },
     async predictKernelAddress() { s.reads.push("predict"); return s.predicted; },
     async feesPerGas() { return s.fees; },
+    async kernelOwner(_validator, account) { if (s.down) throw new Error("rpc down"); s.reads.push("owner"); return s.owners.get(account.toLowerCase()) ?? null; },
+    async tokenBalance(token, owner) { if (s.down) throw new Error("rpc down"); s.reads.push("balance"); return s.balances.get(`${token.toLowerCase()}:${owner.toLowerCase()}`) ?? 0n; },
   };
   return { chain, state: s };
 }

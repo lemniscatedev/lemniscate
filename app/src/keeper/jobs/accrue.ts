@@ -49,6 +49,17 @@ export async function accrueInBatches(
   return { accrued, failed, transactions, simulated };
 }
 
+/** Latest indexed per-unit mark (USDG) of each series, from the accrual history. Series without a row are absent. */
+async function latestMarks(context: KeeperContext, ids: readonly Hex[]): Promise<Map<Hex, number>> {
+  const marks = new Map<Hex, number>();
+  if (!ids.length) return marks;
+  const rows = await context.sql<{ series_id: string; v_mark: string }[]>`
+    select distinct on (series_id) series_id, v_mark::text as v_mark from norm_history
+    where series_id = any(string_to_array(${ids.join(",")}, ',')) order by series_id, ts desc`;
+  for (const row of rows ?? []) if (row?.series_id) marks.set(row.series_id as Hex, Number(row.v_mark));
+  return marks;
+}
+
 /** R2: accrues every series with outstanding supply whose last accrual is older than KEEPER_ACCRUE_MAX_AGE_SECONDS
  * (default one hour). Due-ness comes from the chain's own `lastAccrual`, so an hour that was skipped (keeper down, RPC
  * outage, failed batch) is caught up by the next run, and nothing is sent when nothing is due. `force` is the session
@@ -74,13 +85,31 @@ export function createAccrueJob(context: KeeperContext) {
     const supplies = await chunkedMulticall(context, aged.map((series: ChainSeries) => ({
       address: series.token, abi: OptionTokenAbi, functionName: "totalSupply",
     }))) as bigint[];
-    const due = aged.filter((_, index) => BigInt(supplies[index]!) > 0n);
-    if (!due.length) return { series: all.length, due: 0, accrued: 0, idle: true, pokes };
+    const held = aged.filter((_, index) => BigInt(supplies[index]!) > 0n);
+    if (!held.length) return { series: all.length, due: 0, accrued: 0, idle: true, pokes };
+
+    // F28: dust (outstanding value under KEEPER_ACCRUE_DUST_USDG) is accrued lazily, not hourly. Trades accrue first anyway,
+    // so the only cost of waiting is a book value that lags by at most the dust threshold per series. Unknown value = not dust.
+    const supplyOf = new Map(aged.map((series, index) => [series.id, BigInt(supplies[index]!)]));
+    const marks = await latestMarks(context, held.map((series) => series.id));
+    const dustAfter = BigInt(context.config.KEEPER_ACCRUE_DUST_MAX_AGE_SECONDS ?? 86_400);
+    const dustLimit = Number(context.config.KEEPER_ACCRUE_DUST_USDG ?? 1);
+    let deferredDust = 0;
+    const due = held.filter((series) => {
+      const mark = marks.get(series.id);
+      if (mark === undefined || !(dustLimit > 0)) return true;
+      const value = (Number(supplyOf.get(series.id)!) / 1e18) * (Number(series.norm) / 1e18) * mark;
+      if (value >= dustLimit) return true;
+      if (nowSeconds - series.lastAccrual >= dustAfter) return true;
+      deferredDust++;
+      return false;
+    });
+    if (!due.length) return { series: all.length, due: 0, accrued: 0, idle: true, pokes, deferredDust };
 
     const result = await accrueInBatches(context, due.map((series) => series.id), context.config.KEEPER_ACCRUE_BATCH);
     const summary = {
       series: all.length, due: due.length, accrued: result.accrued.length, transactions: result.transactions,
-      failed: result.failed.length, dryRun: result.simulated, idle: false, forced: force, pokes,
+      failed: result.failed.length, dryRun: result.simulated, idle: false, forced: force, pokes, deferredDust,
       lastAccruedAt: new Date(Number(nowSeconds) * 1000).toISOString(),
     };
     if (result.failed.length) {

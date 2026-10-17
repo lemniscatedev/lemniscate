@@ -416,3 +416,49 @@ describe("17b R1 policyFromChain", () => {
     expect(JSON.stringify(r)).not.toContain("secret-rpc");
   });
 });
+
+describe("F40 each MCP caller is counted on its own address", () => {
+  // The real REST rate limiter behind a fetch stub: what the MCP's loopback connection would hit.
+  async function apiBehindLimiter(limit: number) {
+    const { Hono } = await import("hono");
+    const { rateLimit } = await import("../api/rate-limit");
+    const { createApiClient } = await import("./api-client");
+    const rest = new Hono();
+    rest.use("*", rateLimit({ limit, windowMs: 60_000, clientIpHeader: "" }));
+    rest.get("/v1/pool", (context) => context.json({ navUsdg: "1000000" }));
+    const seen: Array<string | null> = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      seen.push(new Headers(init.headers).get("x-forwarded-for"));
+      return rest.request(url.replace("http://api.local", ""), init);
+    }) as unknown as typeof fetch;
+    return { api: createApiClient("http://api.local", fetchImpl), seen };
+  }
+  const post = async (app: ReturnType<typeof createMcpHttpApp>, address: string): Promise<any> =>
+    (await app.request("/mcp", {
+      method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": address },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "lmns_pool", arguments: {} } }),
+    })).json();
+
+  test("the caller's address reaches the API, so one caller cannot lock the others out of the API's per-client bucket", async () => {
+    const { api, seen } = await apiBehindLimiter(2);
+    const { server } = buildMcp(loadMcpSettings({ MCP_RATE_LIMIT_PER_MINUTE: "100" }), { api, now: () => NOW_MS });
+    const app = createMcpHttpApp(server, { token: undefined, allowedOrigins: [] });
+    // Caller A burns its API allowance...
+    for (let i = 0; i < 4; i++) await post(app, "203.0.113.7");
+    // ...and caller B, a different address, is untouched.
+    const b = await post(app, "198.51.100.9");
+    expect(b.result.isError).toBe(false);
+    expect(seen.slice(0, 4)).toEqual(["203.0.113.7", "203.0.113.7", "203.0.113.7", "203.0.113.7"]);
+    expect(seen[4]).toBe("198.51.100.9");
+  });
+
+  test("the MCP's own limiter counts an IPv6 caller by its /64", async () => {
+    const { server } = buildMcp(loadMcpSettings({ MCP_RATE_LIMIT_PER_MINUTE: "2" }), { api: fakeApi(), now: () => NOW_MS });
+    const app = createMcpHttpApp(server, { token: undefined, allowedOrigins: [] });
+    await post(app, "2001:db8:1:2::1");
+    await post(app, "2001:db8:1:2::abcd");
+    const third = await post(app, "2001:db8:1:2:ffff:ffff:ffff:ffff");
+    expect(third.result.structuredContent.error).toBe("RATE_LIMITED");
+    expect((await post(app, "2001:db8:1:3::1")).result.isError).toBe(false);
+  });
+});

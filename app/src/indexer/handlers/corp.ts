@@ -1,5 +1,5 @@
 import type { ChainEvent, IndexerContext } from "../types";
-import { asBigInt, wad } from "../units";
+import { asBigInt, unixToDate, wad } from "../units";
 import { iso } from "./common";
 
 /** Stock Token multiplier and pause events feed the corporate actions table that the keeper and API read. */
@@ -7,7 +7,7 @@ export async function handleStockEvent(context: IndexerContext, event: ChainEven
   if (event.source !== "stock") return;
   const symbol = context.stockNames.get(event.address) ?? event.address;
   const multiplierEvent = event.eventName === "UIMultiplierUpdated";
-  const effectiveAt = multiplierEvent ? new Date(Number(asBigInt(event.args.effectiveAtTimestamp)) * 1_000) : null;
+  const effectiveAt = multiplierEvent ? unixToDate(event.args.effectiveAtTimestamp) : null;
   const kind = multiplierEvent
     ? "ui_multiplier"
     : event.eventName === "OraclePaused" || event.eventName === "OracleUnpaused"

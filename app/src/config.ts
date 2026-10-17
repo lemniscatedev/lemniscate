@@ -36,6 +36,17 @@ const envSchema = z.object({
   KEEPER_DRY_RUN: z.enum(["0", "1"]).default("0").transform((value) => value === "1"),
   // Accrue a series once its last accrual is this old and somebody holds it. Spec: at least hourly, so 3600 is the cap.
   KEEPER_ACCRUE_MAX_AGE_SECONDS: z.coerce.number().int().min(300).max(3600).default(3600),
+  // F28: a series whose outstanding value (supply x norm x v_mark) is below this many USDG is "dust": it is accrued at most once per
+  // KEEPER_ACCRUE_DUST_MAX_AGE_SECONDS instead of hourly, so a 1-wei position cannot bill the keeper an hourly accrual forever.
+  KEEPER_ACCRUE_DUST_USDG: z.coerce.number().min(0).default(1),
+  KEEPER_ACCRUE_DUST_MAX_AGE_SECONDS: z.coerce.number().int().min(3600).max(7 * 86_400).default(86_400),
+  // F29/F36: queued sells worth less than this (USDG) are filled last, at most one per pass; an open ticket older than the alert age
+  // (minutes) is logged as a warning every pass.
+  KEEPER_QUEUED_DUST_USDG: z.coerce.number().min(0).default(0.01),
+  KEEPER_QUEUED_ALERT_MINUTES: z.coerce.number().int().min(1).default(60),
+  // Norm (WAD) under which the lister opens the next epoch of a strike. Must match the registry's threshold (default 1e15 = 0.001);
+  // set it when the contracts move the norm floor (F06) so the keeper relists before funding stops.
+  KEEPER_RELIST_NORM_WAD: z.string().regex(/^\d+$/).default("1000000000000000"),
   // Series per engine.accrueMany transaction (a failing batch is split in half and retried).
   KEEPER_ACCRUE_BATCH: z.coerce.number().int().min(1).max(200).default(40),
   // The lister sends at most this many listing/archive transactions per run; the rest follows on the next run.
@@ -68,6 +79,24 @@ const envSchema = z.object({
   // Closed beta (todo 33): "1" = a wallet needs a redeemed invite code before the API builds buy or shield intents. Sells are never gated.
   // The app_settings row `invites_required` (set by scripts/invites/switch.ts) overrides this at runtime, no restart needed.
   INVITES_REQUIRED: z.enum(["0", "1"]).default("0").transform((value) => value === "1"),
+  // Gas sponsorship policy (F25/F31). The API signs paymaster data only for an account that passed the invite gate (when on)
+  // and has a real trade, within these per-UTC-day quotas. Keep the globals well below the paymaster's own globalDailyCap, and
+  // keep the exit group separate so a flood of buys can never use up the budget that lets holders sell. Exits are never refused
+  // for a quota without a way out: the plain transaction and an unsponsored operation always work.
+  SPONSOR_MIN_NOTIONAL_USDG: z.coerce.number().min(0).default(5),
+  SPONSOR_MIN_SELL_USDG: z.coerce.number().min(0).default(1),
+  SPONSOR_ENTRY_PER_ACCOUNT_DAILY: z.coerce.number().int().min(0).default(10),
+  SPONSOR_ENTRY_PER_OWNER_DAILY: z.coerce.number().int().min(0).default(10),
+  SPONSOR_ENTRY_PER_IP_DAILY: z.coerce.number().int().min(0).default(30),
+  SPONSOR_ENTRY_GLOBAL_DAILY: z.coerce.number().int().min(0).default(1500),
+  SPONSOR_EXIT_PER_ACCOUNT_DAILY: z.coerce.number().int().min(0).default(20),
+  SPONSOR_EXIT_PER_OWNER_DAILY: z.coerce.number().int().min(0).default(20),
+  SPONSOR_EXIT_PER_IP_DAILY: z.coerce.number().int().min(0).default(60),
+  SPONSOR_EXIT_GLOBAL_DAILY: z.coerce.number().int().min(0).default(1000),
+  // Chain reads the account-abstraction routes may make per second in total (F32); beyond it they answer 503.
+  AA_RPC_CALLS_PER_SECOND: z.coerce.number().min(1).default(5),
+  // Dedicated node for those reads (empty = RPC_URL_OVERRIDE, then the public RPC). Keep it apart from the keeper's.
+  AA_RPC_URL: z.string().default(""),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
 });
 

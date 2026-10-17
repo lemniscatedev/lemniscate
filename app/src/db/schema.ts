@@ -706,3 +706,43 @@ export const appSettings = pgTable("app_settings", {
   value: text("value").notNull(),
   updatedAt: at("updated_at").notNull().defaultNow(),
 });
+
+/** F04: events the indexer rolled back and skipped (with the reason) instead of halting. */
+export const indexerSkippedEvents = pgTable(
+  "indexer_skipped_events",
+  {
+    txHash: text("tx_hash").notNull(),
+    logIndex: integer("log_index").notNull(),
+    block: chainBlock().notNull(),
+    source: text("source").notNull(),
+    eventName: text("event_name").notNull(),
+    reason: text("reason").notNull(),
+    skippedAt: at("skipped_at").notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ name: "indexer_skipped_events_pk", columns: [table.txHash, table.logIndex] }),
+    index("indexer_skipped_events_block_idx").on(table.block),
+  ],
+);
+
+/** F25/F31: gas sponsorships the API signed (quota bookkeeping, per UTC day). */
+export const sponsorshipGrants = pgTable(
+  "sponsorship_grants",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    day: date("day", { mode: "string" }).notNull().default(sql`((now() AT TIME ZONE 'utc')::date)`),
+    grp: text("grp").notNull(),
+    kind: text("kind").notNull(),
+    account: text("account").notNull(),
+    owner: text("owner"),
+    ipKey: text("ip_key").notNull(),
+    notionalUsdg: numeric("notional_usdg", { precision: 38, scale: 6 }).notNull().default("0"),
+    createdAt: at("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("sponsorship_grants_day_grp_idx").on(table.day, table.grp),
+    index("sponsorship_grants_day_account_idx").on(table.day, table.account),
+    index("sponsorship_grants_day_owner_idx").on(table.day, table.owner),
+    index("sponsorship_grants_day_ip_idx").on(table.day, table.ipKey),
+  ],
+);

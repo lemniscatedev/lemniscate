@@ -1,0 +1,7 @@
+# Build backend for `pip install --no-build-isolation .` (the runtime packages come from pyproject.toml, all exact pins).
+# requirements.lock / requirements-dev.lock pin every package with hashes (DEPS-1/2/3). Regenerate, then review the diff:
+#   uv pip compile pyproject.toml requirements.in --generate-hashes --universal --python-version 3.11 \
+#       --exclude-newer <today minus 7 days> -o requirements.lock
+#   (same with --extra dev -o requirements-dev.lock)
+# --exclude-newer is the minimum release age: nothing published in the last 7 days enters the lock.
+setuptools==80.9.0

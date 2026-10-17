@@ -34,6 +34,8 @@ function makeApp(options: Parameters<typeof createTestServices>[0] = {}) {
     logger: pino({ level: "silent" }),
     cache: new TtlCache(),
     aa: test_.services,
+    // These tests are about the format; the sponsorship policy has its own tests (api/sponsorship.test.ts).
+    sponsorship: { evaluate: async () => ({ granted: true as const, ticket: 1 }), release: async () => undefined },
   } as unknown as ApiDependencies;
   const app = new OpenAPIHono();
   registerIntentUserOp(app, deps);

@@ -1,9 +1,9 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Context, MiddlewareHandler } from "hono";
 import {
-  createPublicClient, createWalletClient, http, verifyTypedData, type Address, type Hex, type PublicClient,
+  createPublicClient, createWalletClient, http, verifyTypedData, type Address, type Hex, type PublicClient, type Transport,
 } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+import { nonceManager, privateKeyToAccount } from "viem/accounts";
 import type { PaidRoute } from "./config";
 import {
   PERMIT2_ADDRESS, WITNESS_TYPE_NAME, WITNESS_TYPE_STRING, decodePayment, networkId, permit2Abi, permitTypedData,
@@ -35,7 +35,9 @@ export interface GateOptions {
   readonly settler: Settler;
   readonly routes: readonly PaidRoute[];
   readonly challengeTtlSeconds: number;
-  readonly freeOrigins?: readonly string[];
+  /** Secret for the website's own server: a request carrying it in `x-lmns-internal` reads the paid routes free. A browser
+   * Origin proves nothing (any script sets it), so it is never used to waive payment (F41). Absent = nobody is exempt. */
+  readonly internalToken?: string;
   readonly nonceSecret?: Hex;
   readonly now?: () => number;
   /** Defaults to local ECDSA recovery (EOA payers); swap in an ERC-1271-aware check if needed. */
@@ -49,7 +51,10 @@ export function createGate(options: GateOptions) {
   const now = options.now ?? Date.now;
   const secret = options.nonceSecret ? Buffer.from(options.nonceSecret.slice(2), "hex") : randomBytes(32);
   const maxTracked = options.maxTrackedNonces ?? 100_000;
-  const free = new Set(options.freeOrigins ?? []);
+  const digest = (value: string) => createHash("sha256").update(value).digest();
+  const internalDigest = options.internalToken ? digest(options.internalToken) : undefined;
+  const isInternal = (supplied: string | undefined): boolean =>
+    internalDigest !== undefined && supplied !== undefined && supplied.length > 0 && timingSafeEqual(digest(supplied), internalDigest);
   /** nonce -> deadline (s). A nonce is consumed when a payment is accepted for settlement and never freed after success. */
   const consumed = new Map<bigint, bigint>();
   const nowSeconds = () => BigInt(Math.floor(now() / 1000));
@@ -141,8 +146,9 @@ export function createGate(options: GateOptions) {
   function middleware(route: PaidRoute): MiddlewareHandler {
     return async (context, next) => {
       if (context.req.method !== "GET") return next();
-      const origin = context.req.header("origin");
-      if (origin && free.has(origin)) return next();
+      // Paid data must never sit in a shared cache, whether this request paid, is internal, or was refused.
+      const noStore = () => { context.res.headers.set("Cache-Control", "private, no-store"); };
+      if (isInternal(context.req.header("x-lmns-internal"))) { await next(); noStore(); return; }
       const url = new URL(context.req.url);
       const key = resourceKey(context.req.method, `${url.pathname}${url.search}`);
       const header = context.req.header("x-payment");
@@ -156,6 +162,7 @@ export function createGate(options: GateOptions) {
       consumed.set(verified.nonce, verified.deadline);
 
       await next();
+      noStore();
       // A failed read costs nothing: free the nonce so the same signed payment can be retried until its deadline.
       if (context.res.status >= 400) { consumed.delete(verified.nonce); return; }
       try {
@@ -173,17 +180,20 @@ export function createGate(options: GateOptions) {
     };
   }
 
-  return { middleware, verify, requirements, settlerAddress: options.settler.address, consumedCount: () => consumed.size };
+  return { middleware, verify, requirements, isInternal, settlerAddress: options.settler.address, consumedCount: () => consumed.size };
 }
 
 export type X402Gate = ReturnType<typeof createGate> & { readonly routes: readonly PaidRoute[] };
 
 /** Real settler: a viem wallet signs `permitWitnessTransferFrom` and waits for the receipt. */
-export function viemSettler(args: { rpcUrl: string; chainId: number; key: Hex; confirmations?: number }): Settler & { publicClient: PublicClient } {
-  const account = privateKeyToAccount(args.key);
+export function viemSettler(args: { rpcUrl: string; chainId: number; key: Hex; confirmations?: number; transport?: Transport; pollingIntervalMs?: number }): Settler & { publicClient: PublicClient } {
+  // F42: a local nonce manager, and broadcasts go out one at a time, so parallel paid requests never share a nonce.
+  const account = privateKeyToAccount(args.key, { nonceManager });
+  const transport = args.transport ?? http(args.rpcUrl);
   const chain = { id: args.chainId, name: `chain-${args.chainId}`, nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [args.rpcUrl] } } } as const;
-  const publicClient = createPublicClient({ chain, transport: http(args.rpcUrl) }) as PublicClient;
-  const wallet = createWalletClient({ account, chain, transport: http(args.rpcUrl) });
+  const publicClient = createPublicClient({ chain, transport, ...(args.pollingIntervalMs ? { pollingInterval: args.pollingIntervalMs } : {}) }) as PublicClient;
+  const wallet = createWalletClient({ account, chain, transport });
+  let sending: Promise<unknown> = Promise.resolve();
   return {
     address: account.address,
     publicClient,
@@ -192,13 +202,16 @@ export function viemSettler(args: { rpcUrl: string; chainId: number; key: Hex; c
       return (word & (1n << (nonce & 0xffn))) !== 0n;
     },
     async settle(p) {
-      const txHash = await wallet.writeContract({
+      const send = () => wallet.writeContract({
         address: PERMIT2_ADDRESS, abi: permit2Abi, functionName: "permitWitnessTransferFrom",
         args: [
           { permitted: { token: p.token, amount: p.amount }, nonce: p.nonce, deadline: p.deadline },
           { to: p.payTo, requestedAmount: p.amount }, p.owner, witnessHash(p.payTo, p.resource), WITNESS_TYPE_STRING, p.signature,
         ],
       });
+      const turn = sending.then(send, send);
+      sending = turn.catch(() => undefined);
+      const txHash = await turn;
       const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash, confirmations: args.confirmations ?? 1 });
       if (receipt.status !== "success") throw new Error("settlement reverted");
       return { txHash };

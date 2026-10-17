@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools==80.9.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,14 +8,15 @@ version = "0.1.0"
 description = "Volatility engine: computes sigma per name and speed, signs EIP-712 posts for VolOracle"
 requires-python = ">=3.11"
 dependencies = [
-  "numpy>=1.26",
-  "eth-account>=0.11",
-  "psycopg[binary]>=3.1",
-  "tzdata",
+  "numpy==2.4.6; python_version < '3.12'",
+  "numpy==2.5.3; python_version >= '3.12'",
+  "eth-account==0.14.0",
+  "psycopg[binary]==3.3.6",
+  "tzdata==2026.5",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest==9.1.1"]
 
 [project.scripts]
 vol-engine = "vol_engine.cli:main"

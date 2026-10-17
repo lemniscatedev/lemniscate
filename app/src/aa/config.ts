@@ -54,6 +54,24 @@ export class AaConfigError extends Error {
   constructor(message: string) { super(message); this.name = "AaConfigError"; }
 }
 
+/** The key-free part of the AA settings: what the public smart-account route needs. It never touches a key, a keystore
+ * or the filesystem (F33), so a request handler can call it safely. */
+export interface AaPublicConfig {
+  readonly chainId: number;
+  readonly entryPoint: `0x${string}`;
+  readonly kernelFactory: `0x${string}`;
+  readonly kernelValidator: `0x${string}`;
+}
+
+export function loadAaPublicConfig(source: Record<string, string | undefined> = process.env): AaPublicConfig {
+  const parsed = schema.pick({ CHAIN_ID: true, AA_ENTRYPOINT: true, AA_KERNEL_FACTORY: true, AA_KERNEL_VALIDATOR: true }).safeParse(source);
+  if (!parsed.success) {
+    throw new AaConfigError(`Invalid account abstraction configuration: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
+  }
+  const env = parsed.data;
+  return { chainId: env.CHAIN_ID, entryPoint: env.AA_ENTRYPOINT, kernelFactory: env.AA_KERNEL_FACTORY, kernelValidator: env.AA_KERNEL_VALIDATOR };
+}
+
 /** Reads the AA settings from the environment (they are not part of the core service config). */
 export function loadAaConfig(source: Record<string, string | undefined> = process.env): AaConfig {
   const parsed = schema.safeParse(source);

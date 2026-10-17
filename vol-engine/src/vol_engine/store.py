@@ -25,7 +25,7 @@ class Intent:
     nonce: int
     digest: str
     sig: str
-    status: str  # dry_run | pending | sent | failed
+    status: str  # dry_run | pending (broadcast, no receipt) | sent (receipt, status 1) | failed (reverted, dropped or never sent)
     flags: list[str] = field(default_factory=list)
     tx_hash: str | None = None
     created_at: float = 0.0
@@ -41,6 +41,7 @@ class Store(Protocol):
     def recent_sent(self, stock: str, speed: str, now_s: float) -> list[tuple[float, int]]: ...
     def write_intent(self, intent: Intent) -> None: ...
     def mark_intent(self, stock: str, speed: str, nonce: int, status: str, tx_hash: str | None) -> None: ...
+    def pending_intents(self) -> list[Intent]: ...
     def last_alert(self, name: str, kind: str) -> tuple[float, dict] | None: ...
     def write_alert(self, name: str, kind: str, detail: dict, ts: float | None = None) -> None: ...
 
@@ -96,6 +97,9 @@ class MemoryStore:
         for i in self.intents:
             if (i.stock, i.speed, i.nonce) == (stock, speed, nonce):
                 i.status, i.tx_hash = status, tx_hash
+
+    def pending_intents(self) -> list[Intent]:
+        return [i for i in self.intents if i.status == "pending" and i.tx_hash]
 
     def last_alert(self, name: str, kind: str) -> tuple[float, dict] | None:
         mine = [(ts, d) for ts, n, k, d in self.alerts if n == name and k == kind]
@@ -204,6 +208,15 @@ class PgStore:
             "UPDATE vol_post_intents SET status = %s, tx_hash = %s WHERE stock_token = %s AND speed = %s AND nonce = %s",
             (status, tx_hash, stock, speed, nonce),
         )
+
+    def pending_intents(self) -> list[Intent]:
+        rows = self._reader.execute(
+            "SELECT stock_token, name, speed, sigma_bps, skew_k, event_bump_bps, extract(epoch from buy_block_from), "
+            "extract(epoch from buy_block_to), extract(epoch from valid_until), nonce, digest, sig, tx_hash, "
+            "extract(epoch from created_at) FROM vol_post_intents WHERE status = 'pending' AND tx_hash IS NOT NULL"
+        ).fetchall()
+        return [Intent(r[0], r[1] or "", r[2], r[3], int(r[4]), r[5], int(r[6] or 0), int(r[7] or 0), int(r[8]), int(r[9]),
+                       r[10], r[11], "pending", [], r[12], float(r[13])) for r in rows]
 
     def last_alert(self, name: str, kind: str) -> tuple[float, dict] | None:
         r = self._reader.execute(

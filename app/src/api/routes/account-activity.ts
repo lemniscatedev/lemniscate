@@ -11,7 +11,7 @@ import {
 } from "../../db/queries/activity";
 import { trimDecimal } from "../quote/rows";
 import { usdgMicro, usdgText } from "../quote/model";
-import { AaConfigError, loadAaConfig } from "../../aa/config";
+import { AaConfigError, loadAaPublicConfig, type AaPublicConfig } from "../../aa/config";
 import { KERNEL_V33_IMPLEMENTATION, predictKernelAddressOffline } from "../../aa/counterfactual";
 import { optionalEnv } from "../../config";
 
@@ -41,6 +41,7 @@ const smartAccountRoute = createRoute({
 });
 
 export function registerAccountActivityRoutes(app: OpenAPIHono, deps: ApiDependencies): void {
+  let publicConfig: AaPublicConfig | undefined;
   app.openapi(activityRoute, async (context) => {
     context.header("Cache-Control", "private, no-store");
     const { address } = context.req.valid("param");
@@ -82,9 +83,10 @@ export function registerAccountActivityRoutes(app: OpenAPIHono, deps: ApiDepende
     context.header("Cache-Control", "private, no-store");
     const { address } = context.req.valid("param");
     const { index } = context.req.valid("query");
+    // F33: key-free and loaded once. The route needs public addresses only, never the paymaster keystore.
     let config;
     try {
-      config = loadAaConfig();
+      config = (publicConfig ??= loadAaPublicConfig());
     } catch (error) {
       if (!(error instanceof AaConfigError)) throw error;
       return context.json({ error: "AA_UNAVAILABLE", message: "Smart accounts are not configured on this server." }, 503);

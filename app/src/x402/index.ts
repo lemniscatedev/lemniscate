@@ -44,7 +44,8 @@ export function createX402FromEnv(
   const gate = createGate({
     ...(now ? { now } : {}),
     chainId: deployment.chainId, usdg: deployment.contracts.usdg as Address, payTo: settings.payTo!, settler,
-    routes: settings.routes, challengeTtlSeconds: settings.challengeTtlSeconds, freeOrigins: settings.freeOrigins,
+    routes: settings.routes, challengeTtlSeconds: settings.challengeTtlSeconds,
+    ...(settings.internalToken ? { internalToken: settings.internalToken } : {}),
     ...(settings.nonceSecret ? { nonceSecret: settings.nonceSecret } : {}),
     verifySignature: async ({ owner, typedData, signature }) => settler.publicClient.verifyTypedData({ address: owner, ...typedData, signature }),
   });

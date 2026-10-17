@@ -335,7 +335,8 @@ script's `check(address)` asserts the owner (the Safe), signer, immutables, stak
    Stock Token transfer reverts, a sell does not fail into a loss: it goes to the sell queue and fills later; buys revert.
 7. **Chain.** Robinhood Chain is an Orbit L2 with a single sequencer; ordering, censorship and downtime are outside our control.
 8. **Public RPC.** Services use free public RPC with backoff; a bad or rate-limited endpoint delays the indexer and keeper but cannot change
-   on-chain state. The API reads only Postgres.
+   on-chain state. The API reads Postgres; only the one-tap routes (`?format=userop`) make a few chain reads, capped by `AA_RPC_CALLS_PER_SECOND`
+   (default 5, a 503 when spent), cached, never retried, and on their own node when `AA_RPC_URL` is set.
 
 ## Accepted risks
 
@@ -380,6 +381,35 @@ script's `check(address)` asserts the owner (the Safe), signer, immutables, stak
   that runs out of gas reverts the sell (so a seller cannot pick the gas that skips the vaults' settlement).
 - Loss order with both phase-2 modules on: the Reserve, then staked `$LMNS`, then LP NAV. Writer vaults bear only their covered
   slices and are settled in their own collateral.
+- Dust positions (under `KEEPER_ACCRUE_DUST_USDG`, default 1 USDG outstanding) are accrued once a day, not hourly: their book value
+  can lag by up to that amount per series for up to a day. The number of series is bounded by the lister, so the total is bounded.
+  (Low; the alternative is an hourly accrual bill per dust position.)
+- The vol-engine's holiday calendar (a copy of the keeper's, 2026 to 2028) ends in 2028. Past it, a holiday weekend is treated as a
+  full-weight closed session from the first CLOSED tick, as before the ramp existed. Update the list each year. (Low.)
+- Gas sponsorship is a privilege, not a right: a denied request (no invite, dust, no balance, quota) is returned unsponsored and the
+  plain transaction always works. A holder with no ETH and a dust-sized position pays gas for that exit from the account, by design.
+
+## Service protections added by the 2026-10-17 security review (lane C)
+
+Off-chain services, each with a regression test that fails without the fix (finding numbers refer to the private review):
+
+- **Indexer (F04).** Every event is applied inside its own savepoint. One that cannot be applied is rolled back alone, recorded in
+  `indexer_skipped_events` with the reason, logged at error level, and ingestion continues. Chain timestamps a stranger controls are clamped to
+  the year 9999 instead of throwing.
+- **Vol-engine (F05, F43, F44, F45, F46).** Scheduled variance (earnings, the weekend) ramps in geometrically over at least two decay
+  times instead of switching on, so holding through a ramp costs more in funding than it gains; the weekend ramp follows the NYSE closed
+  run; a pre-market print feeds the overnight gap before the open; buys are blocked while the posted sigma lags a higher target.
+  No post is signed from ticks older than 25 minutes (the oracle goes stale and buys pause). A post is `sent` only after a successful
+  receipt; a reverted or dropped one is `failed` with an alert. The signer's virtualenv is built from a hash-pinned lock.
+- **Keeper (F28, F29, F36).** Queued sells are selected round-robin across series with backed-off tickets excluded in SQL, dust last
+  (one per pass); dust accruals run daily.
+- **Hedger (F30).** Routes come from the reviewed deployment pools (AAPL included); startup fails if a deployed name has no route; a name
+  that cannot be hedged for 15 minutes has its buys paused.
+- **Gas sponsorship (F25, F31, F32).** The API signs paymaster data only for a verified owner with a real trade, inside per-day quotas
+  booked in Postgres (per account, owner, network and global, exits in their own group), never over an operation that could not be
+  simulated, and fails closed. Chain reads for these routes are budgeted and cached.
+- **API (F33, F40, F41, F42).** The smart-account route never touches key material; MCP callers are counted per address; an `Origin`
+  header never waives an x402 payment (the website's own server uses `X402_INTERNAL_TOKEN`); the x402 settler serialises its sends.
 
 ## Audit history
 

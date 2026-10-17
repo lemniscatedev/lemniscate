@@ -46,7 +46,11 @@ export interface RiskInputs {
   }[];
   hedgeEquity: { equityUsdg: number; asOf: Date } | null;
   /** keeper_status 'hedger' meta, written by the hedger service; absent when no hedger / venue runs. */
-  hedger: { venueHealthy?: boolean | undefined; venueUnhealthySince?: string | null | undefined } | null;
+  hedger: {
+    venueHealthy?: boolean | undefined; venueUnhealthySince?: string | null | undefined;
+    /** F30: name -> ISO time since which the hedger could not hedge it (no route, no venue, failing trades). */
+    unhedgedNames?: Record<string, string> | undefined;
+  } | null;
 }
 
 export interface RiskEvaluation {
@@ -132,6 +136,19 @@ export function evaluateRisk(input: RiskInputs): RiskEvaluation {
       });
     } else warnings.push("Hedge venue is reported unhealthy");
   }
+  // F30: a name the hedger cannot hedge keeps its delta on the pool. After the same grace as a down venue, its buys pause
+  // (sells and exits are never touched). Independent of the indexer's trust: this comes from the hedger's own report.
+  for (const [name, sinceIso] of Object.entries(hedger?.unhedgedNames ?? {})) {
+    const entry = input.names.find((candidate) => candidate.name === name);
+    const since = Date.parse(sinceIso);
+    if (!entry || !Number.isFinite(since)) continue;
+    if (now.getTime() - since > HEDGE_VENUE_DOWN_MS) {
+      triggers.push({
+        key: `hedge-route:${name}`, scope: { kind: "stock", stockToken: entry.stockToken, name },
+        reason: `${name} could not be hedged for ${Math.round((now.getTime() - since) / 60_000)} minutes (limit ${HEDGE_VENUE_DOWN_MS / 60_000})`,
+      });
+    } else warnings.push(`${name} could not be hedged in the last pass`);
+  }
   return { triggers, warnings, drawdownPct, dataTrusted };
 }
 
@@ -187,7 +204,10 @@ export function createRiskJob(context: KeeperContext) {
         };
       }),
       hedgeEquity: equityRows[0] ? { equityUsdg: Number(equityRows[0].equity_usdg), asOf: toDate(equityRows[0].as_of)! } : null,
-      hedger: hedger ? { venueHealthy: hedger.venueHealthy as boolean | undefined, venueUnhealthySince: (hedger.venueUnhealthySince as string | null | undefined) ?? null } : null,
+      hedger: hedger ? {
+        venueHealthy: hedger.venueHealthy as boolean | undefined, venueUnhealthySince: (hedger.venueUnhealthySince as string | null | undefined) ?? null,
+        unhedgedNames: (hedger.unhedgedNames as Record<string, string> | undefined) ?? {},
+      } : null,
     };
   }
 

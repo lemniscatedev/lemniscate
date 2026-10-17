@@ -8,7 +8,7 @@ import { loadConfig, optionalEnv, stripKeeperSecrets } from "../config";
 import { createDbClient } from "../db/client";
 import {
   acquireHedgerLock, ApiPerpVenue, assertHedgerKeyDistinct, createChainPoolPort, hedgerSettings, lastEquityPostAsOf, loadBook, loadHedgerSigningKey,
-  newHedgerState, PoolSpotVenue, postHedgeEquityOnce, resolveRoutes, runHedgeCycle, type IHedgeVenue,
+  newHedgerState, PoolSpotVenue, postHedgeEquityOnce, resolveRoutes, assertAllRouted, unroutedNames, runHedgeCycle, type IHedgeVenue,
 } from "../hedger";
 import { createScheduler } from "../keeper/scheduler";
 import { createTransactionQueue } from "../keeper/tx";
@@ -41,8 +41,10 @@ const tx = createTransactionQueue(clients, {
 
 const pool = deployment.contracts.pool as Address;
 const engine = deployment.contracts.engine as Address;
-const stocks = deployment.stocks.map((s) => ({ name: s.name, stock: s.stock as Address }));
+const stocks = deployment.stocks.map((s) => ({ name: s.name, stock: s.stock as Address, uniPool: s.uniPool as Address | undefined, poolFee: s.poolFee }));
 const routes = await resolveRoutes(clients, deployment.contracts.usdg as Address, stocks);
+// F30: every deployed name must have a hedge route; an unrouted launch name would run unhedged without a sound.
+try { assertAllRouted(stocks, routes); } catch (error) { logger.fatal({ missing: unroutedNames(stocks, routes) }, (error as Error).message); process.exit(1); }
 logger.info({ hedger, dryRun: settings.dryRun, routed: [...routes.keys()].length, perp: config.HEDGER_PERP_ENABLED }, "Hedger starting");
 // Decision 19: the Writer Pool holds the spot hedge; this service only computes a target and calls pool.rebalance. The
 // hedger wallet holds gas only, so the venue never reads or moves its balance.
@@ -87,6 +89,10 @@ scheduler.add({
       // The risk monitor reads these two fields of keeper_status job 'hedger'.
       onHealth: async (health) => {
         await sql`insert into keeper_status (job, meta) values ('hedger', ${JSON.stringify(health)}::jsonb)
+          on conflict (job) do update set meta = keeper_status.meta || excluded.meta`;
+      },
+      onUnhedged: async (unhedged) => {
+        await sql`insert into keeper_status (job, meta) values ('hedger', ${JSON.stringify({ unhedgedNames: unhedged })}::jsonb)
           on conflict (job) do update set meta = keeper_status.meta || excluded.meta`;
       },
       record: async (row) => {

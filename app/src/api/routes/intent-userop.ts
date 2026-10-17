@@ -3,7 +3,8 @@ import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import { isAddress, type Address, type Hex } from "viem";
 import type { ApiDependencies } from "../types";
-import { rateLimit, walletsFromBody } from "../rate-limit";
+import { clientIp, rateLimit, rateLimitKey, walletsFromBody } from "../rate-limit";
+import { createSponsorshipGate, type SponsorshipGate } from "../sponsorship";
 import { createAaServices } from "../../aa/service";
 import { AaConfigError } from "../../aa/config";
 import { BundlerError, toRpcUserOp, type Op } from "../../aa/bundler";
@@ -77,18 +78,21 @@ function fromRpc(value: z.infer<typeof rpcOpSchema>): Op {
 
 const fail = (error: AaError) => ({ body: { error: error.apiError, message: error.message }, status: error.status });
 
-type WithAa = ApiDependencies & { aa?: AaServices };
+type WithAa = ApiDependencies & { aa?: AaServices; sponsorship?: SponsorshipGate };
 
 export function registerIntentUserOp(app: OpenAPIHono, deps: ApiDependencies): void {
   const contracts = deps.deployment.contracts;
   let cached: AaServices | undefined;
+  let cachedGate: SponsorshipGate | undefined;
   const services = (): AaServices => {
     const injected = (deps as WithAa).aa;
     if (injected) return injected;
     if (cached) return cached;
     try {
       cached = createAaServices({
-        rpcUrl: deps.config.RPC_URL_OVERRIDE || deps.config.PUBLIC_RPC_URL,
+        // F32: its own node when one is configured, so account-abstraction reads never compete with the keeper's.
+        rpcUrl: deps.config.AA_RPC_URL || deps.config.RPC_URL_OVERRIDE || deps.config.PUBLIC_RPC_URL,
+        ...(deps.config.AA_RPC_CALLS_PER_SECOND ? { rpcCallsPerSecond: deps.config.AA_RPC_CALLS_PER_SECOND } : {}),
         engine: contracts.engine as Address, usdg: contracts.usdg as Address, agentRouter: contracts.agentRouter as Address | undefined,
       });
       return cached;
@@ -96,6 +100,13 @@ export function registerIntentUserOp(app: OpenAPIHono, deps: ApiDependencies): v
       if (error instanceof AaConfigError) throw new AaError(503, "AA_UNAVAILABLE", "One-tap flows are not configured on this server. Use the plain transaction.");
       throw error;
     }
+  };
+  const gateFor = (svc: AaServices): SponsorshipGate => {
+    const injected = (deps as WithAa).sponsorship;
+    if (injected) return injected;
+    return cachedGate ??= createSponsorshipGate({
+      deps, chain: svc.chain, kernelValidator: svc.config.kernelValidator, usdg: contracts.usdg as Address,
+    });
   };
   const respondError = (error: unknown) => {
     if (error instanceof AaError) return fail(error);
@@ -125,13 +136,27 @@ export function registerIntentUserOp(app: OpenAPIHono, deps: ApiDependencies): v
       return;
     }
     const intent = parsed.data as IntentLike;
+    let ticket: number | undefined;
+    const gate = { gate: undefined as SponsorshipGate | undefined };
     try {
       const svc = services();
+      const plain = await context.res.clone().json() as Record<string, unknown>;
+      // F25/F31: sponsorship is decided by policy before anything is signed. A denial is not an error: the same operation
+      // comes back unsponsored and the user pays gas (or uses the plain transaction).
+      let sponsorship: { requested: boolean; granted: boolean; reason?: string; message?: string } = { requested: extra.data.sponsor && svc.sponsor !== null, granted: false };
+      if (sponsorship.requested) {
+        gate.gate = gateFor(svc);
+        const decision = await gate.gate.evaluate({
+          kind: intent.kind, account: extra.data.account, owner: extra.data.owner,
+          ipKey: rateLimitKey(clientIp(context, deps.config.API_CLIENT_IP_HEADER ?? "")), plain,
+        });
+        if (decision.granted) { ticket = decision.ticket; sponsorship = { requested: true, granted: true }; }
+        else sponsorship = { requested: true, granted: false, reason: decision.reason, message: decision.message };
+      }
       const built = await buildUserOp(svc, {
-        account: extra.data.account, owner: extra.data.owner, calls: callsForIntent(intent), sponsor: extra.data.sponsor,
+        account: extra.data.account, owner: extra.data.owner, calls: callsForIntent(intent), sponsor: ticket !== undefined,
         nonceLane: extra.data.nonceLane, accountIndex: extra.data.accountIndex,
       });
-      const plain = await context.res.clone().json();
       context.res = Response.json({
         format: "userop" as const,
         kind: intent.kind,
@@ -139,6 +164,7 @@ export function registerIntentUserOp(app: OpenAPIHono, deps: ApiDependencies): v
         userOp: toRpcUserOp(built.userOp),
         userOpHash: built.userOpHash,
         sponsored: built.sponsored,
+        sponsorship,
         deploysAccount: built.deploysAccount,
         gasEstimated: built.estimated,
         maxCostWei: built.maxCostWei.toString(),
@@ -155,6 +181,7 @@ export function registerIntentUserOp(app: OpenAPIHono, deps: ApiDependencies): v
         fallback: plain,
       }, { status: 200, headers: { "Cache-Control": "no-store" } });
     } catch (error) {
+      if (ticket !== undefined && gate.gate) await gate.gate.release(ticket);
       const { body, status } = respondError(error);
       context.res = Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
     }

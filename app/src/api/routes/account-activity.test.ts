@@ -18,6 +18,7 @@ const PAST = 1_000_000_000n; // 2001
 
 let db: TestDatabase;
 let app: ReturnType<typeof createApiApp>;
+let testDeps: ApiDependencies;
 const get = (path: string) => app.request(path);
 
 suite("account activity, agents and smart account (todo 15b)", () => {
@@ -80,6 +81,7 @@ suite("account activity, agents and smart account (todo 15b)", () => {
       config: { CORS_ORIGINS: [], API_RATE_LIMIT_PER_MINUTE: 0, API_CLIENT_IP_HEADER: "", NETWORK: "mainnet" },
       deployment: testDeployment(), logger: pino({ level: "silent" }), cache: new TtlCache(),
     } as unknown as ApiDependencies;
+    testDeps = deps;
     app = createApiApp(deps);
   });
   afterAll(async () => db.close());
@@ -185,6 +187,21 @@ suite("account activity, agents and smart account (todo 15b)", () => {
     const other = await (await get(`/v1/accounts/${ADDR.alice}/smart-account?index=1`)).json() as any;
     expect(other.address).not.toBe(expected);
     expect((await get(`/v1/accounts/${ADDR.alice}/smart-account?index=-1`)).status).toBe(400);
+  });
+
+  test("F33: the smart-account route never touches the paymaster keystore, so a broken or slow keystore cannot affect it", async () => {
+    const saved = { ks: process.env.PAYMASTER_SIGNER_KEYSTORE, pw: process.env.PAYMASTER_SIGNER_KEYSTORE_PASSWORD_FILE };
+    process.env.PAYMASTER_SIGNER_KEYSTORE = "/nonexistent/paymaster-keystore.json";
+    process.env.PAYMASTER_SIGNER_KEYSTORE_PASSWORD_FILE = "/nonexistent/password";
+    try {
+      const fresh = createApiApp(testDeps); // a fresh app: nothing is cached yet
+      const response = await fresh.request(`/v1/accounts/${ADDR.alice}/smart-account`);
+      expect(response.status).toBe(200);
+      expect(((await response.json()) as any).owner).toBe(ADDR.alice);
+    } finally {
+      if (saved.ks === undefined) delete process.env.PAYMASTER_SIGNER_KEYSTORE; else process.env.PAYMASTER_SIGNER_KEYSTORE = saved.ks;
+      if (saved.pw === undefined) delete process.env.PAYMASTER_SIGNER_KEYSTORE_PASSWORD_FILE; else process.env.PAYMASTER_SIGNER_KEYSTORE_PASSWORD_FILE = saved.pw;
+    }
   });
 
   test("OpenAPI lists the three routes", async () => {

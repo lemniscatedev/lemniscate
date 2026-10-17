@@ -259,9 +259,9 @@ main() {
   log "key preflight: every keystore unlocks, addresses are distinct (addresses only are printed)"
   # Runs as root: it must open every keystore to compare addresses, and no service user may open them all.
   (cd "$R/app" && env HOME=/root PATH=/usr/local/bin:/usr/bin:/bin bun src/bin/check-keys.ts "$KEYS") || die "key preflight failed (see above); /opt/lemniscate/current is unchanged"
-  log "vol-engine virtualenv"
+  log "vol-engine virtualenv (hash-pinned: requirements.lock, --require-hashes)"
   (cd "$R/vol-engine" && runuser -u lemniscate -- env HOME=/var/lib/lemniscate PATH=/usr/local/bin:/usr/bin:/bin \
-    bash -c 'python3 -m venv .venv && ./.venv/bin/pip install --quiet --no-cache-dir .') \
+    bash -c 'python3 -m venv .venv && ./.venv/bin/pip install --quiet --no-cache-dir --require-hashes --no-deps -r requirements.lock && ./.venv/bin/pip install --quiet --no-cache-dir --no-deps --no-build-isolation .') \
     || die "could not build the vol-engine virtualenv; /opt/lemniscate/current is unchanged"
 
   # ---- switch, migrate (roll the link back on failure)

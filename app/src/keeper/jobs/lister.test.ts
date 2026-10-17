@@ -137,6 +137,22 @@ describe("lister and series epochs (todo 23 fork bug: ids carry the epoch since 
   });
 });
 
+describe("relist threshold is configurable (lane A may move the registry's norm floor)", () => {
+  test("KEEPER_RELIST_NORM_WAD raises the norm under which the next epoch is planned; the default keeps 0.001", async () => {
+    const chain = chainWith();
+    chain.prices.delete(A.spy);
+    await createListerJob(chain.context())({ force: true });
+    const first = [...chain.series.values()].find((s) => s.isCall && s.tauSeconds === 86_400 && !s.archived)!;
+    first.norm = 5n * 10n ** 15n; // above the default threshold, below 0.01
+    chain.dryRun = true;
+    chain.sent.length = 0;
+    expect((await createListerJob(chain.context())({ force: true })).listed).toBe(0);
+    chain.sent.length = 0;
+    const raised = await createListerJob(chain.context({}, { KEEPER_RELIST_NORM_WAD: "10000000000000000" }))({ force: true });
+    expect(raised.listed).toBe(1);
+  });
+});
+
 describe("lister follow-up reads (todo 23 fork bug: 10 of 100 listings stayed non-buyable)", () => {
   test("a listing read back through a cached 'latest' still gets setBuyable (the read is pinned to the receipt block)", async () => {
     const chain = chainWith();

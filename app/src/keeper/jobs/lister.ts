@@ -36,6 +36,8 @@ export function planListings(input: {
   allowed: ReadonlyMap<string, boolean>;
   existing: readonly ChainSeries[];
   nowSeconds: bigint;
+  /** Norm (WAD) below which the live epoch is relisted. Must equal the registry's own threshold; lane A may move it (F06). */
+  relistNorm?: bigint;
 }): ListerPlan {
   const plan: ListerPlan = { list: [], setBuyable: [], archive: [], skipped: [] };
   // Registry ids carry the epoch (decision 27, todo 07b). Match the grid by (stock, side, strike, tau); the registry
@@ -64,7 +66,7 @@ export function planListings(input: {
           const k = key(stock, isCall, strike, tauSeconds);
           const found = current.get(k);
           // Nothing live at this strike, or the live epoch is archived or has decayed below the relist norm: list the next epoch.
-          if (!found || found.archived || found.norm < RELIST_NORM) {
+          if (!found || found.archived || found.norm < (input.relistNorm ?? RELIST_NORM)) {
             plan.list.push({ stock, name, isCall, speed, strike, tauSeconds, id: seriesId(stock, isCall, strike, tauSeconds, epochs.get(k) ?? 0) });
           } else if (!found.buyable && input.nowSeconds - found.listedAt < RECENT_LISTING_SECONDS) {
             plan.setBuyable.push({ id: found.id, name });
@@ -131,7 +133,7 @@ export function createListerJob(context: KeeperContext) {
     });
 
     const existing = await reader.readAll();
-    const plan = planListings({ stocks, prices, allowed, existing, nowSeconds: BigInt(Math.floor(now.getTime() / 1000)) });
+    const plan = planListings({ stocks, prices, allowed, existing, nowSeconds: BigInt(Math.floor(now.getTime() / 1000)), relistNorm: BigInt(context.config.KEEPER_RELIST_NORM_WAD ?? RELIST_NORM) });
     const limit = context.config.KEEPER_LISTER_MAX_TX;
     let sent = 0;
     let dryRun = false;

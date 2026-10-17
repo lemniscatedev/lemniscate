@@ -18,9 +18,11 @@ export interface HedgerState {
   lastTradeMs: Map<string, number>;
   /** venue name -> epoch ms since which it has been unhealthy. The risk monitor pauses buys after 15 minutes. */
   unhealthySince: Map<string, number>;
+  /** name -> epoch ms since which the name could not be hedged (trade_failed or no_venue, e.g. no Uniswap route). */
+  unhedgedSince: Map<string, number>;
 }
 
-export const newHedgerState = (): HedgerState => ({ lastTradeMs: new Map(), unhealthySince: new Map() });
+export const newHedgerState = (): HedgerState => ({ lastTradeMs: new Map(), unhealthySince: new Map(), unhedgedSince: new Map() });
 
 export interface CycleDeps {
   loadBook(): Promise<BookSnapshot>;
@@ -35,6 +37,9 @@ export interface CycleDeps {
   /** Called right after the venue health check, before any other work, so the risk monitor sees a down venue even if
    * the rest of the cycle then fails. */
   onHealth?(meta: HedgerHealthMeta): Promise<void>;
+  /** Called at the end of each pass with the names that could not be hedged and since when (ISO). The risk monitor pauses
+   * buys on a name that stays in this list (F30). */
+  onUnhedged?(unhedged: Record<string, string>): Promise<void>;
   settings: HedgerSettings;
   state: HedgerState;
   now(): number;
@@ -71,6 +76,8 @@ export interface CycleResult extends HedgerHealthMeta {
   cycleAt: string;
   dryRun: boolean;
   names: Record<string, NameReport>;
+  /** Names that could not be hedged (trade_failed, no_venue) and since when. */
+  unhedged: Record<string, string>;
   unhealthyVenues: Record<string, string>;
 }
 
@@ -185,8 +192,18 @@ export async function runHedgeCycle(deps: CycleDeps): Promise<CycleResult> {
     }
   }
 
+  for (const [label, report] of Object.entries(names)) {
+    if (report.reason === "trade_failed" || report.reason === "no_venue") {
+      if (!state.unhedgedSince.has(label)) state.unhedgedSince.set(label, nowMs);
+    } else state.unhedgedSince.delete(label);
+  }
+  for (const label of [...state.unhedgedSince.keys()]) if (!(label in names)) state.unhedgedSince.delete(label);
+  const unhedged = Object.fromEntries([...state.unhedgedSince].map(([label, since]) => [label, new Date(since).toISOString()]));
+  if (deps.onUnhedged) await deps.onUnhedged(unhedged).catch((error) => logger.warn({ err: error instanceof Error ? error.message : String(error) }, "Could not record unhedged names"));
+  if (Object.keys(unhedged).length) logger.error({ unhedged }, "Hedger cannot hedge these names; the risk monitor will pause their buys");
+
   return {
-    cycleAt: new Date(nowMs).toISOString(), dryRun: settings.dryRun, names, ...healthMeta(state.unhealthySince),
+    cycleAt: new Date(nowMs).toISOString(), dryRun: settings.dryRun, names, unhedged, ...healthMeta(state.unhealthySince),
     unhealthyVenues: Object.fromEntries([...state.unhealthySince].map(([name, since]) => [name, new Date(since).toISOString()])),
   };
 }

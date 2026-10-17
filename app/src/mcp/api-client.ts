@@ -1,3 +1,10 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
+/** The address of the MCP caller whose tool call is running. The API counts rate limits per client address, and every
+ * MCP request reaches it from 127.0.0.1, so the caller's address is forwarded (X-Forwarded-For) or all MCP users would
+ * share one bucket (F40). Set by the HTTP transport around each request; absent for stdio. */
+export const callerAddress = new AsyncLocalStorage<string>();
+
 export class ToolError extends Error {
   constructor(readonly code: string, message: string, readonly detail?: unknown) {
     super(message);
@@ -15,8 +22,12 @@ export function createApiClient(baseUrl: string, fetchImpl: typeof fetch = fetch
   async function call(method: "GET" | "POST", path: string, body?: unknown): Promise<unknown> {
     let response: Response;
     try {
+      const forwarded = callerAddress.getStore();
       response = await fetchImpl(`${baseUrl}${path}`, {
-        method, headers: body === undefined ? { accept: "application/json" } : { accept: "application/json", "content-type": "application/json" },
+        method, headers: {
+          accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }),
+          ...(forwarded ? { "x-forwarded-for": forwarded } : {}),
+        },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(timeoutMs),
       });
     } catch {

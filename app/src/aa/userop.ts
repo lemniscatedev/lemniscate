@@ -3,7 +3,7 @@ import { getUserOperationHash } from "viem/account-abstraction";
 import type { AaConfig } from "./config";
 import type { Bundler, GasEstimate } from "./bundler";
 import { toRpcUserOp } from "./bundler";
-import type { AaChain } from "./chain";
+import { RpcBudgetError, type AaChain } from "./chain";
 import { DUMMY_ACCOUNT_SIGNATURE, encodeKernelExecute, kernelFactoryData, kernelInitData, kernelNonceKey, approveCall, type Call } from "./kernel";
 import { callsAreSponsorable, type Op, type Sponsor, type SponsorPolicy } from "./paymaster";
 
@@ -104,7 +104,10 @@ export async function buildUserOp(services: AaServices, input: BuildInput): Prom
   const nonce = await chain.entryPointNonce(config.entryPoint, input.account, nonceKey)
     .catch(() => { throw new AaError(503, "CHAIN_UNAVAILABLE", "The chain could not be read right now."); });
   const callData = encodeKernelExecute(input.calls);
-  const fees = await chain.feesPerGas();
+  const fees = await chain.feesPerGas().catch((error: unknown) => {
+    if (error instanceof RpcBudgetError) throw new AaError(503, "CHAIN_UNAVAILABLE", "The chain could not be read right now.");
+    return null;
+  });
   const fb = config.fallback;
   const maxFeePerGas = fees ? maxOp(buffer(fees.maxFeePerGas, 125n), 1n) : fb.maxFeePerGas;
   const maxPriorityFeePerGas = fees ? fees.maxPriorityFeePerGas : fb.priorityFeePerGas;
@@ -148,7 +151,11 @@ export async function buildUserOp(services: AaServices, input: BuildInput): Prom
       );
     }
   } catch {
-    // Keep the conservative fallbacks. The bundler re-checks everything when the signed operation is sent.
+    // F25: never keep a sponsor signature for an operation that could not be simulated. A bundler fails the estimate when
+    // execution reverts, so signing over the fallback limits would pay for a call known to fail. The caller can retry
+    // unsponsored (the user pays gas) or use the plain transaction.
+    if (useSponsor) throw new AaError(409, "SPONSOR_SIMULATION_FAILED", "This operation could not be simulated, so it will not be sponsored. Retry without sponsorship or use the plain transaction.");
+    // Unsponsored: keep the conservative fallbacks. The bundler re-checks everything when the signed operation is sent.
   }
 
   const maxCostWei = maxCostOf(op);

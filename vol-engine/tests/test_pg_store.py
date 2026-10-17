@@ -144,3 +144,20 @@ def test_intents_keep_the_planning_clock_for_the_rate_limit_mirror(dsn):
         assert store.recent_sent(stock, "DAILY", chain_now + 60) == [(chain_now, 3000)]
     finally:
         store.close()
+
+
+def test_pending_intents_lists_only_broadcast_posts_without_a_receipt(dsn):
+    """F44: pending rows with a tx hash are what the engine reconciles against receipts."""
+    store = PgStore(dsn)
+    try:
+        stock = STOCKS["NVDA"]
+        store.write_intent(Intent(stock, "NVDA", "WEEKLY", 3100, 1, 0, 0, 0, 1_900_003_600, 701, "0x", "0x", "pending",
+                                  created_at=1_900_000_000.0))
+        assert [i.nonce for i in store.pending_intents() if i.speed == "WEEKLY" and i.nonce == 701] == []  # no hash yet
+        store.mark_intent(stock, "WEEKLY", 701, "pending", "0x" + "22" * 32)
+        found = [i for i in store.pending_intents() if i.speed == "WEEKLY" and i.nonce == 701]
+        assert len(found) == 1 and found[0].tx_hash == "0x" + "22" * 32 and found[0].created_at == 1_900_000_000.0
+        store.mark_intent(stock, "WEEKLY", 701, "sent", "0x" + "22" * 32)
+        assert [i for i in store.pending_intents() if i.nonce == 701] == []
+    finally:
+        store.close()

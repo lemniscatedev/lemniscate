@@ -1,6 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { rateLimitKey } from "../api/rate-limit";
+import { callerAddress } from "./api-client";
 import type { McpServer } from "./server";
 
 export interface McpHttpOptions {
@@ -30,14 +32,17 @@ export function createMcpHttpApp(server: McpServer, options: McpHttpOptions) {
     let body: unknown;
     try { body = await context.req.json(); }
     catch { return context.json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error." } }, 400); }
-    // Per caller: the bearer token if present, else the client address.
+    // Per caller: the bearer token if present, else the client address counted by IPv4 or IPv6 /64 (F40). The address is
+    // also forwarded to the API so its per-client limits see the caller, not 127.0.0.1.
     const bearer = context.req.header("authorization");
+    const address = context.req.header("x-forwarded-for")?.split(",")[0]?.trim() || undefined;
     const callerKey = bearer ? `t:${digest(bearer).toString("hex").slice(0, 16)}`
-      : `ip:${context.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "local"}`;
+      : `ip:${address ? rateLimitKey(address) : "local"}`;
     const batch = Array.isArray(body);
     const messages: unknown[] = Array.isArray(body) ? body : [body];
     if (messages.length === 0 || messages.length > 20) return context.json({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid batch." } }, 400);
-    const responses = (await Promise.all(messages.map((m) => server.handle(m, callerKey)))).filter((r) => r !== null);
+    const run = () => Promise.all(messages.map((m) => server.handle(m, callerKey)));
+    const responses = (await (address ? callerAddress.run(address.slice(0, 64), run) : run())).filter((r) => r !== null);
     if (responses.length === 0) return context.body(null, 202);
     context.header("Cache-Control", "no-store");
     return context.json(batch ? responses : responses[0]!, 200);

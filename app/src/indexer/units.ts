@@ -92,8 +92,17 @@ export function bytes32Text(value: unknown): string {
   return printable ? String.fromCharCode(...used) : hex;
 }
 
+/** The last second Postgres timestamptz text and JS ISO strings both hold without a '+' year (9999-12-31T23:59:59Z). */
+export const MAX_DB_UNIX_SECONDS = 253_402_300_799n;
+
+/**
+ * Chain unix seconds as a Date that can always be stored. Values a user controls (a uint64 expiresAt such as
+ * type(uint64).max) are clamped to the year 9999 instead of throwing: an event must never halt ingestion (F04).
+ */
 export function unixToDate(value: unknown): Date {
-  return new Date(Number(asBigInt(value)) * 1_000);
+  const seconds = asBigInt(value);
+  const bounded = seconds < 0n ? 0n : seconds > MAX_DB_UNIX_SECONDS ? MAX_DB_UNIX_SECONDS : seconds;
+  return new Date(Number(bounded) * 1_000);
 }
 
 export function parseChainTimestamp(value: unknown): Date | undefined {

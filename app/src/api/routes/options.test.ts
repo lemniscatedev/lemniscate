@@ -409,6 +409,18 @@ suite("option API over indexed data", () => {
     expect((await get(`/v1/series/${id(99)}`)).status).toBe(404);
   });
 
+  test("F41: with x402 on, /v1/series/{id} withholds bid, ask and Greeks from everyone but the website's own server", async () => {
+    const gated = createApiApp({ ...deps, x402: { isInternal: (token: string | undefined) => token === "site-secret", routes: [], middleware: () => async (_c: unknown, next: () => Promise<void>) => next() } as never });
+    const anonymous = await (await gated.request(`/v1/series/${id(2)}`)).json() as any;
+    expect(anonymous.option).toBeNull();
+    expect(anonymous.id).toBe(id(2)); // the terms stay public
+    const forged = await (await gated.request(`/v1/series/${id(2)}`, { headers: { origin: "https://site.example" } })).json() as any;
+    expect(forged.option).toBeNull();
+    const internal = await (await gated.request(`/v1/series/${id(2)}`, { headers: { "x-lmns-internal": "site-secret" } })).json() as any;
+    expect(internal.option.id).toBe(id(2));
+    expect((await (await get(`/v1/series/${id(2)}`)).json() as any).option.id).toBe(id(2)); // x402 off: unchanged
+  });
+
   test("GET /v1/config: addresses, names, caps and pricing constants (R5)", async () => {
     const body = await (await get("/v1/config")).json() as any;
     expect(body.chainId).toBe(4663);

@@ -122,6 +122,9 @@ const stockEntrySchema = z.object({
   name: z.string().regex(/^[A-Z0-9.]{1,12}$/, "expected an upper case ticker"),
   stock: addressSchema,
   feed: addressSchema.optional(),
+  /** The reviewed Uniswap v3 hedge pool and its fee tier (deploy config). The hedger checks the factory against it. */
+  uniPool: addressSchema.optional(),
+  poolFee: z.number().int().positive().optional(),
 });
 
 const optionDeploymentSchema = z.object({

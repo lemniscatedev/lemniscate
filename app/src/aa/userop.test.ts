@@ -50,13 +50,18 @@ describe("userOpBuilder (R1)", () => {
     expect(mock.estimated[0]!.op.paymasterData!.length).toBe(2 + 77 * 2); // a full sponsor-signed stub
   });
 
-  test("falls back to conservative limits when the bundler cannot estimate", async () => {
+  test("F25: a sponsored operation that cannot be simulated is refused, never signed over fallback limits", async () => {
     const { services } = createTestServices({ bundler: { failEstimate: true } });
-    const built = await buildUserOp(services, { account: ACCOUNT, calls: buyCalls, sponsor: true });
+    await expect(buildUserOp(services, { account: ACCOUNT, calls: buyCalls, sponsor: true })).rejects.toMatchObject({ status: 409, apiError: "SPONSOR_SIMULATION_FAILED" });
+  });
+
+  test("falls back to conservative limits when the bundler cannot estimate an unsponsored operation", async () => {
+    const { services } = createTestServices({ bundler: { failEstimate: true } });
+    const built = await buildUserOp(services, { account: ACCOUNT, calls: buyCalls, sponsor: false });
     expect(built.estimated).toBe(false);
     expect(built.userOp.callGasLimit).toBe(1_500_000n);
     expect(built.userOp.verificationGasLimit).toBe(700_000n);
-    expect(built.userOp.paymasterVerificationGasLimit).toBe(200_000n);
+    expect(built.userOp.paymasterVerificationGasLimit).toBeUndefined(); // unsponsored: no paymaster fields
   });
 
   test("fees come from the node with headroom, else from the configured fallback", async () => {
@@ -94,7 +99,7 @@ describe("new accounts", () => {
     // Without an estimate, a deploying operation gets the larger verification fallback.
     const blind = createTestServices({ bundler: { failEstimate: true } });
     blind.state.deployed.clear();
-    const fallback = await buildUserOp(blind.services, { account: ACCOUNT, owner: OWNER, calls: buyCalls, sponsor: true });
+    const fallback = await buildUserOp(blind.services, { account: ACCOUNT, owner: OWNER, calls: buyCalls, sponsor: false });
     expect(fallback.userOp.verificationGasLimit).toBe(1_800_000n);
   });
 

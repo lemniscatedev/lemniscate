@@ -14,7 +14,10 @@ const schema = z.object({
   X402_RPC_URL: z.string().url().optional(),
   X402_NONCE_SECRET: z.string().regex(/^0x[0-9a-fA-F]{32,}$/).optional(),
   X402_CHALLENGE_TTL_SECONDS: z.coerce.number().int().min(30).max(3_600).default(300),
+  /** Removed (F41): an Origin header is client-controlled and proves nothing. Setting it is a startup error. */
   X402_FREE_ORIGINS: z.string().default(""),
+  /** Secret the website's own server sends in `x-lmns-internal` to read the paid routes free. At least 24 characters. */
+  X402_INTERNAL_TOKEN: z.string().min(24).optional(),
   X402_PRICE_VOL: price(DEFAULT_PRICES_USDG.vol),
   X402_PRICE_CHAINS: price(DEFAULT_PRICES_USDG.chains),
   X402_PRICE_POOL: price(DEFAULT_PRICES_USDG.pool),
@@ -35,7 +38,7 @@ export interface X402Settings {
   readonly rpcUrl: string | undefined;
   readonly nonceSecret: Hex | undefined;
   readonly challengeTtlSeconds: number;
-  readonly freeOrigins: readonly string[];
+  readonly internalToken: string | undefined;
   readonly routes: readonly PaidRoute[];
 }
 
@@ -46,6 +49,9 @@ export function loadX402Settings(source: Record<string, string | undefined> = pr
     throw new Error(`Invalid x402 configuration: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
   }
   const v = parsed.data;
+  if (v.X402_FREE_ORIGINS.trim()) {
+    throw new Error("Invalid x402 configuration: X402_FREE_ORIGINS was removed because a request's Origin header can be forged. Serve the website through its own server and set X402_INTERNAL_TOKEN instead");
+  }
   // X402_SETTLER_KEY (development) or X402_SETTLER_KEYSTORE + X402_SETTLER_KEYSTORE_PASSWORD_FILE (the only form production accepts).
   let settlerKey: Hex | undefined;
   try {
@@ -64,7 +70,7 @@ export function loadX402Settings(source: Record<string, string | undefined> = pr
     rpcUrl: v.X402_RPC_URL,
     nonceSecret: v.X402_NONCE_SECRET as Hex | undefined,
     challengeTtlSeconds: v.X402_CHALLENGE_TTL_SECONDS,
-    freeOrigins: v.X402_FREE_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean),
+    internalToken: v.X402_INTERNAL_TOKEN,
     routes: [
       { pattern: "/v1/vol/:name", description: "Volatility inputs and posts for one name", amount: parseUnits(v.X402_PRICE_VOL, 6) },
       { pattern: "/v1/chains/:name", description: "Option chain with bid, ask and Greeks for one name", amount: parseUnits(v.X402_PRICE_CHAINS, 6) },

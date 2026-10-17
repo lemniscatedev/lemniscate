@@ -52,9 +52,32 @@ def tau_years(tau_s: int) -> float:
     return tau_s / YEAR_SECONDS
 
 
-def add_event_variance(sigma: float, move: float, tau_s: int) -> float:
-    """sigma_eff^2 = sigma^2 + move^2 / tau, with tau in years (used for both E and G)."""
-    return math.sqrt(sigma * sigma + move * move / tau_years(tau_s))
+def event_ratio(sigma: float, move: float, tau_s: int) -> float:
+    """R = sigma_eff^2 / sigma^2 once the event variance is fully on (>= 1)."""
+    return 1.0 + move * move / (tau_years(tau_s) * sigma * sigma)
+
+
+def add_event_variance(sigma: float, move: float, tau_s: int, weight: float = 1.0) -> float:
+    """Full weight: sigma_eff^2 = sigma^2 + move^2 / tau, with tau in years (used for both E and G).
+
+    A scheduled event ramps in (F05): sigma_eff^2 = sigma^2 * R^w with R = sigma_eff^2 / sigma^2 at full weight and
+    w running 0 to 1 over the ramp. Variance then grows geometrically, so value drift per hour is 0.5 ln(R) dw, and
+    `ramp_length_s` keeps that below funding (V / tau): holding through the ramp can never pay.
+    """
+    w = max(0.0, min(1.0, weight))
+    return sigma * event_ratio(sigma, move, tau_s) ** (w / 2.0)
+
+
+def ramp_length_s(sigma: float, move: float, tau_s: int) -> float:
+    """Ramp length: at least 2 tau, longer when ln R is large so 0.5 ln(R) / length stays <= 0.75 / tau."""
+    return tau_s * max(2.0, math.log(event_ratio(sigma, move, tau_s)) / 1.5)
+
+
+def earnings_weight(report_ts: float, now_s: float, length_s: float) -> float:
+    """0 `length_s` before the report, 1 at the report (and after, while the buy block lasts). Linear in time."""
+    if now_s >= report_ts:
+        return 1.0
+    return max(0.0, 1.0 - (report_ts - now_s) / length_s)
 
 
 def earnings_move(name: str, past_moves: Sequence[float]) -> tuple[float, list[str]]:

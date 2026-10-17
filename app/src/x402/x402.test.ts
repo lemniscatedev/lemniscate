@@ -25,7 +25,7 @@ interface Harness {
   state: { now: number; failSettle: boolean; handlerStatus: number; handlerCalls: number };
 }
 
-function harness(extra: { freeOrigins?: string[]; settleNonceUsed?: boolean } = {}): Harness {
+function harness(extra: { internalToken?: string; settleNonceUsed?: boolean } = {}): Harness {
   const state = { now: NOW_MS, failSettle: false, handlerStatus: 200, handlerCalls: 0 };
   const settled: Harness["settled"] = [];
   const settler: Settler = {
@@ -40,7 +40,7 @@ function harness(extra: { freeOrigins?: string[]; settleNonceUsed?: boolean } = 
   const settings = loadX402Settings({ X402_ENABLED: "0" });
   const gate = createGate({
     chainId: CHAIN_ID, usdg: USDG, payTo: PAY_TO, settler, routes: settings.routes, challengeTtlSeconds: 300,
-    freeOrigins: extra.freeOrigins ?? [], now: () => state.now,
+    ...(extra.internalToken ? { internalToken: extra.internalToken } : {}), now: () => state.now,
   });
   const app = new Hono();
   registerX402(app, { ...gate, routes: settings.routes });
@@ -260,10 +260,36 @@ describe("R4 x402Flow", () => {
     expect(await errorOf(await withPayment(b, "/v1/pool", header))).toBe("invalid_nonce");
   });
 
-  test("allowed web origins read free; others and non-GET are unaffected by origin spoof only for listed origins", async () => {
-    const h = harness({ freeOrigins: ["https://app.example"] });
-    expect((await get(h, "/v1/pool", { origin: "https://app.example" })).status).toBe(200);
-    expect((await get(h, "/v1/pool", { origin: "https://other.example" })).status).toBe(402);
+  test("F41: an Origin header never waives payment, whatever its value", async () => {
+    const h = harness({ internalToken: "a-long-internal-secret-0123456789" });
+    for (const origin of ["https://app.example", "https://other.example", "null", "https://lemniscate.example"]) {
+      expect((await get(h, "/v1/pool", { origin })).status).toBe(402);
+    }
+    expect(h.state.handlerCalls).toBe(0);
+  });
+
+  test("F41: the website's own server reads free with the internal token; a wrong or missing token pays", async () => {
+    const h = harness({ internalToken: "a-long-internal-secret-0123456789" });
+    expect((await get(h, "/v1/pool", { "x-lmns-internal": "a-long-internal-secret-0123456789" })).status).toBe(200);
+    expect((await get(h, "/v1/pool", { "x-lmns-internal": "a-long-internal-secret-0123456780" })).status).toBe(402);
+    expect((await get(h, "/v1/pool", { "x-lmns-internal": "" })).status).toBe(402);
+    const open = harness();
+    expect((await get(open, "/v1/pool", { "x-lmns-internal": "anything" })).status).toBe(402); // no token configured: nobody is exempt
+  });
+
+  test("F41: paid responses are never cacheable by a shared cache", async () => {
+    const h = harness({ internalToken: "a-long-internal-secret-0123456789" });
+    const internal = await get(h, "/v1/pool", { "x-lmns-internal": "a-long-internal-secret-0123456789" });
+    expect(internal.headers.get("cache-control")).toBe("private, no-store");
+    const paid = await withPayment(h, "/v1/pool", await pay(await challengeFor(h, "/v1/pool")));
+    expect(paid.status).toBe(200);
+    expect(paid.headers.get("cache-control")).toBe("private, no-store");
+  });
+
+  test("F41: X402_FREE_ORIGINS is gone and says why instead of being silently ignored", () => {
+    expect(() => loadX402Settings({ X402_FREE_ORIGINS: "https://app.example" })).toThrow("can be forged");
+    expect(loadX402Settings({ X402_INTERNAL_TOKEN: "a-long-internal-secret-0123456789" }).internalToken).toBeDefined();
+    expect(() => loadX402Settings({ X402_INTERNAL_TOKEN: "short" })).toThrow();
   });
 
   test("tracked nonce memory is bounded", async () => {
@@ -332,3 +358,44 @@ describe("chain clock on the anvil fork (todo 23)", () => {
     expect(failing.now()).toBe(wall);
   });
 });
+
+describe("F42 the settler never reuses a nonce", () => {
+  test("20 parallel settlements get 20 distinct transaction nonces and all succeed", async () => {
+    const { custom, decodeFunctionData: decode, parseTransaction } = await import("viem");
+    const { viemSettler: makeSettler } = await import("./gate");
+    const nonces: number[] = [];
+    let latestBlock = 1;
+    // A node that, like a real one, answers the pending transaction count with what it has already been given.
+    const request = async ({ method, params }: { method: string; params?: unknown[] }) => {
+      switch (method) {
+        case "eth_chainId": return "0x1237";
+        case "eth_getTransactionCount": return `0x${nonces.length.toString(16)}`;
+        case "eth_estimateGas": await new Promise((r) => setTimeout(r, 20)); return "0x30d40";
+        case "eth_gasPrice": return "0x3b9aca00";
+        case "eth_maxPriorityFeePerGas": return "0x3b9aca00";
+        case "eth_getBlockByNumber": return { number: "0x1", baseFeePerGas: "0x3b9aca00", timestamp: "0x1", hash: `0x${"11".repeat(32)}`, transactions: [] };
+        case "eth_sendRawTransaction": {
+          const tx = parseTransaction((params as string[])[0] as `0x${string}`);
+          if (nonces.includes(tx.nonce as number)) throw new Error(`nonce too low: ${tx.nonce}`);
+          nonces.push(tx.nonce as number);
+          return `0x${(nonces.length).toString(16).padStart(64, "0")}`;
+        }
+        case "eth_getTransactionReceipt": return { status: "0x1", blockNumber: "0x1", blockHash: `0x${"11".repeat(32)}`, transactionHash: (params as string[])[0], transactionIndex: "0x0", from: settlerAccount.address, to: PERMIT2_ADDRESS, cumulativeGasUsed: "0x1", gasUsed: "0x1", effectiveGasPrice: "0x1", logs: [], logsBloom: `0x${"00".repeat(256)}`, type: "0x2", contractAddress: null };
+        case "eth_blockNumber": latestBlock += 1; return `0x${latestBlock.toString(16)}`;
+        default: throw Object.assign(new Error(`method not found: ${method}`), { code: -32601 }); // not retried by viem
+      }
+    };
+    void decode;
+    const settler = makeSettler({ rpcUrl: "http://unused", chainId: 4663, key: bytesToKey(), transport: custom({ request } as never), pollingIntervalMs: 10 });
+    const results = await Promise.allSettled(Array.from({ length: 20 }, (_, i) => settler.settle({
+      token: USDG, amount: 5_000n, nonce: BigInt(i + 1), deadline: 4_102_444_800n, owner: payer.address, payTo: PAY_TO,
+      resource: `0x${"ab".repeat(32)}` as Hex, signature: `0x${"cd".repeat(65)}` as Hex,
+    })));
+    expect(results.filter((r) => r.status === "rejected")).toEqual([]);
+    expect([...nonces].sort((a, b) => a - b)).toEqual(Array.from({ length: 20 }, (_, i) => i));
+  });
+});
+
+function bytesToKey(): Hex {
+  return ("0x" + "00".repeat(31) + "07") as Hex; // test-key
+}

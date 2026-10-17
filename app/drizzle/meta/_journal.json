@@ -99,6 +99,20 @@
       "when": 1790780000012,
       "tag": "0013_pool_hedge_events",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1790780000013,
+      "tag": "0014_indexer_skipped_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1790780000014,
+      "tag": "0015_sponsorship_grants",
+      "breakpoints": true
     }
   ]
 }

@@ -142,7 +142,8 @@ def test_postingLoop_loop_mode_only_reposts_on_change_or_near_expiry():
     s = settings()
     assert len(run_cycle(NOW, st, DryRunSender(), s, History(), force=False)) == 2
     assert run_cycle(NOW + timedelta(minutes=5), st, DryRunSender(), s, History(), force=False) == []
-    # 45 minutes later less than a third of the validity is left: it refreshes.
+    # 45 minutes later less than a third of the validity is left: it refreshes (the indexer is still writing ticks).
+    st.tick_rows[NVDA].append(Tick((NOW + timedelta(minutes=45)).timestamp() - 30, st.tick_rows[NVDA][-1].spot, "REGULAR", True))
     later = run_cycle(NOW + timedelta(minutes=45), st, DryRunSender(), s, History(), force=False)
     assert len(later) == 2
 
@@ -190,7 +191,7 @@ def test_RpcSender_encodes_post_and_submits_via_transport():
     def transport(method, params):
         calls.append(method)
         return {"eth_getTransactionCount": "0x5", "eth_gasPrice": "0x3b9aca00", "eth_estimateGas": "0x30d40",
-                "eth_sendRawTransaction": "0x" + "ab" * 32}[method]
+                "eth_sendRawTransaction": "0x" + "ab" * 32, "eth_getTransactionReceipt": {"status": "0x1"}}[method]
 
     sender = make_sender(s, transport)
     plans = run_cycle(NOW, st, sender, s, History(), force=True)
@@ -318,3 +319,113 @@ def test_plan_clamps_to_the_rolling_hour_bounds_from_sent_intents():
     sent(now_s - 400, 4400, 2)
     plan = plan_post("NVDA", 0, NOW, st, History(), 3600, False)
     assert plan.post.sigma_bps == 4500 and plan.ramped
+
+
+# ---- F43: a dead indexer must not keep a stale sigma alive ------------------------------------------------------
+
+
+def test_stale_ticks_are_refused_and_alerted_so_the_oracle_can_go_stale():
+    st = store_with_ticks()
+    assert len(run_cycle(NOW, st, DryRunSender(), settings(), History(), force=True)) == 2
+    st.intents.clear()
+    # The indexer died 40 minutes ago: nothing is signed any more, and an alert says why.
+    late = NOW + timedelta(minutes=40)
+    assert run_cycle(late, st, DryRunSender(), settings(), History(), force=True) == []
+    assert st.intents == [] and any(k == "stale_ticks" for _, _, k, _ in st.alerts)
+    # The same for a weekend: a Friday-afternoon stall must not carry the weekend state into Monday.
+    st2 = store_with_ticks()
+    st2.tick_rows[NVDA].append(Tick(NOW.timestamp(), st2.tick_rows[NVDA][-1].spot, "CLOSED", True))
+    monday = NOW + timedelta(days=2, hours=2)
+    assert run_cycle(monday, st2, DryRunSender(), settings(), History(), force=True) == []
+
+
+def test_fresh_ticks_still_post():
+    st = store_with_ticks()
+    assert len(run_cycle(NOW + timedelta(minutes=20), st, DryRunSender(), settings(), History(), force=True)) == 2
+
+
+# ---- F44: "sent" means a receipt, not a transaction hash ---------------------------------------------------------
+
+
+class ReceiptChain:
+    """A transport whose receipts the test controls: None until `mined` is set, then the given status."""
+
+    def __init__(self):
+        self.receipt = None
+
+    def __call__(self, method, params):
+        if method == "eth_getTransactionReceipt":
+            return self.receipt
+        return {"eth_getTransactionCount": "0x5", "eth_gasPrice": "0x3b9aca00", "eth_estimateGas": "0x30d40",
+                "eth_sendRawTransaction": "0x" + "ab" * 32}[method]
+
+
+def test_a_broadcast_without_a_receipt_stays_pending_and_is_not_a_step_reference():
+    st = store_with_ticks()
+    s = settings(send=True, rpc_url="http://unused", sender_key=ANVIL_KEY)
+    chain = ReceiptChain()
+    sender = make_sender(s, chain, sleep=lambda _: None)
+    run_cycle(NOW, st, sender, s, History(), force=True)
+    assert {i.status for i in st.intents} == {"pending"}
+    assert st.reference(NVDA, "DAILY", False) is None  # a phantom is no reference for the next step
+    assert st.recent_sent(NVDA, "DAILY", NOW.timestamp()) == []
+    # The next pass waits for the receipt rather than stacking another post on a maybe-dropped one.
+    assert run_cycle(NOW + timedelta(minutes=6), st, sender, s, History(), force=True) == []
+    chain.receipt = {"status": "0x1"}
+    run_cycle(NOW + timedelta(minutes=7), st, sender, s, History(), force=True)
+    assert {i.status for i in st.intents[:2]} == {"sent"}
+    assert st.reference(NVDA, "DAILY", False) is not None
+
+
+def test_a_dropped_post_is_marked_failed_alerted_and_replanned_from_the_real_reference():
+    st = store_with_ticks()
+    s = settings(send=True, rpc_url="http://unused", sender_key=ANVIL_KEY)
+    chain = ReceiptChain()
+    sender = make_sender(s, chain, sleep=lambda _: None)
+    run_cycle(NOW, st, sender, s, History(), force=True)
+    later = NOW + timedelta(minutes=20)
+    st.tick_rows[NVDA].append(Tick(later.timestamp() - 30, st.tick_rows[NVDA][-1].spot, "REGULAR", True))
+    run_cycle(later, st, sender, s, History(), force=True)
+    assert [i.status for i in st.intents[:2]] == ["failed", "failed"]
+    assert any(k == "post_dropped" for _, _, k, _ in st.alerts)
+    assert len(st.intents) == 4 and {i.status for i in st.intents[2:]} == {"pending"}  # re-planned with fresh nonces
+
+
+def test_a_reverted_post_is_failed_not_sent():
+    st = store_with_ticks()
+    s = settings(send=True, rpc_url="http://unused", sender_key=ANVIL_KEY)
+    chain = ReceiptChain()
+    chain.receipt = {"status": "0x0"}
+    run_cycle(NOW, st, make_sender(s, chain, sleep=lambda _: None), s, History(), force=True)
+    assert {i.status for i in st.intents} == {"failed"}
+
+
+# ---- F45: a sliding force-block window must not make every pass a change ----------------------------------------
+
+
+def test_force_block_window_is_kept_so_loop_mode_does_not_repost_every_pass():
+    st = store_with_ticks(bar_vol=0.0001)
+    st.earnings_rows = [EarningsRow("NVDA", date(2026, 10, 20), "post", SOURCE_A),
+                        EarningsRow("NVDA", date(2026, 10, 27), "post", SOURCE_B)]
+    s = settings()
+    first = run_cycle(NOW, st, DryRunSender(), s, History(), force=False)
+    assert len(first) == 2
+    window = (first[0].post.buy_block_from, first[0].post.buy_block_to)
+    # Six more 5-minute passes (the indexer keeps writing ticks): same window, so no new posts until near expiry.
+    for k in range(1, 7):
+        t = NOW + timedelta(minutes=5 * k)
+        st.tick_rows[NVDA].append(Tick(t.timestamp() - 30, st.tick_rows[NVDA][-1].spot, "REGULAR", True))
+        assert run_cycle(t, st, DryRunSender(), s, History(), force=False) == [], f"pass {k} re-posted"
+    assert [(i.buy_block_from, i.buy_block_to) for i in st.intents if i.speed == "DAILY"] == [window]
+
+
+def test_force_block_window_is_renewed_when_less_than_23h_remain():
+    st = store_with_ticks(bar_vol=0.0001)
+    st.earnings_rows = [EarningsRow("NVDA", date(2026, 10, 20), "post", SOURCE_A),
+                        EarningsRow("NVDA", date(2026, 10, 27), "post", SOURCE_B)]
+    s = settings()
+    run_cycle(NOW, st, DryRunSender(), s, History(), force=True)
+    later = NOW + timedelta(hours=2)
+    st.tick_rows[NVDA].append(Tick(later.timestamp() - 30, st.tick_rows[NVDA][-1].spot, "REGULAR", True))
+    plans = run_cycle(later, st, DryRunSender(), s, History(), force=True)
+    assert plans[0].post.buy_block_to == int(later.timestamp()) + 86_400  # it never lapses while the sources disagree
