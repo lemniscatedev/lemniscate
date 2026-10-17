@@ -3,6 +3,30 @@ import { enginePauses, latestTick, seriesSupply, type PauseState, type TickRow }
 import { latestLimits, latestPoolNav, latestVolPosts, type VolPostRow } from "../../db/queries/pool";
 import { listSeries, type SeriesView } from "../../db/queries/series";
 import { unitQuote, type MarketInputs, type SeriesInputs, type Speed } from "./model";
+import { computeKindedSessions, SESSION_REGULAR, type KindedSession } from "../../keeper/sessions";
+
+/** The session at the API clock. The indexed tick carries PriceGuard's session at its last snapshot (on events and
+ * every ten minutes), so right after a session boundary it is stale: on the fork a weekend sell was quoted at the
+ * regular spread (the engine applies 3x) and reverted on Slippage; on mainnet the same happens for a few minutes after
+ * each open and close. When a boundary of the NYSE calendar (the one the keeper pushes to MarketHours) lies between the
+ * tick and now, the calendar decides; a HALTED reading stays HALTED inside live hours (a feed problem does not end at
+ * the bell). Otherwise the indexed session stands. */
+export function sessionNow(tick: Pick<TickRow, "session" | "ts">, nowMs: number): TickRow["session"] {
+  const tickMs = Date.parse(tick.ts);
+  if (!Number.isFinite(tickMs) || nowMs <= tickMs) return tick.session;
+  let sessions: KindedSession[];
+  try { sessions = computeKindedSessions(new Date(tickMs), 30); } catch { return tick.session; }
+  const at = (ms: number) => {
+    const t = BigInt(Math.floor(ms / 1000));
+    return sessions.find((s) => s.open <= t && t < s.close) ?? null;
+  };
+  const was = at(tickMs);
+  const is = at(nowMs);
+  if (was === is || (was && is && was.open === is.open && was.close === is.close)) return tick.session;
+  if (!is) return "CLOSED";
+  if (tick.session === "HALTED") return "HALTED";
+  return is.kind === SESSION_REGULAR ? "REGULAR" : "EXTENDED";
+}
 
 /** Everything the quote model needs about one name, read once from Postgres (never from an RPC). */
 export interface NameContext {
@@ -36,7 +60,7 @@ export async function loadNameContext(deps: ApiDependencies, name: string, now: 
   const ofName = posts.filter((post) => post.name === name);
   const base: NameContext = {
     name,
-    tick,
+    tick: { ...tick, session: sessionNow(tick, now.getTime()) },
     nowMs: now.getTime(),
     vol: { DAILY: ofName.find((p) => p.speed === "DAILY"), WEEKLY: ofName.find((p) => p.speed === "WEEKLY") },
     pauses,
