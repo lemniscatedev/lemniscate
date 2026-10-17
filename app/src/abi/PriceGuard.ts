@@ -68,6 +68,32 @@ export const PriceGuardAbi = [
   },
   {
     "type": "function",
+    "name": "DEFAULT_MAX_AGE_CLOSED",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "DEFAULT_TRADE_TWAP_WINDOW",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "DEFAULT_TWAP_BAND_BPS",
     "inputs": [],
     "outputs": [
@@ -172,6 +198,19 @@ export const PriceGuardAbi = [
   },
   {
     "type": "function",
+    "name": "MAX_MAX_AGE_CLOSED",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MAX_MULTIPLIER",
     "inputs": [],
     "outputs": [
@@ -211,6 +250,19 @@ export const PriceGuardAbi = [
   },
   {
     "type": "function",
+    "name": "MAX_TRADE_TWAP_WINDOW",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MAX_TWAP_BAND_BPS",
     "inputs": [],
     "outputs": [
@@ -225,6 +277,32 @@ export const PriceGuardAbi = [
   {
     "type": "function",
     "name": "MAX_TWAP_WINDOW",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MIN_MAX_AGE_CLOSED",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MIN_TRADE_TWAP_WINDOW",
     "inputs": [],
     "outputs": [
       {
@@ -506,6 +584,25 @@ export const PriceGuardAbi = [
   },
   {
     "type": "function",
+    "name": "haltedSince",
+    "inputs": [
+      {
+        "name": "stock",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "hasRole",
     "inputs": [
       {
@@ -561,6 +658,19 @@ export const PriceGuardAbi = [
         "name": "",
         "type": "address",
         "internalType": "contract IMarketHours"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "maxAgeClosed",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
       }
     ],
     "stateMutability": "view"
@@ -798,6 +908,19 @@ export const PriceGuardAbi = [
   },
   {
     "type": "function",
+    "name": "setMaxAgeClosed",
+    "inputs": [
+      {
+        "name": "maxAge",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setSequencerFeed",
     "inputs": [
       {
@@ -859,6 +982,19 @@ export const PriceGuardAbi = [
             "internalType": "bool"
           }
         ]
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setTradeTwapWindow",
+    "inputs": [
+      {
+        "name": "window",
+        "type": "uint32",
+        "internalType": "uint32"
       }
     ],
     "outputs": [],
@@ -957,6 +1093,11 @@ export const PriceGuardAbi = [
             "name": "contPaused",
             "type": "bool",
             "internalType": "bool"
+          },
+          {
+            "name": "haltedSince",
+            "type": "uint40",
+            "internalType": "uint40"
           }
         ]
       }
@@ -978,6 +1119,38 @@ export const PriceGuardAbi = [
         "name": "",
         "type": "bool",
         "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "tradeTwap",
+    "inputs": [
+      {
+        "name": "stock",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "tradeTwapWindow",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
       }
     ],
     "stateMutability": "view"
@@ -1104,6 +1277,25 @@ export const PriceGuardAbi = [
   },
   {
     "type": "event",
+    "name": "HaltLatched",
+    "inputs": [
+      {
+        "name": "stock",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "since",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "LastGoodPriceSet",
     "inputs": [
       {
@@ -1136,6 +1328,19 @@ export const PriceGuardAbi = [
         "type": "address",
         "indexed": false,
         "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "MaxAgeClosedSet",
+    "inputs": [
+      {
+        "name": "maxAge",
+        "type": "uint32",
+        "indexed": false,
+        "internalType": "uint32"
       }
     ],
     "anonymous": false
@@ -1264,6 +1469,19 @@ export const PriceGuardAbi = [
       },
       {
         "name": "maxAgeExtended",
+        "type": "uint32",
+        "indexed": false,
+        "internalType": "uint32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "TradeTwapWindowSet",
+    "inputs": [
+      {
+        "name": "window",
         "type": "uint32",
         "indexed": false,
         "internalType": "uint32"

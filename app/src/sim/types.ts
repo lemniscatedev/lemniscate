@@ -45,6 +45,10 @@ export interface Scenario {
    * `leadS` (arbitrage moves the pool before the next 0.5% feed print), the TWAP is the mean pool price over `windowS`,
    * and buys pause while |feed - TWAP| / TWAP exceeds the name's band. Omitted = not modelled (the todo 21 runs). */
   twap?: { windowS: number; leadS: number; bandBps: Readonly<Record<string, number>>; defaultBandBps: number };
+  /** The engine's review fixes F01/F02 (todo 27), modelled: every trade is priced at the worse for the trader of the feed
+   * and the `windowS` trade TWAP of the same leading pool (any session), and a sell within `holdS` of the position's
+   * buy at the worse of that and the buy S. Omitted = not modelled (the runs before the fix). */
+  tradeGuard?: { windowS: number; holdS: number };
 }
 
 export const BASE_SCENARIO: Scenario = { label: "base", floorMult: 1, sigmaMult: 1, gapMult: 1, hedge: true, depthMult: 1, weekendGap: 0, retailScale: 1 };

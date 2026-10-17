@@ -21,6 +21,9 @@ export const SENSITIVITY: Scenario[] = [
  * 10 minutes (an assumption: the time a 0.5% deviation print takes to land after the market moved). */
 export const TWAP_MODEL = { windowS: 1800, leadS: 600, bandBps: { TSLA: 125 }, defaultBandBps: 75 } as const;
 
+/** Review fixes F01/F02 (todo 27): PriceGuard.tradeTwap (5 minutes) worse-of pricing and the engine's 30-minute hold. */
+export const TRADE_GUARD = { windowS: 300, holdS: 1800 } as const;
+
 /** The gated pair and the sensitivity rows again with the TWAP cross-check modelled (todo 23). */
 export const TWAP_SCENARIOS: Scenario[] = [
   { ...BASE_SCENARIO, label: "base + TWAP check", twap: TWAP_MODEL },

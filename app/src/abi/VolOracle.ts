@@ -55,6 +55,19 @@ export const VolOracleAbi = [
   },
   {
     "type": "function",
+    "name": "GUARDIAN_ROLE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "HARD_MAX_POST_INTERVAL",
     "inputs": [],
     "outputs": [
@@ -134,6 +147,45 @@ export const VolOracleAbi = [
   {
     "type": "function",
     "name": "MAX_FLOOR_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_SKEW_CALL",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_SKEW_PUT",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_SKEW_STEP",
     "inputs": [],
     "outputs": [
       {
@@ -612,6 +664,13 @@ export const VolOracleAbi = [
   },
   {
     "type": "function",
+    "name": "revokeSigner",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setFloor",
     "inputs": [
       {
@@ -875,6 +934,19 @@ export const VolOracleAbi = [
   },
   {
     "type": "event",
+    "name": "SignerRevoked",
+    "inputs": [
+      {
+        "name": "signer",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "SignerSet",
     "inputs": [
       {
@@ -1046,6 +1118,33 @@ export const VolOracleAbi = [
     "inputs": [
       {
         "name": "nextAllowedAt",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SkewOutOfRange",
+    "inputs": [
+      {
+        "name": "skewK",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SkewStepTooLarge",
+    "inputs": [
+      {
+        "name": "prior",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "next",
         "type": "uint64",
         "internalType": "uint64"
       }

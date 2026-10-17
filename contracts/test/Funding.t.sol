@@ -72,7 +72,9 @@ contract FundingTest is Test {
             uint256 got = Funding.step(c[i].norm, c[i].V, c[i].payoff, c[i].dtSeconds, c[i].tauSeconds);
             uint256 want = c[i].newNorm;
             uint256 diff = got > want ? got - want : want - got;
-            uint256 rel = diff * 1e18 / want;
+            // Below ~1e12 (reachable since review F06 lowered MIN_NORM to 1e6) one wei of rounding is more than 1e-9
+            // relative: a difference of at most 2 wei always passes.
+            uint256 rel = diff <= 2 ? 0 : diff * 1e18 / want;
             if (rel > worst) worst = rel;
             if (rel > 1e9) {
                 console2.log("case", i);

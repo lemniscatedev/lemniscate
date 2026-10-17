@@ -18,6 +18,7 @@ contract EngineAccrueTest is EngineBase {
 
     function setUp() public override {
         super.setUp();
+        _lowMinTrade();
         callD = _list(address(nvda), true, 100e18, DAILY);
         putW = _list(address(nvda), false, 95e18, WEEKLY);
     }

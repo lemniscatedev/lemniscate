@@ -37,7 +37,9 @@ library TickPrice {
         if (absTick & 0x40000 != 0) ratio = (ratio * 0x48a170391f7dc42444e8fa2) >> 128;
         if (absTick & 0x80000 != 0) ratio = (ratio * 0x149b34ee7ac262) >> 128;
 
-        // ratio = 1.0001^-|tick| in Q128 (at most 1.0); invert for positive ticks.
-        if (tick > 0 && ratio != 0) ratio = Math.mulDiv(Q128, Q128, ratio);
+        // ratio = 1.0001^-|tick| in Q128 (at most 1.0); invert for positive ticks. For ticks 880341..887272 the ratio
+        // floors to 1 and 2^256 / 1 does not fit (review F35): saturate at the largest uint256, as Uniswap's TickMath
+        // inverts with type(uint256).max / ratio. Callers bound the result before scaling it.
+        if (tick > 0 && ratio != 0) ratio = ratio > 1 ? Math.mulDiv(Q128, Q128, ratio) : type(uint256).max;
     }
 }

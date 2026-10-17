@@ -97,11 +97,12 @@ contract EngineRiskTest is EngineBase {
         assertEq(sDown, 6338);
     }
 
-    function test_R2_staleVolSellsAtSigmaTimes1_2() public {
+    /// @dev Review F09/F13: a stale post lowers the sell sigma (x 0.8), never raises the bid.
+    function test_R2_staleVolSellsAtSigmaTimes0_8() public {
         bytes32 id = _list(address(nvda), true, 100e18, DAILY);
         (, uint256 tokens) = _buy(alice, id, 10e18);
         vol.set(address(nvda), Speed.DAILY, 4000, 0, uint64(vm.getBlockTimestamp() - 1));
-        assertEq(engine.quote(id, tokens, false).sigmaBps, 4800);
+        assertEq(engine.quote(id, tokens, false).sigmaBps, 3200);
         assertFalse(engine.quote(id, 1e18, true).buyable, "stale vol blocks buys");
     }
 

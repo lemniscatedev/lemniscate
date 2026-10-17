@@ -16,10 +16,15 @@ import {FixedMath} from "./FixedMath.sol";
 /// covers any dt (no loop, constant gas). The TypeScript reference (app/src/pricing/funding.ts) multiplies the chunks;
 /// test R7/R9 check both agree within 1e-9. The result is rounded down (in the pool's favour, by at most 1 wei of norm),
 /// never above the input, and never below MIN_NORM.
+/// Review F06: MIN_NORM is 1e-12 of the starting norm and buys stop at 1e-3 (the engine's BUY_MIN_NORM, the keeper's
+/// relist threshold), so the part of a position that can reach the floor and stop paying funding is at most 1e-9 of
+/// its units, far below the per-unit fee and minimum spread a buyer paid.
+/// Review F11/F34: `stepAtRate` takes the rate the engine chose for the gap (the larger of the rate stored at the last
+/// accrual and the rate now), so the caller of a permissionless accrual cannot pick a favourable price for the gap.
 library Funding {
     uint256 internal constant WAD = 1e18;
-    /// @notice Floor of the normalization factor: 1e-6 of the starting norm.
-    uint256 internal constant MIN_NORM = 1e12;
+    /// @notice Floor of the normalization factor: 1e-12 of the starting norm (never 0: storeAccrual rejects 0).
+    uint256 internal constant MIN_NORM = 1e6;
     /// @dev Exponents beyond this make exp() smaller than MIN_NORM / 1e18 (e^-42 < 1e-18), so the floor applies.
     uint256 private constant MAX_EXPONENT = 42e18;
 
@@ -45,9 +50,14 @@ library Funding {
         pure
         returns (uint256 newNorm)
     {
+        return stepAtRate(norm, rate(vWad, payoffWad), dt, tauSeconds);
+    }
+
+    /// @notice `step` at a given rate `r` (WAD, clamped to 1e18).
+    function stepAtRate(uint256 norm, uint256 r, uint256 dt, uint256 tauSeconds) internal pure returns (uint256 newNorm) {
         if (tauSeconds == 0) revert TauZero();
         if (norm <= MIN_NORM || dt == 0) return norm;
-        uint256 r = rate(vWad, payoffWad);
+        if (r > WAD) r = WAD;
         if (r == 0) return norm;
         // x = r * dt / tau in WAD. r <= 1e18 and dt < 2^128 keep r * dt far inside 256 bits.
         uint256 x = Math.mulDiv(r, dt, tauSeconds);

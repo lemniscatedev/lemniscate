@@ -32,6 +32,7 @@ contract SystemGasTest is SystemFixture {
 
     function setUp() public {
         _deploySystem(4, 10_000_000e6);
+        _lowMinTrade();
         probe = new SystemProbe();
     }
 

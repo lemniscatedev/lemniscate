@@ -19,6 +19,9 @@ library EngineStorage {
         uint32 tau;
         bool isCall;
         bool known;
+        /// @dev Funding rate (V - payoff) / V at the last accrual, in 1e-12 units (WAD / 1e6, rounded up): the start of
+        /// the next gap, which is charged at max(start, end) (review F11/F34). Packed into the first slot.
+        uint48 rateMicro;
         address token;
         uint64 lastAccrual;
         /// @dev 1-based position in `live[stock]` (0 = no tokens outstanding), packed with lastAccrual (todo 07b R2).
@@ -60,6 +63,43 @@ library EngineStorage {
         address recipient;
         bytes32 id;
         uint128 tokens;
+        /// @dev The seller's minProceeds, enforced when anyone fills the ticket (review F21).
+        uint128 minProceeds;
+    }
+
+    /// @dev Deploy-time trade guards (review fixes, todo 27). Zero fields read as the defaults in EngineCore.
+    struct Guards {
+        uint64 minTradeUsdg; // smallest buy cost / sell value and smallest position left behind (6 dp)
+        uint32 holdSeconds; // a sell this soon after the account's buy is priced at the worse of now and the buy S
+        uint32 haltSettleDelay; // a stock HALTED this long (PriceGuard.haltedSince) can be settled at its last price
+    }
+
+    /// @dev The worse-for-the-seller S of an account's recent buys of a series and when the hold ends (review F01).
+    struct Hold {
+        uint64 until;
+        uint128 s;
+    }
+
+    /// @dev One series' contribution to its name's NAV mark (review F12/F15): the S and base sigma it was valued at and
+    /// its units then.
+    struct SeriesMark {
+        uint104 s; // the pricing domain tops out at 1e30 < 2^104
+        uint128 units;
+        uint24 sigma; // bps, at most 30,000
+    }
+
+    /// @dev Per-name sums that bound the liability at today's S from the last-touch book in O(1) per name: delta and
+    /// delta x mark S (tangent, a lower bound by convexity), units of calls and puts (|delta| <= 1, an upper bound),
+    /// the envelope [lo, hi] of the mark prices, and per speed vega and vega x mark sigma (first-order vol term).
+    struct NameMark {
+        int256 d;
+        int256 ds;
+        uint256 uCall;
+        uint256 uPut;
+        uint128 lo;
+        uint128 hi;
+        uint256[2] vg;
+        uint256[2] vb;
     }
 
     /// @custom:storage-location erc7201:lemniscate.storage.Engine
@@ -95,6 +135,13 @@ library EngineStorage {
         mapping(address stock => bytes32[]) live;
         /// @dev $LMNS staking read for fee tiers (todo 20 R4); zero = no discounts. Appended (namespaced layout).
         address feeTiers;
+        // ---- review fixes (todo 27), appended
+        Guards guards;
+        mapping(bytes32 id => mapping(address account => Hold)) holds;
+        /// @dev ORC-4 settlement price of a stock whose feed stayed HALTED past the settle delay (0 = none).
+        mapping(address stock => uint256) settleS;
+        mapping(address stock => NameMark) marks;
+        mapping(bytes32 id => SeriesMark) seriesMarks;
     }
 
     /// @dev keccak256(abi.encode(uint256(keccak256("lemniscate.storage.Engine")) - 1)) & ~bytes32(uint256(0xff))

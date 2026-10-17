@@ -1,7 +1,8 @@
 import { formatUnits, parseUnits } from "viem";
 
 export const WAD = 10n ** 18n;
-export const MIN_NORM_FACTOR = 10n ** 12n;
+// contracts/src/libs/Funding.sol MIN_NORM (review F06: 1e-12 of the starting norm).
+export const MIN_NORM_FACTOR = 10n ** 6n;
 const MAX_PROJECTION_SECONDS = 7 * 24 * 60 * 60;
 
 export function fixed(value: string | number | bigint | null | undefined): bigint {

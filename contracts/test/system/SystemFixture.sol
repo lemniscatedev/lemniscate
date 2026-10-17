@@ -22,6 +22,7 @@ import {IVolOracle} from "../../src/interfaces/IVolOracle.sol";
 import {IReserve} from "../../src/interfaces/IReserve.sol";
 import {IFeeRouter} from "../../src/interfaces/IFeeRouter.sol";
 import {Speed} from "../../src/libs/OptionTypes.sol";
+import {EngineStorage} from "../../src/engine/EngineStorage.sol";
 import {Roles} from "../../src/libs/Roles.sol";
 import {MockGuardFeed, MockKindHours} from "../mocks/PriceGuardMocks.sol";
 import {MockStockToken} from "../mocks/MockStockToken.sol";
@@ -158,6 +159,12 @@ abstract contract SystemFixture is Test {
     }
 
     // ------------------------------------------------------------------------------------------------ helpers
+
+    /// @dev Suites written before the $1 minimum trade (review F08/F14) that trade fractions of a dollar.
+    function _lowMinTrade() internal {
+        vm.prank(admin);
+        engine.setGuards(EngineStorage.Guards({minTradeUsdg: 1, holdSeconds: 0, haltSettleDelay: 0}));
+    }
 
     function _deposit(address who, uint256 amount) internal returns (uint256 shares) {
         usdg.mint(who, amount);

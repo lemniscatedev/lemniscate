@@ -59,6 +59,17 @@ interface ITokenDecimals {
 ///    than a buyer can extract from a stale S under the per-series caps ($40k outstanding). Residual risk: pushing a
 ///    thin pool through all of its liquidity to an extreme tick for a few seconds can move the mean by hundreds of
 ///    ticks (that pauses buys; using it to hide a stopped feed also needs the feed to stop, which maxAge bounds).
+///  - Review fixes (todo 27):
+///    - `tradeTwap` (F01/F02/F10/F22/F23): a short-window TWAP (`tradeTwapWindow`, 5 min by default) of the same pool,
+///      in every session. The engine prices each trade at the worse for the trader of S and this TWAP, so a lagging,
+///      stopped or weekend-frozen feed cannot be traded against the market, and moving the pool only worsens the
+///      mover's own fill. Like `_twapPrice` it never reverts (0 = unavailable).
+///    - Halt latch (F07/F21): `poke` records `haltedSince` when a REGULAR/EXTENDED reading is halted, and clears it on
+///      the next live good reading. While it is set, CLOSED and UNKNOWN read HALTED (sells queue) instead of the
+///      pre-halt price, and the engine's ORC-4 settlement measures the halt from it.
+///    - CLOSED/UNKNOWN age bound (F07): a last good price older than `maxAgeClosed` (5 days by default: a 3-day holiday
+///      weekend plus a quiet 24h-heartbeat feed fits inside) reads HALTED, so a dead keeper or feed cannot pay out at a
+///      frozen price.
 contract PriceGuard is AccessControl, IPriceGuard {
     bytes32 public constant GUARDIAN_ROLE = Roles.GUARDIAN_ROLE;
 
@@ -78,6 +89,14 @@ contract PriceGuard is AccessControl, IPriceGuard {
     uint32 public constant MAX_TWAP_WINDOW = 1 days;
     uint16 public constant DEFAULT_TWAP_BAND_BPS = 75;
     uint16 public constant MAX_TWAP_BAND_BPS = 2000;
+    /// @notice Trade TWAP window (review F01): short, so it tracks the market the feed lags; bounds of the setter.
+    uint32 public constant DEFAULT_TRADE_TWAP_WINDOW = 5 minutes;
+    uint32 public constant MIN_TRADE_TWAP_WINDOW = 1 minutes;
+    uint32 public constant MAX_TRADE_TWAP_WINDOW = 30 minutes;
+    /// @notice CLOSED/UNKNOWN last-good-price age bound (review F07) and the bounds of its setter.
+    uint32 public constant DEFAULT_MAX_AGE_CLOSED = 5 days;
+    uint32 public constant MIN_MAX_AGE_CLOSED = 2 days;
+    uint32 public constant MAX_MAX_AGE_CLOSED = 14 days;
     /// @dev 10^exp converts the pool's raw quote-per-stock price to WAD per whole token; 18/6 decimals gives 30.
     uint8 private constant MAX_TWAP_SCALE_EXP = 60;
 
@@ -113,6 +132,9 @@ contract PriceGuard is AccessControl, IPriceGuard {
     event SequencerFeedSet(address feed, uint32 gracePeriod);
     event LastGoodPriceSet(address indexed stock, uint256 s, uint256 at);
     event ContinuityConfirmation(address indexed stock, uint8 confirmations, uint256 s);
+    event TradeTwapWindowSet(uint32 window);
+    event MaxAgeClosedSet(uint32 maxAge);
+    event HaltLatched(address indexed stock, uint256 since);
 
     struct StockState {
         uint128 lastGoodS;
@@ -125,6 +147,7 @@ contract PriceGuard is AccessControl, IPriceGuard {
         uint8 confirmations;
         bool manualPaused;
         bool contPaused;
+        uint40 haltedSince; // set by poke when an in-session reading is halted, cleared by the next live good reading
     }
 
     /// @dev Everything one evaluation learns; `poke` uses the extra fields to update state.
@@ -169,6 +192,10 @@ contract PriceGuard is AccessControl, IPriceGuard {
     mapping(address stock => uint8) public feedDecimals;
     mapping(address stock => StockState) private _states;
     mapping(address stock => TwapSource) private _twap;
+    /// @notice Window of `tradeTwap` (0 = DEFAULT_TRADE_TWAP_WINDOW).
+    uint32 public tradeTwapWindow;
+    /// @notice CLOSED/UNKNOWN age bound of the last good price (0 = DEFAULT_MAX_AGE_CLOSED).
+    uint32 public maxAgeClosed;
 
     constructor(address admin, address marketHours_, uint256 splitLead_, uint256 splitTail_) {
         if (admin == address(0)) revert InvalidAdmin();
@@ -229,6 +256,20 @@ contract PriceGuard is AccessControl, IPriceGuard {
             emit BuysPausedSet(stock, false, REASON_CONTINUITY);
             emit LastGoodPriceSet(stock, st.pendingS, st.pendingAt);
         }
+    }
+
+    /// @notice Admin: the trade TWAP window, inside [MIN_TRADE_TWAP_WINDOW, MAX_TRADE_TWAP_WINDOW].
+    function setTradeTwapWindow(uint32 window) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (window < MIN_TRADE_TWAP_WINDOW || window > MAX_TRADE_TWAP_WINDOW) revert InvalidTimer();
+        tradeTwapWindow = window;
+        emit TradeTwapWindowSet(window);
+    }
+
+    /// @notice Admin: the CLOSED/UNKNOWN age bound, inside [MIN_MAX_AGE_CLOSED, MAX_MAX_AGE_CLOSED].
+    function setMaxAgeClosed(uint32 maxAge) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (maxAge < MIN_MAX_AGE_CLOSED || maxAge > MAX_MAX_AGE_CLOSED) revert InvalidTimer();
+        maxAgeClosed = maxAge;
+        emit MaxAgeClosedSet(maxAge);
     }
 
     function setMarketHours(address marketHours_) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -296,6 +337,21 @@ contract PriceGuard is AccessControl, IPriceGuard {
 
     function twapSource(address stock) external view returns (TwapSource memory) {
         return _twap[stock];
+    }
+
+    /// @notice The stock pool's TWAP over `tradeTwapWindow` (WAD USDG per whole token), in any session; 0 when no TWAP
+    /// source is set or the pool cannot serve the window. Never reverts (review F01: the engine's worse-of price).
+    function tradeTwap(address stock) external view returns (uint256) {
+        TwapSource memory src = _twap[stock];
+        if (src.pool == address(0)) return 0;
+        uint32 w = tradeTwapWindow;
+        src.window = w == 0 ? DEFAULT_TRADE_TWAP_WINDOW : w;
+        return _twapPrice(src);
+    }
+
+    /// @notice When the current halt started (poke's latch; 0 = not halted). The engine settles a stock (ORC-4) from it.
+    function haltedSince(address stock) external view returns (uint256) {
+        return _states[stock].haltedSince;
     }
 
     /// @inheritdoc IPriceGuard
@@ -366,11 +422,18 @@ contract PriceGuard is AccessControl, IPriceGuard {
             } else {
                 _setLastGood(stock, st, e);
             }
+        } else if (
+            (e.kind == SessionKind.REGULAR || e.kind == SessionKind.EXTENDED) && e.r.session == SessionKind.HALTED
+                && st.haltedSince == 0
+        ) {
+            st.haltedSince = uint40(block.timestamp);
+            emit HaltLatched(stock, block.timestamp);
         }
         return _evaluate(stock).r;
     }
 
     function _setLastGood(address stock, StockState storage st, Eval memory e) private {
+        st.haltedSince = 0;
         st.lastGoodS = uint128(e.liveS);
         st.lastGoodAt = uint64(e.feedUpdatedAt);
         st.lastGoodMult = uint128(e.mult);
@@ -411,6 +474,18 @@ contract PriceGuard is AccessControl, IPriceGuard {
             e.splitUntil = eff + SPLIT_TAIL;
         }
         bool splitActive = e.splitCond || block.timestamp < st.splitPauseUntil;
+
+        if (e.kind != SessionKind.REGULAR && e.kind != SessionKind.EXTENDED) {
+            // Review F07/F21: never a CLOSED price for a feed that was halted in session, or one older than the bound.
+            uint32 maxClosed = maxAgeClosed;
+            if (
+                st.haltedSince != 0
+                    || (
+                        st.lastGoodS != 0
+                            && block.timestamp > uint256(st.lastGoodAt) + (maxClosed == 0 ? DEFAULT_MAX_AGE_CLOSED : maxClosed)
+                    )
+            ) halted = true;
+        }
 
         if (e.kind == SessionKind.REGULAR || e.kind == SessionKind.EXTENDED) {
             uint256 maxAge = e.kind == SessionKind.REGULAR ? cfg.maxAgeRegular : cfg.maxAgeExtended;
@@ -595,7 +670,14 @@ contract PriceGuard is AccessControl, IPriceGuard {
         uint256 px = TickPrice.priceX128(int24(meanTick));
         if (px == 0) return 0;
         uint256 scale = 10 ** uint256(src.scaleExp);
-        twap = src.stockIsToken0 ? Math.mulDiv(px, scale, TickPrice.Q128) : Math.mulDiv(scale, TickPrice.Q128, px);
+        // Bound before scaling so an extreme tick reads "unavailable" instead of overflowing mulDiv (review F35).
+        if (src.stockIsToken0) {
+            if (px > Math.mulDiv(MAX_S, TickPrice.Q128, scale)) return 0;
+            twap = Math.mulDiv(px, scale, TickPrice.Q128);
+        } else {
+            if (px < Math.mulDiv(scale, TickPrice.Q128, MAX_S, Math.Rounding.Ceil)) return 0;
+            twap = Math.mulDiv(scale, TickPrice.Q128, px);
+        }
         if (twap > MAX_S) return 0;
     }
 

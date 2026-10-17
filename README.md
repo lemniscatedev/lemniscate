@@ -26,7 +26,7 @@ web/          Website (static build, subtree of the frontend repository; extra d
 | Contract | What it does | State |
 | --- | --- | --- |
 | `LemniscateEngine` | Buy, sell, accrue, quote and Shield. Spread, fee, caps, stress budget, HALTED sell queue, pauses. UUPS | built |
-| `engine/EngineTradeLib`, `engine/EngineOpsLib`, `engine/EngineViewLib`, `EngineHelper` | The engine's trade, accrual, valuation, pricing and parameter-bound logic, as linked libraries (size limit) | built |
+| `engine/EngineTradeLib`, `engine/EngineSellLib`, `engine/EngineOpsLib`, `engine/EngineMarkLib`, `engine/EngineViewLib`, `EngineHelper` | The engine's buy, sell and queue, accrual, LP-flow liability bounds, valuation, pricing and parameter-bound logic, as linked libraries (size limit) | built |
 | `SeriesRegistry` | Lists series (`keccak256(stock, isCall, strike, tau)`), their strike band, buyable flag and funding state | built |
 | `OptionToken`, `OptionTokenFactory` | One ERC-20 per series (EIP-1167 clones). Only the engine mints or burns; every balance change accrues funding first | built |
 | `PriceGuard` | Reads a Chainlink feed and the Stock Token multiplier once, classifies the session, cross-checks a Uniswap v3 TWAP, never reverts on a bad read | built |

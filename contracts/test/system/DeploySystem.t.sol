@@ -282,7 +282,7 @@ contract DeploySystemTest is Test, SystemChecks {
         vm.startPrank(alice);
         IERC20(d.usdg).approve(d.engine, type(uint256).max);
         uint256 cost;
-        (cost, tokens) = LemniscateEngine(d.engine).buy(id, 1e18, type(uint128).max, uint64(block.timestamp), alice);
+        (cost, tokens) = LemniscateEngine(d.engine).buy(id, 5e18, type(uint128).max, uint64(block.timestamp), alice);
         vm.stopPrank();
         assertGt(cost, 0, "buy costs USDG");
         assertGt(tokens, 0, "buy mints option tokens");

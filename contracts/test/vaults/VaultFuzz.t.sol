@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {Vm} from "forge-std/Vm.sol";
 import {VaultFixture} from "./VaultFixture.sol";
 import {IWriterVault} from "../../src/interfaces/IWriterVault.sol";
+import {IOptionEngine} from "../../src/interfaces/IOptionEngine.sol";
 
 /// @notice Todo 19 R2 neverLosesMoreThanCollateral: fuzz over price paths and slice sizes. Whatever the path, a vault
 /// pays the pool at most its collateral and never more than its slice's own collateral (calls: units of Stock Token;
@@ -41,7 +42,14 @@ contract VaultFuzzTest is VaultFixture {
             _refreshVols();
             uint256 bal = _token(id).balanceOf(alice);
             uint256 sell = bal * bound(sellBps[i], 0, 10_000) / 10_000;
-            if (sell != 0) _sell(alice, id, sell);
+            if (sell != 0) {
+                // A partial sell worth under the minimum trade (or leaving less behind) is refused (review F14).
+                vm.prank(alice);
+                try engine.sell(id, uint128(sell), 0, uint64(vm.getBlockTimestamp()), alice) {}
+                catch (bytes memory err) {
+                    assertEq(bytes4(err), IOptionEngine.BelowMinimum.selector);
+                }
+            }
         }
         address v = callSide ? address(up) : address(down);
         uint256 left = vreg.sliceOf(v, id);

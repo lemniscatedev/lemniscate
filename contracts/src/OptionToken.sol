@@ -5,6 +5,11 @@ import {ERC20Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/
 import {IOptionToken} from "./interfaces/IOptionToken.sol";
 import {IOptionEngine} from "./interfaces/IOptionEngine.sol";
 
+/// @dev The engine's transfer hook (LemniscateEngine.onTokenTransfer, review F01).
+interface IOptionTokenHolds {
+    function onTokenTransfer(bytes32 id, address from, address to) external;
+}
+
 /// @title OptionToken
 /// @notice The ERC-20 of one option series (e.g. "eNVDA-C-110-W"), deployed as an EIP-1167 clone by the
 /// SeriesRegistry. 18 decimals. Holder units = balance * norm / 1e18, where the series `norm` lives in the registry and
@@ -46,9 +51,14 @@ contract OptionToken is ERC20Upgradeable, IOptionToken {
         _burn(from, amount);
     }
 
-    /// @dev Accrue the series before any balance changes.
+    /// @dev Accrue the series before any balance changes. A holder-to-holder transfer also hands the sender's open
+    /// minimum hold to the receiver (review F01). That call cannot be starved of gas to skip it: it needs far less than
+    /// the 1/64 of the forwarded gas this function keeps for the transfer itself.
     function _update(address from, address to, uint256 value) internal override {
         IOptionEngine(engine).accrue(seriesId);
+        if (from != address(0) && to != address(0)) {
+            try IOptionTokenHolds(engine).onTokenTransfer(seriesId, from, to) {} catch {}
+        }
         super._update(from, to, value);
     }
 

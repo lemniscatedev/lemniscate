@@ -46,7 +46,7 @@ Expected reverts are swallowed; a Panic is recorded and fails `invariant_noPanic
 | Rule | Tests (`test/engine/`) |
 |------|------|
 | R1 buy maths: V_mark = V(sigma)(1 + a n), spread, fee, $0.01 floor, cost up / tokens down, quote == execution | `EngineTrade.t.sol::test_R1_*`, `testFuzz_R1_*` |
-| R2 spread schedule and the 20 API-model cases (`test/vectors/quote-vectors.json`), skew decoding, stale-vol x1.2, daily cost | `EngineRisk.t.sol::test_R2_*` |
+| R2 spread schedule and the 20 API-model cases (`test/vectors/quote-vectors.json`), skew decoding, stale-vol x0.8 (review F09/F13), daily cost | `EngineRisk.t.sol::test_R2_*` |
 | R3 buy checks, each with its own error; EXTENDED halves the caps | `EngineTrade.t.sol::test_R3_*` |
 | R4 stress budget; incremental book vs brute-force revaluation | `EngineRisk.t.sol::test_R4_stressBudget`, `testFuzz_R4_*` |
 | R5 sells never blocked by pauses | `EngineSell.t.sol::test_R5_*`, `testFuzz_R5_*` |
@@ -120,7 +120,7 @@ admin unpauses, vol posts that move sigma, and hedge-equity posts. Deep run: `FO
 
 | Rule | Property | Test (`test/system/`) |
 |------|----------|------|
-| R1 | Pool NAV, deposits, claims, payouts use `engine.bookValue()` (O(1)); sell < 1.2M gas with 200 listed series; `nav()` < 2M gas with 1,000 series | `SystemGas.t.sol::test_R1_sellGasWith200ListedSeries`, `::test_R1_navGasWith1000Series` |
+| R1 | Pool NAV and payouts use `engine.bookValue()` (O(1)); deposits and claims use `engine.navLiability` bounds (O(names), review F12/F15); sell < 1.2M gas with 200 listed series; `nav()` < 2M gas with 1,000 series | `SystemGas.t.sol::test_R1_sellGasWith200ListedSeries`, `::test_R1_navGasWith1000Series` |
 | R1 | `bookValue == totalLiability` right after accrueMany of every live series | `SystemGas.t.sol::test_R1_bookValueEqualsTotalLiabilityAfterAccrueAll`, `SystemInvariant.t.sol::invariant_totalLiabilityRecompute` |
 | R1 | One source for the 35% / 8% caps: the engine's parameters; the pool mirrors `engine.capBps()` | `test/pool/WriterPool.t.sol::test_R8_capsExposedToEngine` |
 | R2 | 1,000 archived zero-supply series change buy, sell, accrueMany(live), totalLiability and shield gas by < 5%; accrueMany skips an empty series for < 5k gas | `SystemGas.t.sol::test_R2_onlyLiveSeriesCost` |
@@ -174,3 +174,22 @@ Notes:
   vol moves; the NAV guard band (entries at the high edge, exits at the low edge) covers the first part of it.
 - The stress test counts the pool's spot hedge only on names the engine has a book for (priced at the name's last
   refresh). The hedger hedges names with live options and unwinds the rest; the handler does the same.
+
+## Security review fixes, lane A (todo 27; review of 2026-10-17)
+
+Every fix has an exploit test that failed on the reviewed tree (f7989b9) and passes now, plus S-3 scenario tests that attack the fix
+itself (market closed, sybils, permanent hold, one bad user, dust).
+
+| Finding | Rule | Tests |
+| --- | --- | --- |
+| F01/F02 | Trades priced at the worse for the trader of the feed S and `PriceGuard.tradeTwap` (5 min, any session); a sell within 30 min of the account's buy (carried through transfers) at the worse of that and the buy S. A round trip around a 0.5% print loses. | `security/F01TradePrice.t.sol`, `security/FixAScenarios.t.sol::test_F01_*` |
+| F06 | `BUY_MIN_NORM` = 1e15 (the relist threshold), `Funding.MIN_NORM` = 1e6: at most 1e-9 of a buyer's units can stop paying funding. | `security/F06FundingFloor.t.sol` |
+| F07/F21 | `poke` latches `haltedSince` on an in-session halt; CLOSED/UNKNOWN then read HALTED, as does a last good price older than `maxAgeClosed` (5 days). ORC-4: `settleHalted` after 7 days of HALTED. Queued sells keep the seller's minProceeds. | `security/F07HaltLatch.t.sol`, `security/F07StalePrice.t.sol::test_F21_*`, `security/FixAScenarios.t.sol::test_ORC4_*`, `::test_F21_*` |
+| F10/F22/F23 | Sells and fills use the worse-of trade TWAP in every session (weekend close, stopped feed). | `security/F07StalePrice.t.sol` |
+| F08/F14/F24 | Buys cost at least the minimum trade ($1); a partial sell moves and leaves at least it; whole-balance sells always pass; `retireDust` takes series worth under it off the live list; `accrueMany` skips them. | `security/F08Dust.t.sol`, `security/FixAScenarios.t.sol::test_F08_*`, `::test_F14_*`, `::test_F24_*` |
+| F09/F13 | A stale vol post prices sells at sigma x 0.8; a buy-before / sell-after round trip across the lapse loses. | `security/F09StaleVol.t.sol` |
+| F11/F34 | A gap is charged at max(rate stored at the last accrual, rate now); holder-picked accruals pay within 3% of dense sampling. | `security/F11AccrueTiming.t.sol` |
+| F12/F15 | Deposits at a lower bound, claims and the checkpoint at an upper bound of the liability at today's S, from O(1) per-name sums; a keeper re-mark collapses both to the book value; the bounds bracket the exact liability (fuzz). | `security/F12NavMark.t.sol` |
+| F20 | skewK coefficients capped (3.0 / 1.0) and stepped (0.2 per post); guardian `revokeSigner`. | `security/F20SkewBound.t.sol` |
+| F35 | `TickPrice.priceX128` saturates instead of overflowing at ticks 880341..887272; the TWAP read stays "unavailable", never a revert. | `security/F35TickPrice.t.sol` |
+

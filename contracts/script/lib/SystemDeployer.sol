@@ -273,6 +273,8 @@ abstract contract SystemDeployer is SystemConfig {
         IAccessControl(d.engine).grantRole(GUARDIAN, c.roles.keeper);
         IAccessControl(d.pool).grantRole(GUARDIAN, c.roles.guardian);
         IAccessControl(d.priceGuard).grantRole(GUARDIAN, c.roles.guardian);
+        // Review F20: the guardian can revoke a suspected vol signer at once (setSigner stays behind the timelock).
+        IAccessControl(d.volOracle).grantRole(GUARDIAN, c.roles.guardian);
         IAccessControl(d.pool).grantRole(HEDGER, c.roles.hedger);
         IAccessControl(d.registry).grantRole(KEEPER, c.roles.keeper);
         // MarketHours.initialize already granted KEEPER_ROLE to the keeper.

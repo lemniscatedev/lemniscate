@@ -14,7 +14,8 @@ import {FixedMath} from "./libs/FixedMath.sol";
 /// @dev Quote rules (design decisions, "Canonical quote parameters"; mirrored by app/src/api/quote/model.ts):
 ///  - sigma(K) = sigmaBps x (1 + k_put max(0, -ln(K/S)) + k_call max(0, ln(K/S))), skewK = (k_put*1e4 << 32) | k_call*1e4
 ///    (decision 17), floored to whole bps and clamped to the pricing library's domain [10%, 300%]. A stale vol post
-///    prices sells at sigma x (1 + staleVolBumpBps) = x 1.20.
+///    prices sells at sigma x (1 - staleVolCutBps) = x 0.80 (review F09/F13: a lapse of the vol engine lowers the bid,
+///    never raises it above the liability mark).
 ///  - V_mark = V(sigma) x (1 + a x n), n = post-trade name vega / vega cap in [0, 1], a = inventoryBps (0.15).
 ///  - spread (bps of V_mark) = 150 + 250 x min(|K/S - 1| / 0.30, 1), x 1 / 1.5 / 3 for REGULAR / EXTENDED / otherwise,
 ///    at least minSpreadWad ($0.01) per unit. ask = V_mark + spread, bid = max(V_mark - spread, 0).
@@ -39,7 +40,7 @@ contract EngineHelper {
         uint16 farMoneynessBps; // 3000: |K/S - 1| where the spread reaches spreadFarBps
         uint16 extendedMultBps; // 15000: EXTENDED spread multiplier
         uint16 closedMultBps; // 30000: CLOSED / UNKNOWN / HALTED spread multiplier
-        uint16 staleVolBumpBps; // 2000: sells on a stale vol post use sigma x 1.2
+        uint16 staleVolCutBps; // 2000: sells on a stale vol post use sigma x 0.8 (review F09/F13)
         uint16 inventoryBps; // 1500: a = 0.15
         uint16 extendedCapBps; // 5000: EXTENDED session caps are halved
         uint16 seriesCapNavBps; // 200: per-series outstanding value <= 2% NAV
@@ -109,6 +110,7 @@ contract EngineHelper {
         Risk sAfter;
         Risk nAfter;
         uint256 tAfter;
+        uint256 unitsAfter; // the series' units after the trade (supply x norm), for the NAV mark (review F12/F15)
     }
 
     struct CapIn {
@@ -136,7 +138,7 @@ contract EngineHelper {
         p.farMoneynessBps = 3000;
         p.extendedMultBps = 15_000;
         p.closedMultBps = 30_000;
-        p.staleVolBumpBps = 2000;
+        p.staleVolCutBps = 2000;
         p.inventoryBps = 1500;
         p.extendedCapBps = 5000;
         p.seriesCapNavBps = 200;
@@ -159,7 +161,7 @@ contract EngineHelper {
         _bound(p.farMoneynessBps, 100, 10_000, "farMoneynessBps");
         _bound(p.extendedMultBps, 10_000, 50_000, "extendedMultBps");
         _bound(p.closedMultBps, p.extendedMultBps, 60_000, "closedMultBps");
-        _bound(p.staleVolBumpBps, 0, 10_000, "staleVolBumpBps");
+        _bound(p.staleVolCutBps, 0, 5000, "staleVolCutBps");
         _bound(p.inventoryBps, 0, 5000, "inventoryBps");
         _bound(p.extendedCapBps, 1000, 10_000, "extendedCapBps");
         _bound(p.seriesCapNavBps, 1, 2000, "seriesCapNavBps");
@@ -217,14 +219,19 @@ contract EngineHelper {
         }
     }
 
-    /// @notice Per-unit value at the skewed sigma bumped by `bumpBps` (stale-vol sells), and that sigma.
-    function valueAt(bool isCall, uint256 s, uint256 k, uint64 sigmaBps, uint64 skewK, uint256 bumpBps, uint32 tau)
+    /// @notice Per-unit value at the skewed sigma lowered by `cutBps` (stale-vol sells; 0 = the mark), and that sigma.
+    /// `s` outside the pricing domain values at the payoff.
+    function valueAt(bool isCall, uint256 s, uint256 k, uint64 sigmaBps, uint64 skewK, uint256 cutBps, uint32 tau)
         external
         pure
         returns (uint256 v, uint64 sigma)
     {
-        sigma = sigmaFor(s, k, sigmaBps, skewK, bumpBps);
-        v = isCall ? EverlastingMath.callValue(s, k, sigma, tau) : EverlastingMath.putValue(s, k, sigma, tau);
+        sigma = sigmaFor(s, k, sigmaBps, skewK, 0);
+        if (cutBps != 0) {
+            uint256 cut = uint256(sigma) * (BPS - Math.min(cutBps, BPS)) / BPS;
+            sigma = cut < EverlastingMath.MIN_SIGMA_BPS ? uint64(EverlastingMath.MIN_SIGMA_BPS) : uint64(cut);
+        }
+        v = _valueSafe(isCall, s, k, sigma, tau);
     }
 
     /// @notice The quote for `units` (IOptionEngine.Quote, `buyable` left false) and the spread income it carries:
@@ -307,7 +314,8 @@ contract EngineHelper {
             b.sNow = fresh;
         }
         uint256 supplyAfter = a.isBuy ? a.supply + a.tokens : a.supply - Math.min(a.tokens, a.supply);
-        b.sAfter = scale(a.pu, Math.mulDiv(supplyAfter, a.norm, WAD));
+        b.unitsAfter = Math.mulDiv(supplyAfter, a.norm, WAD);
+        b.sAfter = scale(a.pu, b.unitsAfter);
         b.nAfter = _swap(b.nNow, b.sNow, b.sAfter);
         b.tAfter = b.tNow - b.sNow.value + b.sAfter.value;
     }

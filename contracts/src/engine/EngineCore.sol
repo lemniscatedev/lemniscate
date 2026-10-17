@@ -10,6 +10,7 @@ import {EverlastingMath} from "../libs/EverlastingMath.sol";
 import {Funding} from "../libs/Funding.sol";
 import {EngineHelper} from "../EngineHelper.sol";
 import {EngineStorage} from "./EngineStorage.sol";
+import {EngineMarkLib} from "./EngineMarkLib.sol";
 
 /// @title EngineCore
 /// @notice Internal building blocks shared by the engine's external libraries: per-transaction price and vol reads,
@@ -35,9 +36,16 @@ library EngineCore {
     uint256 internal constant BPS = 10_000;
     uint32 internal constant TAU_DAILY = 86_400;
     uint32 internal constant TAU_WEEKLY = 604_800;
-    /// @dev Buys stop on a series whose norm fell below 1e-4: close to Funding's floor the norm cannot shrink much
-    /// further, so a new holder would pay too little funding.
-    uint256 internal constant BUY_MIN_NORM = 1e14;
+    /// @dev Buys stop on a series whose norm fell below 1e-3, the keeper's relist threshold (review F06): Funding's
+    /// floor is 1e-12, so at most 1e-9 of a buyer's units can ever stop paying funding.
+    uint256 internal constant BUY_MIN_NORM = 1e15;
+    /// @dev Trade-guard defaults (EngineStorage.Guards zero fields): $1 minimum trade and position, 30-minute hold,
+    /// 7 days of HALTED before a stock can be settled at its last price.
+    uint64 internal constant DEFAULT_MIN_TRADE_USDG = 1e6;
+    uint32 internal constant DEFAULT_HOLD = 30 minutes;
+    uint32 internal constant DEFAULT_SETTLE_DELAY = 7 days;
+    /// @dev Gas forwarded to PriceGuard.tradeTwap (one Uniswap observe; the real read is well under this).
+    uint256 private constant TWAP_READ_GAS = 400_000;
     /// @dev Bounds the engine applies to whatever the $LMNS fee-tier contract returns (todo 20 R4).
     uint16 internal constant MAX_FEE_DISC_BPS = 5_000;
     uint16 internal constant MAX_SPREAD_DISC_BPS = 2_000;
@@ -72,6 +80,7 @@ library EngineCore {
         bool volStale;
         bool priced;
         uint64 sigma;
+        uint256 rate0; // funding rate stored at the last accrual (start of the gap), WAD
         EngineHelper.PerUnit pu;
     }
 
@@ -88,7 +97,7 @@ library EngineCore {
         EngineStorage.Layout storage $ = EngineStorage.layout();
         EngineStorage.SeriesInfo memory si = $.info[id];
         if (!si.known) si = fromRegistry(id);
-        PriceReading memory r = full ? $.priceGuard.read(si.stock) : $.priceGuard.readLite(si.stock);
+        PriceReading memory r = settled(si.stock, full ? $.priceGuard.read(si.stock) : $.priceGuard.readLite(si.stock));
         VolReading memory v = $.volOracle.read(si.stock, speedOf(si.tau));
         build(h, c, id, si, r, v.sigmaBps, v.skewK, v.stale);
     }
@@ -111,6 +120,7 @@ library EngineCore {
         c.isCall = si.isCall;
         c.lastAccrual = si.lastAccrual;
         c.norm = si.norm;
+        c.rate0 = uint256(si.rateMicro) * 1e6;
         c.supply = IERC20(si.token).totalSupply();
         c.s = r.s;
         c.session = r.session;
@@ -149,6 +159,7 @@ library EngineCore {
             token: s.token,
             lastAccrual: s.lastAccrual,
             liveIdx: 0,
+            rateMicro: 0,
             strike: s.strike,
             norm: s.norm
         });
@@ -181,11 +192,87 @@ library EngineCore {
         }
         EngineStorage.Layout storage $ = EngineStorage.layout();
         r = full ? $.priceGuard.read(stock) : $.priceGuard.readLite(stock);
+        // A live reading ends an ORC-4 settlement (the feed is back); the next halt needs a new settle delay.
+        if (r.session != SessionKind.HALTED && r.session != SessionKind.CLOSED && r.session != SessionKind.UNKNOWN) {
+            if ($.settleS[stock] != 0) delete $.settleS[stock];
+        }
+        r = settled(stock, r);
         if (r.s > type(uint128).max) r.s = 0; // beyond any sane price: treat as no price
         w = r.s | (uint256(uint8(r.session)) << 128) | (r.fresh ? F_FRESH : 0) | (r.buysPaused ? F_PAUSED : 0) | F_SET
             | (full ? F_FULL : 0);
         assembly ("memory-safe") {
             tstore(slot, w)
+        }
+    }
+
+    /// @dev ORC-4 (review F07/F21): a stock settled after a long halt reads CLOSED at its settlement price, so sells and
+    /// queued fills go through (CLOSED spread, worse-of TWAP) instead of waiting for a feed that is gone. Buys stay off.
+    function settled(address stock, PriceReading memory r) internal view returns (PriceReading memory) {
+        if (r.session != SessionKind.HALTED) return r;
+        uint256 st = EngineStorage.layout().settleS[stock];
+        if (st == 0) return r;
+        r.s = st;
+        r.session = SessionKind.CLOSED;
+        r.fresh = true;
+        r.buysPaused = true;
+        return r;
+    }
+
+    /// @dev PriceGuard's short-window trade TWAP (0 when unavailable or not supported). A call that failed for lack of
+    /// gas reverts: a trader must not pick the gas that drops the worse-of check.
+    function tradeTwap(address stock) internal view returns (uint256 twap) {
+        uint256 gasBefore = gasleft();
+        (bool ok, bytes memory data) = address(EngineStorage.layout().priceGuard).staticcall{gas: TWAP_READ_GAS}(
+            abi.encodeWithSignature("tradeTwap(address)", stock)
+        );
+        if (!ok) {
+            requireNotOutOfGas(gasBefore);
+            return 0;
+        }
+        if (data.length < 32) return 0;
+        twap = abi.decode(data, (uint256));
+    }
+
+    /// @dev The S a trade is priced at (review F01/F02/F10/F22/F23): the worse for the trader of the feed (or last
+    /// good / settlement) S and the trade TWAP, and for a sell inside the account's hold also the buy-time S. A
+    /// manipulated pool can only worsen the manipulator's own fill (others are bounded by maxCost / minProceeds).
+    function tradeS(Ctx memory c, bool isBuy, address account) internal view returns (uint256 s) {
+        s = c.s;
+        bool up = isBuy == c.isCall; // the trader is worse off at a higher S
+        uint256 twap = tradeTwap(c.stock);
+        if (twap != 0) s = up ? Math.max(s, twap) : Math.min(s, twap);
+        if (!isBuy && account != address(0)) {
+            EngineStorage.Hold memory hd = EngineStorage.layout().holds[c.id][account];
+            if (hd.until > block.timestamp) s = up ? Math.max(s, hd.s) : Math.min(s, hd.s);
+        }
+    }
+
+    /// @dev Starts or extends `who`'s hold on series `id` at buy price `s`, keeping the more binding S.
+    function recordHold(bytes32 id, address who, uint256 s, bool isCall) internal {
+        EngineStorage.Hold storage hd = EngineStorage.layout().holds[id][who];
+        if (hd.until <= block.timestamp || (isCall ? s < hd.s : s > hd.s)) hd.s = uint128(s);
+        hd.until = uint64(block.timestamp + holdSeconds());
+    }
+
+    function minTradeUsdg() internal view returns (uint256) {
+        uint64 m = EngineStorage.layout().guards.minTradeUsdg;
+        return m == 0 ? DEFAULT_MIN_TRADE_USDG : m;
+    }
+
+    function holdSeconds() internal view returns (uint256) {
+        uint32 h = EngineStorage.layout().guards.holdSeconds;
+        return h == 0 ? DEFAULT_HOLD : h;
+    }
+
+    /// @dev Review F08/F14: a partial sell must be worth the minimum and leave at least the minimum behind; selling
+    /// the whole balance is always allowed (law 4), whatever it is worth.
+    function checkSellSize(Ctx memory c, address seller, uint256 tokens) internal view {
+        uint256 bal = IERC20(c.token).balanceOf(seller);
+        if (tokens >= bal) return;
+        if (!c.priced) revert IOptionEngine.BelowMinimum();
+        uint256 minWad = minTradeUsdg() * 1e12;
+        if (liab(tokens, c.norm, c.pu.v) < minWad || liab(bal - tokens, c.norm, c.pu.v) < minWad) {
+            revert IOptionEngine.BelowMinimum();
         }
     }
 
@@ -208,9 +295,10 @@ library EngineCore {
 
     // -------------------------------------------------------------------------------------------------- accrual
 
-    /// @dev Funding since the last accrual at the current valuation mark, then the series' book refresh. Returns
-    /// false (nothing written) when already accrued in this block or when there is no usable price or vol: the gap
-    /// is then charged at the next priced accrual. With no supply the norm is left alone (a fresh series stays fresh).
+    /// @dev Funding since the last accrual, then the series' book refresh. The gap is charged at the larger of the rate
+    /// stored at the last accrual and the rate now (review F11/F34: whoever calls accrue cannot pick the price for the
+    /// whole gap). Returns false (nothing written) when already accrued in this block or when there is no usable price
+    /// or vol: the gap is then charged at the next priced accrual. With no supply the norm is left alone.
     function applyFunding(EngineHelper h, Ctx memory c) internal returns (bool) {
         if (c.lastAccrual >= block.timestamp || !c.priced) return false;
         EngineStorage.Layout storage $ = EngineStorage.layout();
@@ -219,6 +307,9 @@ library EngineCore {
         EngineStorage.SeriesInfo storage si = $.info[c.id];
         si.norm = uint128(newNorm);
         si.lastAccrual = uint64(block.timestamp);
+        uint256 rNow = Math.ceilDiv(Funding.rate(c.pu.v, c.pu.payoff), 1e6);
+        si.rateMicro = uint48(rNow);
+        c.rate0 = rNow * 1e6;
         c.norm = newNorm;
         c.lastAccrual = uint64(block.timestamp);
         $.registry.storeAccrual(c.id, uint128(newNorm), uint64(block.timestamp));
@@ -230,7 +321,8 @@ library EngineCore {
 
     function nextNorm(Ctx memory c) internal view returns (uint256) {
         if (c.supply == 0) return c.norm;
-        return Funding.step(c.norm, c.pu.v, c.pu.payoff, block.timestamp - c.lastAccrual, c.tau);
+        uint256 r = Math.max(c.rate0, Funding.rate(c.pu.v, c.pu.payoff));
+        return Funding.stepAtRate(c.norm, r, block.timestamp - c.lastAccrual, c.tau);
     }
 
     /// @dev Tells the pool about funding in USDG (6 dp); dust below one micro-USDG carries to the next report. A
@@ -313,6 +405,17 @@ library EngineCore {
         nb.sc = b.nAfter.sc;
         nb.lastS = c.s;
         $.bookValue = b.tAfter;
+        EngineMarkLib.update(
+            c.id,
+            c.stock,
+            c.tau,
+            c.isCall,
+            [int256(b.sNow.delta), b.sAfter.delta],
+            [b.sNow.vega, b.sAfter.vega],
+            b.unitsAfter,
+            c.s,
+            c.sigmaPosted
+        );
     }
 
     function loadRisk(bytes32 id) internal view returns (EngineHelper.Risk memory r) {
@@ -479,6 +582,8 @@ library EngineCore {
 
     // ------------------------------------------------------------------------------------------------- pricing
 
+    /// @dev Prices `units` at the trade S `sTrade` (EngineCore.tradeS); the valuation mark stays at the context's S, so
+    /// whatever the worse-of rule and the stale-vol cut take off is booked as the pool's spread income.
     function priceTrade(
         EngineHelper h,
         Ctx memory c,
@@ -486,14 +591,18 @@ library EngineCore {
         int256 navNow,
         uint256 units,
         bool isBuy,
-        address account
+        address account,
+        uint256 sTrade
     ) internal view returns (IOptionEngine.Quote memory, uint256) {
         EngineStorage.Layout storage $ = EngineStorage.layout();
         (uint16 feeDisc, uint16 spreadDisc) = discountOf(account);
         uint256 vPrice = c.pu.v;
         uint64 sigma = c.sigma;
-        if (!isBuy && c.volStale) {
-            (vPrice, sigma) = h.valueAt(c.isCall, c.s, c.strike, c.sigmaPosted, c.skewK, $.p.staleVolBumpBps, c.tau);
+        uint256 payoff = c.pu.payoff;
+        bool cut = !isBuy && c.volStale;
+        if (cut || sTrade != c.s) {
+            (vPrice, sigma) = h.valueAt(c.isCall, sTrade, c.strike, c.sigmaPosted, c.skewK, cut ? $.p.staleVolCutBps : 0, c.tau);
+            payoff = c.isCall ? (sTrade > c.strike ? sTrade - c.strike : 0) : (c.strike > sTrade ? c.strike - sTrade : 0);
         }
         return h.price(
             EngineHelper.PriceIn({
@@ -502,11 +611,11 @@ library EngineCore {
                 session: c.session,
                 tau: c.tau,
                 sigmaBps: sigma,
-                s: c.s,
+                s: sTrade,
                 k: c.strike,
                 units: units,
                 vPrice: vPrice,
-                payoff: c.pu.payoff,
+                payoff: payoff,
                 vVal: c.pu.v,
                 invWad: inventory(b.nAfter.vega, navNow),
                 feeDiscBps: feeDisc,
@@ -544,7 +653,8 @@ library EngineCore {
     // ------------------------------------------------------------------------------------------- live series
 
     /// @dev Adds a series to its stock's live list (after a mint). Supply only changes through the engine's own mint
-    /// and burn, so this list is exactly the series with tokens outstanding (escrowed tokens included).
+    /// and burn, so this list is the series with tokens outstanding (escrowed tokens included), less those retired as
+    /// dust (review F08/F24) until their next buy.
     function markLive(bytes32 id, address stock) internal {
         EngineStorage.Layout storage $ = EngineStorage.layout();
         EngineStorage.SeriesInfo storage si = $.info[id];
@@ -555,9 +665,15 @@ library EngineCore {
 
     /// @dev Drops a series from its stock's live list once its supply is zero (after a burn).
     function dropIfEmpty(bytes32 id, address stock, address token) internal {
+        if (EngineStorage.layout().info[id].liveIdx == 0 || IERC20(token).totalSupply() != 0) return;
+        dropFromLive(id, stock);
+    }
+
+    /// @dev Swap-and-pop removal from the live list (empty series, or dust retired by EngineOpsLib.retireDust).
+    function dropFromLive(bytes32 id, address stock) internal {
         EngineStorage.Layout storage $ = EngineStorage.layout();
         uint32 idx = $.info[id].liveIdx;
-        if (idx == 0 || IERC20(token).totalSupply() != 0) return;
+        if (idx == 0) return;
         bytes32[] storage list = $.live[stock];
         bytes32 last = list[list.length - 1];
         list[idx - 1] = last;

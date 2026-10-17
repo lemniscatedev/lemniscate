@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {EngineStorage} from "../../src/engine/EngineStorage.sol";
 import {LemniscateEngine} from "../../src/LemniscateEngine.sol";
 import {EngineHelper} from "../../src/EngineHelper.sol";
 import {PriceGuard} from "../../src/PriceGuard.sol";
@@ -91,6 +92,8 @@ contract EngineGasTest is Test {
         usdg.approve(address(engine), type(uint256).max);
 
         vm.startPrank(admin);
+        // Sub-dollar buys across 200 series (review F08 minimum lowered for this gas record).
+        engine.setGuards(EngineStorage.Guards({minTradeUsdg: 1, holdSeconds: 0, haltSettleDelay: 0}));
         registry.setEngine(address(engine));
         registry.grantRole(Roles.KEEPER_ROLE, lister);
         for (uint256 i; i < 4; ++i) {
@@ -171,17 +174,19 @@ contract EngineGasTest is Test {
         uint256 sellGas = vm.lastCallGas().gasTotalUsed;
         skip(30 minutes);
         GasProbe probe = new GasProbe();
-        bytes32[] memory fifty = new bytes32[](50);
-        for (uint256 i; i < 50; ++i) fifty[i] = ids[i * 4];
-        uint256 manyGas = probe.accrueMany(engine, fifty);
+        // 45 per batch since the review fixes (todo 27: the NAV mark and the funding start rate add ~20k per series);
+        // the keeper's accrue batch must stay at or under this.
+        bytes32[] memory batch = new bytes32[](45);
+        for (uint256 i; i < 45; ++i) batch[i] = ids[i * 4];
+        uint256 manyGas = probe.accrueMany(engine, batch);
         (uint256 liabGas, uint256 l) = probe.liability(engine);
 
         emit log_named_uint("buy gas (real PriceGuard + TWAP, real VolOracle)", buyGas);
         emit log_named_uint("sell gas (readLite)", sellGas);
-        emit log_named_uint("accrueMany(50 series over 4 names) gas", manyGas);
+        emit log_named_uint("accrueMany(45 series over 4 names) gas", manyGas);
         emit log_named_uint("totalLiability() with 200 series gas", liabGas);
         assertGt(l, 0);
-        assertLt(manyGas, 16_000_000, "accrueMany(50) within half a 32M block");
+        assertLt(manyGas, 16_000_000, "accrueMany(45) within half a 32M block");
         assertLt(liabGas, 30_000_000, "totalLiability(200) fits a block-sized eth_call");
         assertLt(buyGas, 3_000_000);
         assertLt(sellGas, 2_000_000);

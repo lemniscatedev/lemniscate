@@ -17,6 +17,7 @@ contract EngineSellTest is EngineBase {
 
     function setUp() public override {
         super.setUp();
+        _lowMinTrade();
         callD = _list(address(nvda), true, 100e18, DAILY);
         putW = _list(address(nvda), false, 95e18, WEEKLY);
     }
@@ -202,8 +203,8 @@ contract EngineSellTest is EngineBase {
         assertLe(got, cost, "same-block round trip never profits");
     }
 
-    /// @dev A stale vol post prices sells at sigma x 1.2, but it also blocks buys, and staleness is a function of the
-    /// timestamp only: within one block both legs see the same post, so the bumped sell has no buy leg to pair with.
+    /// @dev A stale vol post prices sells at sigma x 0.8 (review F09/F13) and blocks buys; staleness is a function of the
+    /// timestamp only, so within one block both legs see the same post.
     function test_R8_staleVolBlocksTheBuyLeg() public {
         (, uint256 tokens) = _buy(alice, callD, 100e18);
         skip(1);
@@ -212,7 +213,7 @@ contract EngineSellTest is EngineBase {
         vm.prank(bob);
         engine.buy(callD, 1e18, type(uint128).max, uint64(vm.getBlockTimestamp()), bob);
         IOptionEngine.Quote memory q = engine.quote(callD, tokens, false); // units ~ tokens (one second of funding)
-        assertEq(q.sigmaBps, 6000);
+        assertEq(q.sigmaBps, 4000);
         assertApproxEqRel(_sell(alice, callD, tokens), q.usdg, 1e14);
     }
 

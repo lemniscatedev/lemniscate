@@ -131,12 +131,12 @@ describe("buy blocks", () => {
     }
   });
 
-  test("a stale vol post prices sells at sigma x 1.2 (not +2000 bps) and blocks buys", () => {
+  test("a stale vol post prices sells at sigma x 0.8 (review F09/F13) and blocks buys", () => {
     const fresh = unitQuote(series(), market(), true)!;
     const stale = unitQuote(series(), market({ volStale: true }), true)!;
     expect(fresh.sigmaBps).toBe(5_000);
-    expect(stale.sigmaBps).toBe(6_000);
-    expect(unitQuote(series(), market({ sigmaBps: 4_000, volStale: true }), true)!.sigmaBps).toBe(4_800);
+    expect(stale.sigmaBps).toBe(4_000);
+    expect(unitQuote(series(), market({ sigmaBps: 4_000, volStale: true }), true)!.sigmaBps).toBe(3_200);
     // buys on a stale post are blocked, and a quote for them is still priced at the posted sigma
     expect(unitQuote(series(), market({ volStale: true }), false)!.sigmaBps).toBe(5_000);
     expect(quoteUnits(series(), market({ volStale: true }), WAD, true)!.buyable).toBe(false);
@@ -175,16 +175,17 @@ describe("skew from the posted skewK (decision 17)", () => {
     expect(unitQuote(series({ isCall: true, strike: 120 }), m, false)!.sigmaBps).toBe(5_364);
     expect(unitQuote(series({ isCall: false, strike: 80 }), m, false)!.sigmaBps).toBe(6_338);
   });
-  test("a skewed series is priced at its own sigma, and the stale bump multiplies the skewed sigma", () => {
+  test("a skewed series is priced at its own sigma, and the stale cut multiplies the skewed sigma", () => {
     const q = quoteUnits(series({ isCall: true, strike: 120 }), market({ skewK }), WAD, true)!;
     expect(q.sigmaBps).toBe(5_364);
     expect(Number(q.vMarkWad) / 1e18).toBeCloseTo(callValue(100, 120, 0.5364, TAU.WEEKLY / YEAR_S), 9);
-    // 5000 x 1.2 = 6000, then x (1 + 0.4 ln 1.2) = 6437.9
-    expect(unitQuote(series({ isCall: true, strike: 120 }), market({ skewK, volStale: true }), true)!.sigmaBps).toBe(6_437);
+    // 5000 x (1 + 0.4 ln 1.2) = 5364, then x 0.8 = 4291.2
+    expect(unitQuote(series({ isCall: true, strike: 120 }), market({ skewK, volStale: true }), true)!.sigmaBps).toBe(4_291);
   });
   test("sigma is clamped to the pricing domain", () => {
     expect(unitQuote(series(), market({ sigmaBps: 500 }), false)!.sigmaBps).toBe(1_000);
-    expect(unitQuote(series(), market({ sigmaBps: 29_000, volStale: true }), true)!.sigmaBps).toBe(30_000);
+    expect(unitQuote(series(), market({ sigmaBps: 40_000, volStale: true }), true)!.sigmaBps).toBe(24_000);
+    expect(unitQuote(series(), market({ sigmaBps: 1_100, volStale: true }), true)!.sigmaBps).toBe(1_000);
   });
 });
 

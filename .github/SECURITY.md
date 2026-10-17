@@ -147,16 +147,20 @@ engine and agent router, and the factory is owned by the series registry that cr
 | LemniscateEngine | `freezeUpgrades()` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | LemniscateEngine | `grantRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | LemniscateEngine | `initialize(address,address,address,address,address,address)` | once:initializer | n/a (caller's own balance, role or one-time setup) |
+| LemniscateEngine | `onTokenTransfer(bytes32,address,address)` | anyone (the series' own option token only (else NotSeriesToken)) | none (permissionless) |
 | LemniscateEngine | `pokeRisk()` | anyone | none (permissionless) |
 | LemniscateEngine | `pruneShieldList(address,uint256)` | anyone | none (permissionless) |
 | LemniscateEngine | `renounceRole(bytes32,address)` | self | n/a (caller's own balance, role or one-time setup) |
+| LemniscateEngine | `retireDust(bytes32[])` | anyone (only series whose whole value is under the minimum trade) | none (permissionless) |
 | LemniscateEngine | `revokeRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | LemniscateEngine | `sell(bytes32,uint128,uint128,uint64,address)` | anyone (sells the caller's own tokens; never paused) | none (permissionless) |
 | LemniscateEngine | `setBuysPaused(bool)` | role:DEFAULT_ADMIN_ROLE or role:GUARDIAN_ROLE | default_admin 48h timelock / guardian instant |
 | LemniscateEngine | `setFeeTiers(address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| LemniscateEngine | `setGuards(tuple)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | LemniscateEngine | `setHedgeDepthCap(address,uint256)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | LemniscateEngine | `setParams(tuple)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | LemniscateEngine | `setSeriesBuysPaused(bytes32,bool)` | role:DEFAULT_ADMIN_ROLE or role:GUARDIAN_ROLE | default_admin 48h timelock / guardian instant |
+| LemniscateEngine | `settleHalted(address)` | anyone (only a stock HALTED for the settle delay (7 days), at its last good price) | none (permissionless) |
 | LemniscateEngine | `shield(address,uint128,uint16,uint128,uint64)` | anyone | none (permissionless) |
 | LemniscateEngine | `syncSeries(uint256)` | anyone | none (permissionless) |
 | LemniscateEngine | `upgradeToAndCall(address,bytes)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
@@ -213,8 +217,10 @@ engine and agent router, and the factory is owned by the series registry that cr
 | PriceGuard | `revokeRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | PriceGuard | `setBuysPaused(address,bool)` | role:DEFAULT_ADMIN_ROLE or role:GUARDIAN_ROLE | default_admin 48h timelock / guardian instant |
 | PriceGuard | `setMarketHours(address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| PriceGuard | `setMaxAgeClosed(uint32)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | PriceGuard | `setSequencerFeed(address,uint32)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | PriceGuard | `setStock(address,tuple)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| PriceGuard | `setTradeTwapWindow(uint32)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | PriceGuard | `setTwapSource(address,address,uint32,uint16)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | Reserve | `cover(uint256)` | contract:pool | pool only |
 | Reserve | `grantRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
@@ -247,6 +253,7 @@ engine and agent router, and the factory is owned by the series registry that cr
 | VolOracle | `post(tuple,bytes)` | anyone (needs the vol signer's EIP-712 signature) | none (permissionless) |
 | VolOracle | `renounceRole(bytes32,address)` | self | n/a (caller's own balance, role or one-time setup) |
 | VolOracle | `revokeRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
+| VolOracle | `revokeSigner()` | role:GUARDIAN_ROLE | guardian instant |
 | VolOracle | `setFloor(address,uint64)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | VolOracle | `setSigner(address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | WriterPool | `approve(address,uint256)` | holder | n/a (caller's own balance, role or one-time setup) |
@@ -284,16 +291,25 @@ engine and agent router, and the factory is owned by the series registry that cr
 
 1. **Off-chain vol signer.** One signer decides the sigma the engine prices with. Damage is bounded on chain: a post moves at most
    25% from the prior value, at most one post per name and speed every 5 minutes, at most +/-50% over any rolling hour, never below
-   a per-name floor (30% default), and expires after 2 hours. A stale post blocks buys and prices sells at sigma x 1.2. A compromised
-   signer can still push sigma to the bound within an hour; the signer is separate from every other key and rotation takes the admin path.
+   a per-name floor (30% default), and expires after 2 hours. The skew coefficients are capped (k_put 3.0, k_call 1.0) on every post
+   and move at most 0.2 per post. A stale post blocks buys and prices sells at sigma x 0.8 (a lapse lowers the bid, never raises it
+   above the pool's mark). A compromised signer can still push sigma to the bound within an hour; the guardian can revoke the signer at
+   once (`VolOracle.revokeSigner`), after which every post fails until the admin (timelock) sets a new one.
 2. **Hedge equity posts.** The hedger posts equity only for off-chain perp venues, which are off and post zero until an account
    exists. Spot hedges are held by the pool and valued on chain. A post may move at most 10% per hour unless it carries a fill
    reference, and goes stale after 2 hours, which pauses buys.
 3. **Price feed and TWAP.** Prices come from the Chainlink feed for each Stock Token. The feeds print on a 0.5% deviation or a 24 hour
    heartbeat, so a healthy in-session price can be about a day old. Age alone is therefore not trusted: the price guard cross-checks
    a 30 minute Uniswap v3 TWAP (75 bps band by default, wider for TSLA) and pauses buys when they disagree or the TWAP is unavailable.
-   A continuity check pauses buys on a jump the multiplier does not explain. Sells keep working on the feed or the last good price at the
-   wider spread. No sequencer uptime feed exists on this chain; an optional one is supported if it appears.
+   A continuity check pauses buys on a jump the multiplier does not explain. Every trade (buy, sell, queued fill) is priced at the worse
+   for the trader of the feed (or last good) price and a 5-minute TWAP of the same pool, in every session, so a feed that lags, has
+   stopped, or is frozen over a weekend cannot be traded against the market, and moving the pool only worsens the mover's own fill
+   (others are bounded by their maxCost / minProceeds, which a queued sell keeps). A sell within 30 minutes of the same account's buy of
+   that series (carried through token transfers) is priced at the worse of that and the buy price. A feed that was halted in session
+   stays halted on weekends and holidays, and a last good price older than 5 days reads halted, so those sells queue. A stock halted
+   for 7 days can be settled by anyone at its last good price (`settleHalted`): its sells and queued fills then go through at that
+   price (worse-of the TWAP, closed-session spread) and buys stay off. No sequencer uptime feed exists on this chain; an optional one
+   is supported if it appears.
 4. **Thin hedge pools.** SPY and TSLA hedge pools are shallow. A manipulator can pause buys for a while by moving a thin pool
    (denial of service); the TWAP means one block cannot change the price the engine uses. Per-name caps are scaled to measured pool depth.
 5. **Stock Token issuer powers.** The issuer can pause a token's transfers and block a single address, and the multiplier is changed by
@@ -310,8 +326,22 @@ engine and agent router, and the factory is owned by the series registry that cr
 
 - Gap and earnings moves on a name can exceed the pool's hedge before anyone can react. The stress budget, per-name caps and the
   earnings buy-block bound this; they do not remove it.
-- Daily options have very high gamma and the equity market is closed on weekends: closed-session sells use the last close, a wider
-  spread and a weekend sigma, and may differ from the price on reopening.
+- Daily options have very high gamma and the equity market is closed on weekends: closed-session sells use the worse of the last close
+  and the token pool's 5-minute TWAP, a wider spread and a weekend sigma, and may differ from the price on reopening.
+- Feed lag (review F01/F02): the feed prints on a 0.5% move, so a trader can know the next print. A round trip around a print now
+  loses (the hold prices it at the buy S). Someone who holds past the 30-minute hold keeps only the part of the lag the 5-minute TWAP
+  had not caught up with at the buy, and carries 30 minutes of market risk and funding for it: about 2% of a Daily at-the-money
+  premium in expectation against a standard deviation of about half the premium (LOW).
+- Funding sampling (review F11/F34): a gap between accruals is charged at the larger of the rate at its start and the rate now, so a
+  holder cannot pick a favourable price for a gap; the keeper also samples every live series on its own schedule. What remains is
+  a holder accruing at two favourable prints with no keeper accrual between them (at most one keeper interval) (LOW).
+- LP entry and exit pricing (review F12/F15): until the keeper re-marks every live series of a name, deposits use a lower bound and
+  claims an upper bound of the liability at today's price (O(names)), so an LP who exits right after a move the keeper has not
+  re-marked yet may get slightly less than the exact NAV (and an entrant slightly fewer shares); after the keeper's re-mark the two
+  bounds are the exact book value. The vol part of the bound is first order (x1.5 on the conservative side), and funding not yet
+  accrued since the last mark is not in it (LOW).
+- Dust (review F08/F14/F24): every buy costs at least $1 and a partial sell must move and leave at least $1 (a whole-balance sell is
+  always allowed); series worth under $1 in total can be retired from the keeper's live list by anyone and accrue only when touched.
 - The off-chain signer and the issuers in items 5 and 6 are trusted parties. We cannot remove those powers; we limit what they can do to Lemniscate state.
 - Rounding always goes to the protocol side; a round trip in one block never returns more than was paid. Sub-wei differences are not a vulnerability.
 - Pricing uses fixed-point approximations of a closed-form model; accuracy is tested against a high-precision reference (see the invariants file), not proven.

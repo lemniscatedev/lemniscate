@@ -94,6 +94,10 @@ abstract contract SystemChecks is SystemDeployer {
         _failIf(FeeRouter(d.feeRouter).pool() != d.pool, "FEE_ROUTER_POOL");
         _failIf(address(PriceGuard(d.priceGuard).marketHours()) != d.marketHours, "PRICE_GUARD_MARKET_HOURS");
         _failIf(AgentRouter(d.agentRouter).engine() != d.engine, "AGENT_ROUTER_ENGINE");
+        // Review fixes (todo 27): the $1 minimum trade, the 30-minute hold and the 7-day settle delay stay on.
+        (uint64 minTrade, uint32 hold, uint32 settleDelay) = e.guards();
+        _failIf(minTrade < 1e6 || hold < 30 minutes || settleDelay < 7 days, "TRADE_GUARDS");
+        _failIf(PriceGuard(d.priceGuard).maxAgeClosed() != 0, "MAX_AGE_CLOSED_NOT_DEFAULT");
         _failIf(_impl(d.engine) != d.engineImpl || _impl(d.pool) != d.poolImpl, "IMPLEMENTATION_MISMATCH");
         _failIf(
             !_initLocked(d.engineImpl) || !_initLocked(d.poolImpl)
@@ -170,7 +174,8 @@ abstract contract SystemChecks is SystemDeployer {
         _failIf(!IAccessControl(d.engine).hasRole(GUARDIAN, r.keeper), "KEEPER_GUARDIAN_MISSING");
         _failIf(
             !IAccessControl(d.engine).hasRole(GUARDIAN, r.guardian) || !IAccessControl(d.pool).hasRole(GUARDIAN, r.guardian)
-                || !IAccessControl(d.priceGuard).hasRole(GUARDIAN, r.guardian),
+                || !IAccessControl(d.priceGuard).hasRole(GUARDIAN, r.guardian)
+                || !IAccessControl(d.volOracle).hasRole(GUARDIAN, r.guardian),
             "GUARDIAN_ROLE_MISSING"
         );
         address[] memory t = adminTargets(d);
@@ -187,7 +192,8 @@ abstract contract SystemChecks is SystemDeployer {
         bool deployerRole = IAccessControl(d.registry).hasRole(KEEPER, d.deployer)
             || IAccessControl(d.marketHours).hasRole(KEEPER, d.deployer) || IAccessControl(d.pool).hasRole(HEDGER, d.deployer)
             || IAccessControl(d.engine).hasRole(GUARDIAN, d.deployer) || IAccessControl(d.pool).hasRole(GUARDIAN, d.deployer)
-            || IAccessControl(d.priceGuard).hasRole(GUARDIAN, d.deployer);
+            || IAccessControl(d.priceGuard).hasRole(GUARDIAN, d.deployer)
+            || IAccessControl(d.volOracle).hasRole(GUARDIAN, d.deployer);
         _failIf(deployerRole && d.deployer != r.keeper && d.deployer != r.hedger && d.deployer != r.guardian, "DEPLOYER_HOLDS_ROLE");
 
         FeeRouter f = FeeRouter(d.feeRouter);

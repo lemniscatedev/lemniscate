@@ -26,8 +26,8 @@ const ceilDiv = (a: bigint, b: bigint): bigint => (a + b - 1n) / b;
  * function with a call to the deployed engine on anvil. */
 function mockChain(series: SeriesInputs, market: MarketInputs): ChainQuoter {
   return async ({ unitsWad, isBuy }) => {
-    // A stale vol post prices sells at sigma x 1.2, floored to whole bps (decision 17); no skew in these cases.
-    const sigmaBps = !isBuy && market.volStale ? Math.floor(((market.sigmaBps ?? 0) * 12_000) / 10_000) : (market.sigmaBps ?? 0);
+    // A stale vol post prices sells at sigma x 0.8, floored to whole bps (review F09/F13); no skew in these cases.
+    const sigmaBps = !isBuy && market.volStale ? Math.floor(((market.sigmaBps ?? 0) * 8_000) / 10_000) : (market.sigmaBps ?? 0);
     const sigma = sigmaBps / 10_000;
     const tauYears = (series.speed === "DAILY" ? TAU.DAILY : TAU.WEEKLY) / YEAR_S;
     const call = callValueNumeric(market.spot, series.strike, sigma, tauYears);

@@ -17,6 +17,7 @@ import {Series, SessionKind, Speed} from "../../src/libs/OptionTypes.sol";
 import {Roles} from "../../src/libs/Roles.sol";
 import {MockStockToken} from "../mocks/MockStockToken.sol";
 import {MockEnginePool, MockEnginePriceGuard, MockEngineVol, MockPausableUSDG} from "../mocks/EngineMocks.sol";
+import {EngineStorage} from "../../src/engine/EngineStorage.sol";
 
 /// @dev Engine behind an ERC1967 proxy, the real SeriesRegistry and option-token clones, mock PriceGuard / VolOracle /
 /// Writer Pool. Two names (NVDA-like at $100, TSLA-like at $200), sigma 50% on both speeds, pool cash $2M.
@@ -93,6 +94,12 @@ abstract contract EngineBase is Test {
     function _setVol(address stock, uint64 sigma, uint64 skewK) internal {
         vol.set(stock, Speed.DAILY, sigma, skewK, uint64(vm.getBlockTimestamp() + 3650 days));
         vol.set(stock, Speed.WEEKLY, sigma, skewK, uint64(vm.getBlockTimestamp() + 3650 days));
+    }
+
+    /// @dev Suites written before the $1 minimum trade (review F08/F14) that trade fractions of a dollar.
+    function _lowMinTrade() internal {
+        vm.prank(admin);
+        engine.setGuards(EngineStorage.Guards({minTradeUsdg: 1, holdSeconds: 0, haltSettleDelay: 0}));
     }
 
     function _fund(address who) internal {

@@ -26,6 +26,7 @@ abstract contract VaultFixture is SystemFixture {
 
     function _deployVaults() internal {
         _deploySystem(1, 10_000_000e6);
+        _lowMinTrade();
         vreg = new VaultRegistry(
             admin, address(pool), ISeriesRegistry(address(registry)), IPriceGuard(address(guard)), IERC20(address(usdg))
         );

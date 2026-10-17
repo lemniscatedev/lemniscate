@@ -31,9 +31,12 @@ import {Roles} from "./libs/Roles.sol";
 /// PriceGuard price + fresh perp equity - engine.bookValue() + reserve share - fees owed.
 /// Liability (decision 26, todo 07b): every path (NAV, deposits, claims, payouts, caps) uses the engine's O(1)
 /// `bookValue()`, each series valued at its last touch; the keeper re-marks every live series at least hourly, so NAV
-/// lags the exact liability by at most about one hour of price and vol moves. The NAV guard band (entries at the high
-/// edge, exits at the low edge, from the engine's net greeks) absorbs the first part of such a move. The exact
-/// `engine.totalLiability()` is never read on chain by the pool (monitoring only).
+/// lags the exact liability by at most about one hour of price and vol moves. Review F12/F15: LP entries and exits
+/// (deposit, claim and their previews, maxDeposit, checkpoint) use `engine.navLiability`, bounds of the liability at
+/// today's prices built in O(names) from the same S the hedges are marked at: deposits at the lower bound, claims and
+/// the high-water checkpoint at the upper bound, so a print the keeper has not re-marked yet (or a selective re-mark)
+/// never moves value between LPs. Payouts and the NAV views keep `bookValue`. The exact `engine.totalLiability()` is
+/// never read on chain by the pool (monitoring only).
 /// Caps: the engine's parameters are the one source of truth for the 35% / 8% outstanding caps (`engine.capBps()`);
 /// `maxOutstandingBps`, `maxPerNameBps` and `capsFor` only mirror them.
 /// @dev Kept from the reference vault: ERC-4626 shares with a 6-decimal offset (12-decimal shares), virtual shares,
@@ -274,7 +277,7 @@ contract WriterPool is
         if (caller != receiver) revert InvalidParams();
         if (!_canDeposit(receiver)) revert NotDepositor();
         if (depositsPaused) revert DepositsPaused();
-        Valuation memory v = _valuation(_liability(), true);
+        Valuation memory v = _valuation(_navLiability(false), true);
         uint256 maxAssets = _maxDeposit(v);
         if (assets > maxAssets) revert ERC4626ExceededMaxDeposit(receiver, assets, maxAssets);
         if (v.supply == 0 && assets < MIN_FIRST_DEPOSIT) revert InvalidParams();
@@ -310,7 +313,7 @@ contract WriterPool is
         if (shares == 0) revert UnknownTicket(ticket);
         if (block.timestamp < t.claimableAt) revert NotClaimable(t.claimableAt);
 
-        Valuation memory v = _valuation(_liability(), true);
+        Valuation memory v = _valuation(_navLiability(true), true);
         if (v.navLow <= 0) revert NavNotPositive();
         uint256 value = _assetsFor(shares, v.navLow, v.supply);
         if (value == 0) revert NothingClaimable();
@@ -350,7 +353,7 @@ contract WriterPool is
 
     /// @notice Records the current NAV per share for the reserve's high-water mark and the reserve funding cap.
     function checkpoint() external nonReentrant {
-        _checkpoint(_liability());
+        _checkpoint(_navLiability(true));
     }
 
     function mint(uint256, address) public pure override(ERC4626Upgradeable) returns (uint256) {
@@ -582,7 +585,7 @@ contract WriterPool is
 
     function maxDeposit(address receiver) public view override(ERC4626Upgradeable) returns (uint256) {
         if (!_canDeposit(receiver) || depositsPaused) return 0;
-        return _maxDeposit(_valuation(_liability(), false));
+        return _maxDeposit(_valuation(_navLiability(false), false));
     }
 
     function maxMint(address) public pure override(ERC4626Upgradeable) returns (uint256) {
@@ -599,12 +602,12 @@ contract WriterPool is
 
     /// @notice Shares a deposit of `assets` would mint now (guard high edge plus 10 bps).
     function previewDeposit(uint256 assets) public view override(ERC4626Upgradeable) returns (uint256) {
-        return _depositShares(assets, _valuation(_liability(), true));
+        return _depositShares(assets, _valuation(_navLiability(false), true));
     }
 
     /// @notice Indicative USDG for `shares` at today's guard low edge (a ticket is paid at claim-time NAV).
     function previewRedeem(uint256 shares) public view override(ERC4626Upgradeable) returns (uint256) {
-        Valuation memory v = _valuation(_liability(), true);
+        Valuation memory v = _valuation(_navLiability(true), true);
         return v.navLow > 0 ? _assetsFor(shares, v.navLow, v.supply) : 0;
     }
 
@@ -614,6 +617,16 @@ contract WriterPool is
     function _liability() private view returns (uint256) {
         IOptionEngine e = engine;
         return address(e) == address(0) ? 0 : e.bookValue();
+    }
+
+    /// @dev Review F12/F15: `engine.navLiability(high)`, the liability bound for LP entries (false) and exits (true);
+    /// an engine without it (older engines, mocks) gives `bookValue()`.
+    function _navLiability(bool high) private view returns (uint256) {
+        IOptionEngine e = engine;
+        if (address(e) == address(0)) return 0;
+        (bool ok, bytes memory data) = address(e).staticcall(abi.encodeWithSignature("navLiability(bool)", high));
+        if (ok && data.length >= 32) return abi.decode(data, (uint256));
+        return e.bookValue();
     }
 
     function _capBps() private view returns (uint16, uint16) {

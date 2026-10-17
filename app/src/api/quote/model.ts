@@ -2,7 +2,8 @@
 // latest vol post, series norm, pool NAV and name vega). It mirrors IOptionEngine.Quote field for field and follows
 // EngineHelper.price / sigmaFor / EngineCore.priceTrade (todo 07, decision 17 and "Canonical quote parameters"):
 //   sigma(K)  = floor(sigmaBps x (1 + kPut max(0, -ln K/S) + kCall max(0, ln K/S))), skewK as posted, clamped to
-//               [1000, 30000] bps; a stale vol post prices SELLS at sigma x 1.2 (a multiplier, not +2000 bps).
+//               [1000, 30000] bps; a stale vol post prices SELLS at sigma x 0.8 (review F09/F13: a multiplier on the
+//               skewed sigma, so a vol-engine lapse lowers the bid, never raises it).
 //   V_mark    = V(sigma) x (1 + 0.15 n), n = post-trade name vega / (0.6% of NAV), clamped to [0, 1].
 //   spread    = max($0.01, V_mark x (150 + 250 min(|K/S-1|/0.3, 1)) bps x session factor); fee 3 bps of S x units.
 // The inventory term needs the pool NAV and the name's net vega. Both come from the indexer (pool_nav, limits_state),
@@ -26,8 +27,8 @@ export const QUOTE_PARAMS = {
   farMoneyness: 0.3,
   /** Session spread multipliers (REGULAR 1x, EXTENDED 1.5x, CLOSED and UNKNOWN 3x). */
   sessionMultiplier: { REGULAR: 1, EXTENDED: 1.5, CLOSED: 3, UNKNOWN: 3, HALTED: 3 } satisfies Record<SessionName, number>,
-  /** A stale vol post prices sells at sigma x 1.2 (a multiplier on sigma, not +2000 bps). */
-  staleVolSellBumpBps: 2_000,
+  /** A stale vol post prices sells at the skewed sigma x 0.8 (EngineHelper.valueAt, Params.staleVolCutBps). */
+  staleVolSellCutBps: 2_000,
   /** Inventory mark-up a = 0.15 at n = 1. */
   inventoryBps: 1_500,
   /** n reaches 1 when the post-trade name vega equals this share of NAV per vol point (0.6%). */
@@ -134,10 +135,16 @@ export function buyBlockReason(series: SeriesInputs, market: MarketInputs, added
 
 const SKEW_MASK = 0xffff_ffffn;
 
-/** Sigma in bps the engine prices strike K at: skewed by the posted skewK, optionally bumped (stale-vol sells), floored
- * to whole bps and clamped to the pricing domain. EngineHelper.sigmaFor. */
-export function skewedSigmaBps(sigmaBps: number, skewK: bigint | undefined, strike: number, spot: number, bump = 0): number {
-  let sig = Math.floor((sigmaBps * (10_000 + bump)) / 10_000);
+/** Sigma in bps the engine prices strike K at: skewed by the posted skewK, floored to whole bps and clamped to the
+ * pricing domain (EngineHelper.sigmaFor), then optionally cut (stale-vol sells: x (1 - cut), floored, EngineHelper.valueAt). */
+export function skewedSigmaBps(sigmaBps: number, skewK: bigint | undefined, strike: number, spot: number, cut = 0): number {
+  const skewed = skewSigma(sigmaBps, skewK, strike, spot);
+  if (cut === 0) return skewed;
+  return Math.max(Math.floor((skewed * (10_000 - cut)) / 10_000), QUOTE_PARAMS.minSigmaBps);
+}
+
+function skewSigma(sigmaBps: number, skewK: bigint | undefined, strike: number, spot: number): number {
+  let sig = sigmaBps;
   const kPut = Number(((skewK ?? 0n) >> 32n) & SKEW_MASK);
   const kCall = Number((skewK ?? 0n) & SKEW_MASK);
   if (kPut !== 0 || kCall !== 0) {
@@ -188,7 +195,7 @@ export interface UnitQuote {
   readonly vPrice: number;
 }
 
-/** Per-unit numbers for one series. `forSell` adds the stale-vol sigma bump (x 1.2); `units` sizes the trade for the
+/** Per-unit numbers for one series. `forSell` applies the stale-vol sigma cut (x 0.8); `units` sizes the trade for the
  * inventory term (the engine uses the post-trade name vega). */
 export function unitQuote(series: SeriesInputs, market: MarketInputs, forSell: boolean, units = 0): UnitQuote | null {
   if (market.sigmaBps === null || !(market.spot > 0) || !(series.strike > 0)) return null;
@@ -204,7 +211,7 @@ export function unitQuote(series: SeriesInputs, market: MarketInputs, forSell: b
     : putGreeks(market.spot, series.strike, sigmaBase / 10_000, tauYears);
   const v = greeks.v;
   const bumped = forSell && market.volStale;
-  const sigmaBps = bumped ? skewedSigmaBps(market.sigmaBps, market.skewK, series.strike, market.spot, QUOTE_PARAMS.staleVolSellBumpBps) : sigmaBase;
+  const sigmaBps = bumped ? skewedSigmaBps(market.sigmaBps, market.skewK, series.strike, market.spot, QUOTE_PARAMS.staleVolSellCutBps) : sigmaBase;
   const vPrice = bumped ? valueAt(sigmaBps) : v;
   const payoff = Math.max(series.isCall ? market.spot - series.strike : series.strike - market.spot, 0);
   const inventoryApplied = market.book !== undefined;

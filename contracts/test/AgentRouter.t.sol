@@ -52,6 +52,7 @@ contract AgentRouterTest is EngineBase {
 
     function setUp() public override {
         super.setUp();
+        _lowMinTrade();
         owner = alice;
         router = new AgentRouter(address(engine));
         callN = _list(address(nvda), true, 100e18, WEEKLY);

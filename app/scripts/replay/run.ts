@@ -5,10 +5,11 @@
 //   ... --sensitivity              also run the R5 scenarios on the chosen window
 //   ... --strict                   also gate the exit code on the adversary-only case
 //   ... --twap                     model PriceGuard's Uniswap TWAP cross-check (sim/config.ts TWAP_MODEL) in every run
+//   ... --trade-guard              model the review fixes F01/F02 (todo 27): worse-of trade TWAP pricing and the hold
 //   ... --json out.json            write the full results
 // Exits 1 when the base run is insolvent or its 30-day drawdown exceeds 15%.
 import { writeFile } from "node:fs/promises";
-import { makeConfig, SENSITIVITY, TWAP_MODEL } from "../../src/sim/config";
+import { makeConfig, SENSITIVITY, TRADE_GUARD, TWAP_MODEL } from "../../src/sim/config";
 import { DEFAULT_NAMES } from "../../src/sim/defaults";
 import { fixturePrices, loadCached } from "../../src/sim/prices";
 import { runSim } from "../../src/sim/run";
@@ -53,7 +54,10 @@ async function main(): Promise<number> {
   }
   // Each window runs the base flows (retail + adversary) and the adversary-only case, where the caps and the stress
   // budget are the only limit. The gate applies to both; the sensitivity table runs on the worst adversary-only window.
-  const withTwap = (sc: typeof BASE_SCENARIO) => (flag("twap") ? { ...sc, label: `${sc.label} + TWAP check`, twap: TWAP_MODEL } : sc);
+  const withTwap = (sc: typeof BASE_SCENARIO) => {
+    const t = flag("twap") ? { ...sc, label: `${sc.label} + TWAP check`, twap: TWAP_MODEL } : sc;
+    return flag("trade-guard") ? { ...t, label: `${t.label} + trade guard`, tradeGuard: TRADE_GUARD } : t;
+  };
   const gated = [BASE_SCENARIO, SENSITIVITY.find((x) => x.label === "adversary only (no retail)")!].map(withTwap);
   const worstOf = new Map<string, RunResult>();
   for (const w of windows) {

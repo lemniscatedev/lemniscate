@@ -127,6 +127,8 @@ export function runSim(cfg: SimConfig, rawPaths: Map<string, PricePath>, dataNot
   for (let t = Math.floor((cfg.startSec - 14 * DAY) / HOUR) * HOUR; t < cfg.startSec; t += HOUR) postVols(t);
 
   const twap = cfg.scenario.twap;
+  const tradeGuard = cfg.scenario.tradeGuard;
+  pool.holdS = tradeGuard?.holdS;
   const poolPaths = new Map([...paths].map(([name, p]) => [name, new PricePath(name, p.prints)]));
   const updateCtx = (t: number): void => {
     for (const [name, c] of pool.ctx) {
@@ -140,6 +142,9 @@ export function runSim(cfg: SimConfig, rawPaths: Map<string, PricePath>, dataNot
         const band = (twap.bandBps[name] ?? twap.defaultBandBps) / 10_000;
         c.twapPaused = avg === null || Math.abs(c.spot - avg) / avg > band;
       } else c.twapPaused = false;
+      const tt = tradeGuard ? modelTwap(poolPaths.get(name)!, t, tradeGuard.windowS, twap?.leadS ?? 600) : null;
+      if (tt !== null) c.tradeTwap = tt;
+      else delete c.tradeTwap;
       const [from, to] = blockWindow(cfg.earnings, name, t);
       c.blockFromMs = from;
       c.blockToMs = to;

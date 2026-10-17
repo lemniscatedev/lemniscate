@@ -88,20 +88,52 @@ contract MockEnginePriceGuard is IPriceGuard {
         px[stock].twapPaused = twapPaused;
     }
 
+    /// @dev Short-window trade TWAP (PriceGuard.tradeTwap); 0 = unavailable.
+    mapping(address => uint256) public tradeTwapOf;
+    /// @dev Reading timestamp (feed updatedAt / last good time); 0 = now.
+    mapping(address => uint256) public updatedAtOf;
+    /// @dev PriceGuard.haltedSince stand-in.
+    mapping(address => uint256) public haltedSinceOf;
+
+    function setTradeTwap(address stock, uint256 twap) external {
+        tradeTwapOf[stock] = twap;
+    }
+
+    function setUpdatedAt(address stock, uint256 at) external {
+        updatedAtOf[stock] = at;
+    }
+
+    function setHaltedSince(address stock, uint256 at) external {
+        haltedSinceOf[stock] = at;
+    }
+
+    function tradeTwap(address stock) external view returns (uint256) {
+        return tradeTwapOf[stock];
+    }
+
+    function haltedSince(address stock) external view returns (uint256) {
+        return haltedSinceOf[stock];
+    }
+
+    function _at(address stock) internal view returns (uint256) {
+        uint256 at = updatedAtOf[stock];
+        return at == 0 ? block.timestamp : at;
+    }
+
     function read(address stock) public view returns (PriceReading memory r) {
         _burn();
         Px memory p = px[stock];
-        r = PriceReading({s: p.s, session: p.session, fresh: p.fresh, buysPaused: p.buysPaused || p.twapPaused, updatedAt: block.timestamp});
+        r = PriceReading({s: p.s, session: p.session, fresh: p.fresh, buysPaused: p.buysPaused || p.twapPaused, updatedAt: _at(stock)});
     }
 
     function readLite(address stock) external view returns (PriceReading memory r) {
         _burn();
         Px memory p = px[stock];
-        r = PriceReading({s: p.s, session: p.session, fresh: p.fresh, buysPaused: p.buysPaused, updatedAt: block.timestamp});
+        r = PriceReading({s: p.s, session: p.session, fresh: p.fresh, buysPaused: p.buysPaused, updatedAt: _at(stock)});
     }
 
     function lastGoodPrice(address stock) external view returns (uint256 s, uint256 at) {
-        return (px[stock].s, block.timestamp);
+        return (px[stock].s, _at(stock));
     }
 
     function setStock(address, StockConfig calldata) external pure {}

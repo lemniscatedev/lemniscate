@@ -2,17 +2,23 @@
 pragma solidity 0.8.28;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {IOptionToken} from "../interfaces/IOptionToken.sol";
 import {IOptionEngine} from "../interfaces/IOptionEngine.sol";
 import {SessionKind} from "../libs/OptionTypes.sol";
 import {EngineHelper} from "../EngineHelper.sol";
 import {EngineStorage} from "./EngineStorage.sol";
 import {EngineCore} from "./EngineCore.sol";
+import {EngineMarkLib} from "./EngineMarkLib.sol";
 
 /// @title EngineOpsLib
-/// @notice Accrual, the queued-sell fill and cancel, risk pokes, quote and vMark of LemniscateEngine (external library, delegatecalled).
+/// @notice Accrual, dust retirement, the ORC-4 settlement, risk pokes, quote and vMark of LemniscateEngine (external
+/// library, delegatecalled).
 library EngineOpsLib {
     uint256 private constant WAD = 1e18;
+
+    event SeriesRetired(bytes32 indexed id);
+    event StockSettled(address indexed stock, uint256 s);
+
+    error NotSettleable(address stock);
 
     /// @dev A one-SLOAD no-op once the series is accrued in this block (the option token calls it on every transfer).
     function accrue(EngineHelper h, bytes32 id) external {
@@ -22,54 +28,79 @@ library EngineOpsLib {
         if (EngineCore.applyFunding(h, c)) EngineCore.recheck(h, false);
     }
 
-    /// @dev Skips, for about one cold SLOAD each, series already accrued in this block and known series with no
-    /// supply (their norm cannot move and their book is zero), so archived or empty series cost nothing (R2).
+    /// @dev Skips, for about one cold SLOAD each, series already accrued in this block, series off the live list (no
+    /// supply, or retired as dust) and dust series (last-touch value under the minimum trade; they accrue lazily on
+    /// their next trade or transfer), so archived, empty or dusted series cost the keeper nothing (R2, review F08/F24).
+    /// A stock all of whose live series are marked in this block gets its NAV-mark envelope collapsed (review F12).
     function accrueMany(EngineHelper h, bytes32[] calldata ids) external {
         EngineStorage.Layout storage $ = EngineStorage.layout();
+        uint256 dust = EngineCore.minTradeUsdg() * 1e12;
+        address[] memory seen = new address[](ids.length);
+        uint256 n;
         for (uint256 i; i < ids.length; ++i) {
             EngineStorage.SeriesInfo storage si = $.info[ids[i]];
             // one slot: no tokens outstanding (unknown series included) or already accrued in this block
             if (si.liveIdx == 0 || si.lastAccrual >= block.timestamp) continue;
+            if ($.risk[ids[i]].value < dust) continue;
             EngineCore.Ctx memory c = EngineCore.context(h, ids[i], false);
-            EngineCore.applyFunding(h, c);
+            if (!EngineCore.applyFunding(h, c)) continue;
+            uint256 k;
+            while (k < n && seen[k] != c.stock) ++k;
+            if (k == n) seen[n++] = c.stock;
+        }
+        for (uint256 k; k < n; ++k) {
+            collapseIfMarked(seen[k], dust);
         }
         EngineCore.recheck(h, true);
     }
 
-    function fillQueued(EngineHelper h, uint256 ticket) external returns (uint256 usdgOut) {
+    /// @dev Collapses `stock`'s NAV-mark envelope to this transaction's S when every non-dust live series is marked in
+    /// this block (one warm SLOAD per live series).
+    function collapseIfMarked(address stock, uint256 dust) private {
         EngineStorage.Layout storage $ = EngineStorage.layout();
-        EngineStorage.Ticket storage t = $.tickets[ticket];
-        if (!t.open) revert IOptionEngine.QueueNotFillable(ticket);
-        EngineCore.Ctx memory c = EngineCore.context(h, t.id, false);
-        EngineCore.applyFunding(h, c);
-        if (!EngineCore.sellable(c)) revert IOptionEngine.QueueNotFillable(ticket);
-        uint256 tokens = t.tokens;
-        uint256 units = Math.mulDiv(tokens, c.norm, WAD);
-        EngineHelper.Book memory b = EngineCore.bookFor(h, c, tokens, false, false);
-        (IOptionEngine.Quote memory q, uint256 spread) =
-            EngineCore.priceTrade(h, c, b, $.pool.navFor(b.tNow), units, false, t.seller);
-        usdgOut = q.usdg;
-        t.open = false;
-        $.pool.pay(t.recipient, usdgOut, spread); // a blocked payout reverts: the ticket stays open
-        IOptionToken(c.token).burn(address(this), tokens);
-        EngineCore.dropIfEmpty(t.id, c.stock, c.token);
-        EngineCore.storeBook(c, b);
-        EngineCore.reportBuyback(c, tokens, spread);
-        emit IOptionEngine.Sold(t.id, t.seller, t.recipient, units, tokens, usdgOut, q.vMarkWad, q.sigmaBps, c.session);
-        emit IOptionEngine.QueuedSellFilled(ticket, msg.sender, usdgOut);
-        EngineCore.recheck(h, false);
+        bytes32[] storage live = $.live[stock];
+        for (uint256 j; j < live.length; ++j) {
+            if ($.info[live[j]].lastAccrual < block.timestamp && $.risk[live[j]].value >= dust) return;
+        }
+        EngineMarkLib.collapse(stock, EngineCore.readPrice(stock, false).s);
     }
 
-    function cancelQueued(uint256 ticket) external {
+    /// @dev Review F08/F24: takes series whose whole outstanding value (refreshed now) is under the minimum trade off
+    /// the live list, so keeper loops and monitoring never grow with dust. Holders keep their tokens and can still sell
+    /// or transfer them (a sell or transfer accrues and prices as usual); a new buy puts the series back on the list.
+    function retireDust(EngineHelper h, bytes32[] calldata ids) external returns (uint256 retired) {
         EngineStorage.Layout storage $ = EngineStorage.layout();
-        EngineStorage.Ticket storage t = $.tickets[ticket];
-        if (!t.open) revert IOptionEngine.QueueNotFillable(ticket);
-        if (msg.sender != t.seller) revert IOptionEngine.NotTicketSeller(ticket);
-        t.open = false;
-        address token = $.info[t.id].token;
-        IOptionToken(token).burn(address(this), t.tokens);
-        IOptionToken(token).mint(t.seller, t.tokens);
-        emit IOptionEngine.QueuedSellCancelled(ticket);
+        uint256 dust = EngineCore.minTradeUsdg() * 1e12;
+        for (uint256 i; i < ids.length; ++i) {
+            EngineStorage.SeriesInfo storage si = $.info[ids[i]];
+            if (si.liveIdx == 0) continue;
+            EngineCore.Ctx memory c = EngineCore.context(h, ids[i], false);
+            EngineCore.applyFunding(h, c);
+            if ($.risk[ids[i]].value >= dust) continue;
+            EngineCore.dropFromLive(ids[i], c.stock);
+            emit SeriesRetired(ids[i]);
+            ++retired;
+        }
+    }
+
+    /// @dev ORC-4 (review F07/F21): once a stock's feed has been HALTED for the settle delay (PriceGuard.haltedSince,
+    /// recorded by `poke`), anyone may settle it at its last good price. Its sells and queued fills then price as
+    /// CLOSED at that S (worse-of the trade TWAP, CLOSED spread) instead of waiting forever; buys stay off. A live
+    /// reading ends the settlement.
+    function settleHalted(address stock) external returns (uint256 s) {
+        EngineStorage.Layout storage $ = EngineStorage.layout();
+        (bool ok, bytes memory data) =
+            address($.priceGuard).staticcall(abi.encodeWithSignature("haltedSince(address)", stock));
+        uint256 since = ok && data.length >= 32 ? abi.decode(data, (uint256)) : 0;
+        uint32 delay = $.guards.haltSettleDelay;
+        if (since == 0 || block.timestamp < since + (delay == 0 ? EngineCore.DEFAULT_SETTLE_DELAY : delay)) {
+            revert NotSettleable(stock);
+        }
+        if ($.priceGuard.readLite(stock).session != SessionKind.HALTED) revert NotSettleable(stock);
+        (s,) = $.priceGuard.lastGoodPrice(stock);
+        if (s == 0 || !EngineCore.inDomain(s)) revert NotSettleable(stock);
+        $.settleS[stock] = s;
+        emit StockSettled(stock, s);
     }
 
     function pokeRisk(EngineHelper h) external {
@@ -110,7 +141,9 @@ library EngineOpsLib {
         if (due) c.norm = EngineCore.nextNorm(c);
         uint256 tokens = isBuy ? units * WAD / c.norm : Math.mulDiv(units, WAD, c.norm, Math.Rounding.Ceil);
         EngineHelper.Book memory b = EngineCore.bookFor(h, c, tokens, isBuy, due);
-        (q,) = EngineCore.priceTrade(h, c, b, EngineStorage.layout().pool.navFor(b.tNow), units, isBuy, account);
+        (q,) = EngineCore.priceTrade(
+            h, c, b, EngineStorage.layout().pool.navFor(b.tNow), units, isBuy, account, EngineCore.tradeS(c, isBuy, account)
+        );
         q.buyable = EngineCore.buyBlock(c) == 0;
     }
 

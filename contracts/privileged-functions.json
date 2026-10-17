@@ -323,6 +323,13 @@
       "gate": "once:initializer",
       "delay": "n/a (caller's own balance, role or one-time setup)"
     },
+    "LemniscateEngine.onTokenTransfer(bytes32,address,address)": {
+      "contract": "LemniscateEngine",
+      "function": "onTokenTransfer(bytes32,address,address)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "the series' own option token only (else NotSeriesToken)"
+    },
     "LemniscateEngine.pokeRisk()": {
       "contract": "LemniscateEngine",
       "function": "pokeRisk()",
@@ -340,6 +347,13 @@
       "function": "renounceRole(bytes32,address)",
       "gate": "self",
       "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "LemniscateEngine.retireDust(bytes32[])": {
+      "contract": "LemniscateEngine",
+      "function": "retireDust(bytes32[])",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "only series whose whole value is under the minimum trade"
     },
     "LemniscateEngine.revokeRole(bytes32,address)": {
       "contract": "LemniscateEngine",
@@ -366,6 +380,12 @@
       "gate": "role:DEFAULT_ADMIN_ROLE",
       "delay": "default_admin 48h timelock"
     },
+    "LemniscateEngine.setGuards(tuple)": {
+      "contract": "LemniscateEngine",
+      "function": "setGuards(tuple)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
     "LemniscateEngine.setHedgeDepthCap(address,uint256)": {
       "contract": "LemniscateEngine",
       "function": "setHedgeDepthCap(address,uint256)",
@@ -383,6 +403,13 @@
       "function": "setSeriesBuysPaused(bytes32,bool)",
       "gate": "role:DEFAULT_ADMIN_ROLE|role:GUARDIAN_ROLE",
       "delay": "default_admin 48h timelock / guardian instant"
+    },
+    "LemniscateEngine.settleHalted(address)": {
+      "contract": "LemniscateEngine",
+      "function": "settleHalted(address)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "only a stock HALTED for the settle delay (7 days), at its last good price"
     },
     "LemniscateEngine.shield(address,uint128,uint16,uint128,uint64)": {
       "contract": "LemniscateEngine",
@@ -732,6 +759,12 @@
       "gate": "role:DEFAULT_ADMIN_ROLE",
       "delay": "default_admin 48h timelock"
     },
+    "PriceGuard.setMaxAgeClosed(uint32)": {
+      "contract": "PriceGuard",
+      "function": "setMaxAgeClosed(uint32)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
     "PriceGuard.setSequencerFeed(address,uint32)": {
       "contract": "PriceGuard",
       "function": "setSequencerFeed(address,uint32)",
@@ -741,6 +774,12 @@
     "PriceGuard.setStock(address,tuple)": {
       "contract": "PriceGuard",
       "function": "setStock(address,tuple)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "PriceGuard.setTradeTwapWindow(uint32)": {
+      "contract": "PriceGuard",
+      "function": "setTradeTwapWindow(uint32)",
       "gate": "role:DEFAULT_ADMIN_ROLE",
       "delay": "default_admin 48h timelock"
     },
@@ -936,6 +975,12 @@
       "function": "revokeRole(bytes32,address)",
       "gate": "role:DEFAULT_ADMIN_ROLE",
       "delay": "default_admin 48h timelock"
+    },
+    "VolOracle.revokeSigner()": {
+      "contract": "VolOracle",
+      "function": "revokeSigner()",
+      "gate": "role:GUARDIAN_ROLE",
+      "delay": "guardian instant"
     },
     "VolOracle.setFloor(address,uint64)": {
       "contract": "VolOracle",

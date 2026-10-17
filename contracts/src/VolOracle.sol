@@ -7,6 +7,7 @@ import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IVolOracle} from "./interfaces/IVolOracle.sol";
 import {Speed, VolReading} from "./libs/OptionTypes.sol";
+import {Roles} from "./libs/Roles.sol";
 
 /// @title VolOracle
 /// @notice Holds the annualised volatility (sigma, bps) per stock and speed, posted by the off-chain vol-engine signer
@@ -31,6 +32,11 @@ import {Speed, VolReading} from "./libs/OptionTypes.sol";
 ///    the hour, so a compromised signer posting maximum steps walks sigma at most 1.5x (or 0.5x) per hour, not 25%
 ///    per transaction. The last HISTORY (12) accepted posts are kept per stock and speed; with one post per 5 minutes
 ///    that always covers the hour plus the value in force at its start. The first post is exempt (no history).
+///  - skewK (review F20): each coefficient is capped (k_put <= MAX_SKEW_PUT = 3.0, k_call <= MAX_SKEW_CALL = 1.0 at 1e4
+///    scale; decision 17 default 1.2 / 0.4), including on the first post, and may move at most MAX_SKEW_STEP (0.2) per
+///    post, so a stolen signer key cannot reprice every strike off S at the 300% clamp in one post.
+///  - The guardian can revoke the signer at once (`revokeSigner`): every post then fails until the admin (timelock)
+///    sets a new signer. While no post lands the vol goes stale: buys stop and sells use a lowered sigma (engine).
 contract VolOracle is AccessControl, EIP712, IVolOracle {
     /// @notice EIP-712 type of a post. `speed` is the Speed enum as uint8 (0 = DAILY, 1 = WEEKLY).
     bytes32 public constant POST_TYPEHASH = keccak256(
@@ -62,9 +68,21 @@ contract VolOracle is AccessControl, EIP712, IVolOracle {
     /// @notice Accepted posts kept per stock and speed (12 * 5 min = 1 h).
     uint256 public constant HISTORY = 12;
 
+    /// @notice Largest skew coefficients (1e4 scale): k_put 3.0, k_call 1.0 (review F20).
+    uint64 public constant MAX_SKEW_PUT = 30_000;
+    uint64 public constant MAX_SKEW_CALL = 10_000;
+    /// @notice Largest change of either skew coefficient per post (0.2 at 1e4 scale).
+    uint64 public constant MAX_SKEW_STEP = 2_000;
+
+    bytes32 public constant GUARDIAN_ROLE = Roles.GUARDIAN_ROLE;
+
     uint256 private constant BPS = 10_000;
 
     error InvalidAdmin();
+    error SkewOutOfRange(uint64 skewK);
+    error SkewStepTooLarge(uint64 prior, uint64 next);
+
+    event SignerRevoked(address indexed signer);
     error InvalidSigner();
     error InvalidFloor(uint64 floorBps);
     error BadBuyBlockWindow(uint64 from, uint64 to);
@@ -127,6 +145,13 @@ contract VolOracle is AccessControl, EIP712, IVolOracle {
         _setSigner(signer_);
     }
 
+    /// @notice Guardian: stop every post at once (a suspected signer compromise). Only the admin's timelocked
+    /// `setSigner` restores posting.
+    function revokeSigner() external onlyRole(GUARDIAN_ROLE) {
+        emit SignerRevoked(signer);
+        signer = address(0);
+    }
+
     function setFloor(address stock, uint64 floorBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (floorBps == 0 || floorBps > MAX_FLOOR_BPS) revert InvalidFloor(floorBps);
         _floor[stock] = Floor({bps: floorBps, set: true});
@@ -158,6 +183,7 @@ contract VolOracle is AccessControl, EIP712, IVolOracle {
             revert BadBuyBlockWindow(p.buyBlockFrom, p.buyBlockTo);
         }
 
+        _checkSkew(p.skewK, s.skewK, prior != 0);
         _checkAndRecordWindow(_history[p.stock][p.speed], p.sigmaBps, floor_, prior != 0);
 
         _vol[p.stock][p.speed] = Slot({
@@ -240,6 +266,19 @@ contract VolOracle is AccessControl, EIP712, IVolOracle {
     }
 
     // ------------------------------------------------------------------ internal
+
+    /// @dev Skew caps on every post, and the per-post step against the prior post's coefficients (review F20).
+    function _checkSkew(uint64 skewK, uint64 priorSkew, bool hasPrior) private pure {
+        uint64 kPut = skewK >> 32;
+        uint64 kCall = skewK & 0xffffffff;
+        if (kPut > MAX_SKEW_PUT || kCall > MAX_SKEW_CALL) revert SkewOutOfRange(skewK);
+        if (!hasPrior) return;
+        uint64 pPut = priorSkew >> 32;
+        uint64 pCall = priorSkew & 0xffffffff;
+        uint64 dPut = kPut > pPut ? kPut - pPut : pPut - kPut;
+        uint64 dCall = kCall > pCall ? kCall - pCall : pCall - kCall;
+        if (dPut > MAX_SKEW_STEP || dCall > MAX_SKEW_STEP) revert SkewStepTooLarge(priorSkew, skewK);
+    }
 
     /// @dev Enforces the rate limit and the rolling-hour bound against the stored history, then appends `sigma`.
     function _checkAndRecordWindow(History storage h, uint64 sigma, uint64 floor_, bool hasPrior) private {

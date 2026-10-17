@@ -6,7 +6,7 @@
 //
 // Every number is a decimal string. norm, V, payoff and newNorm are WAD (value x 1e18, rounded to the nearest integer);
 // dtSeconds and tauSeconds are seconds. V and payoff come from the pricing reference (a real option mark and its
-// intrinsic value) except for the fixed edge cases. newNorm applies the on-chain floor MIN_NORM = 1e12 to the
+// intrinsic value) except for the fixed edge cases. newNorm applies the on-chain floor MIN_NORM = 1e6 to the
 // reference result, so the Solidity side can compare directly with a relative tolerance.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -19,7 +19,7 @@ export const FUNDING_VECTORS_PATH = fileURLToPath(
   new URL("../../contracts/test/vectors/funding-vectors.json", import.meta.url),
 );
 /** On-chain floor of the normalization factor (contracts/src/libs/Funding.sol MIN_NORM). */
-export const MIN_NORM_WAD = 10n ** 12n;
+export const MIN_NORM_WAD = 10n ** 6n;
 
 export interface FundingVector {
   norm: string;
@@ -113,7 +113,7 @@ export function renderFundingVectors(seed = FUNDING_VECTOR_SEED, count = FUNDING
   const cases = buildFundingVectors(seed, count).map((v) => `    ${JSON.stringify(v)}`);
   return [
     "{",
-    `  "description": "In-kind funding steps from app/src/pricing/funding.ts: newNorm = norm * exp(-((V - payoff) / V) * dt / tau), rate clamped to [0, 1], V = 0 counts as rate 1, floored at MIN_NORM = 1e12. norm, V, payoff, newNorm are WAD decimal strings; dtSeconds and tauSeconds in seconds. Double-precision reference: compare with a relative tolerance.",`,
+    `  "description": "In-kind funding steps from app/src/pricing/funding.ts: newNorm = norm * exp(-((V - payoff) / V) * dt / tau), rate clamped to [0, 1], V = 0 counts as rate 1, floored at MIN_NORM = 1e6. norm, V, payoff, newNorm are WAD decimal strings; dtSeconds and tauSeconds in seconds. Double-precision reference: compare with a relative tolerance.",`,
     `  "generator": "app/scripts/gen-funding-vectors.ts",`,
     `  "seed": ${seed},`,
     `  "count": ${count},`,

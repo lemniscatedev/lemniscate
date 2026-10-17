@@ -20,6 +20,8 @@ export interface NameCtx {
   blockToMs: number | null;
   /** The modelled TWAP cross-check is pausing buys (Scenario.twap). */
   twapPaused?: boolean;
+  /** The modelled short trade TWAP (Scenario.tradeGuard), any session; undefined = not modelled or unavailable. */
+  tradeTwap?: number;
 }
 
 export interface Series {
@@ -41,6 +43,9 @@ export interface Position {
   tokens: number;
   paid: number;
   sellAt: number;
+  /** Trade S of the buy and when the minimum hold ends (Scenario.tradeGuard). */
+  buyS?: number;
+  holdUntil?: number;
 }
 
 export type BuyResult = { ok: true; positionId: number } | { ok: false; kind: "paused" | "cap"; reason: string };
@@ -58,6 +63,8 @@ export class Pool {
   private readonly accountTokens = new Map<string, number>();
   private nextPosition = 1;
   nowSec = 0;
+  /** Scenario.tradeGuard: hold length; undefined = the review fixes are not modelled. */
+  holdS: number | undefined = undefined;
   readonly ctx = new Map<string, NameCtx>();
   buysPausedByDrawdown = false;
   readonly lastHedgeMs = new Map<string, number>();
@@ -132,6 +139,12 @@ export class Pool {
       hedge += notional * (1 - c.spec.poolFeeBps / 10_000 - notional / (c.spec.poolDepthUsd * this.depthMult));
     }
     return this.cash + hedge - this.totalLiability();
+  }
+
+  /** The trade S (review F01/F02): worse for the trader of the feed spot and the modelled trade TWAP. */
+  private tradeS(c: NameCtx, isCall: boolean, isBuy: boolean): number {
+    if (this.holdS === undefined || c.tradeTwap === undefined) return c.spot;
+    return isBuy === isCall ? Math.max(c.spot, c.tradeTwap) : Math.min(c.spot, c.tradeTwap);
   }
 
   // ---------- inputs ----------
@@ -243,6 +256,9 @@ export class Pool {
     if (block) { this.bump(this.paused, block); return { ok: false, kind: "paused", reason: block }; }
     const q = unitQuote(inputs, market, false)!;
     if (!(q.v > 0)) { this.bump(this.capBlocked, "zero_value"); return { ok: false, kind: "cap", reason: "zero_value" }; }
+    // Review F01/F02: priced at the worse for the buyer of the feed and the trade TWAP (the mark stays at the feed).
+    const sTrade = this.tradeS(c, isCall, true);
+    const qTrade = sTrade === c.spot ? q : unitQuote(inputs, { ...market, spot: sTrade }, false)!;
     let lastReason = "cap";
     for (const f of SHRINK) {
       const units = (targetValueUsd * f) / q.v;
@@ -252,7 +268,7 @@ export class Pool {
       const acctKey = `${account}|${s.key}`;
       this.accountTokens.set(acctKey, (this.accountTokens.get(acctKey) ?? 0) + tokens);
       // the buyer's USDG enters the pool before the caps look at NAV (cash + spread income, liability up by the mark)
-      const askTotal = q.askPerUnit * units;
+      const askTotal = qTrade.askPerUnit * units;
       this.cash += askTotal;
       this.invalidate(name);
       const failed = this.checkCaps(s, account);
@@ -265,12 +281,13 @@ export class Pool {
         continue;
       }
       const fee = (QUOTE_PARAMS.feeBps / 10_000) * c.spot * units;
-      const spread = (q.askPerUnit - q.v) * units;
+      const spread = (qTrade.askPerUnit - q.v) * units;
       this.spreadIncome += spread;
       this.feeIncome += fee;
       this.addReserve(spread);
       const id = this.nextPosition++;
-      this.positions.set(id, { id, account, group, key: s.key, tokens, paid: askTotal + fee, sellAt });
+      const hold = this.holdS === undefined ? {} : { buyS: sTrade, holdUntil: this.nowSec + this.holdS };
+      this.positions.set(id, { id, account, group, key: s.key, tokens, paid: askTotal + fee, sellAt, ...hold });
       this.buys++;
       return { ok: true, positionId: id };
     }
@@ -294,14 +311,21 @@ export class Pool {
     let received = 0;
     if (c.hasVol && c.spot > 0) {
       const q = unitQuote(this.seriesInputs(s), this.market(c, s), true)!;
+      // Review F01/F02/F10/F22: the worse for the seller of the feed (or last close) and the trade TWAP, and inside
+      // the hold also the buy S.
+      let sTrade = this.tradeS(c, s.isCall, false);
+      if (p.buyS !== undefined && p.holdUntil !== undefined && this.nowSec < p.holdUntil) {
+        sTrade = s.isCall ? Math.min(sTrade, p.buyS) : Math.max(sTrade, p.buyS);
+      }
+      const qTrade = sTrade === c.spot ? q : unitQuote(this.seriesInputs(s), { ...this.market(c, s), spot: sTrade }, true)!;
       const fee = (QUOTE_PARAMS.feeBps / 10_000) * c.spot * units;
-      const bidTotal = q.bidPerUnit * units;
+      const bidTotal = qTrade.bidPerUnit * units;
       this.ensureCash(bidTotal);
       const pay = Math.min(bidTotal, Math.max(this.cash, 0));
       this.sellShortfall += bidTotal - pay;
       this.cash -= pay;
       received = Math.max(pay - fee, 0);
-      const spread = (q.v - q.bidPerUnit) * units;
+      const spread = (q.v - qTrade.bidPerUnit) * units;
       this.spreadIncome += spread;
       this.feeIncome += fee;
       this.addReserve(spread);

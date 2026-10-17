@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {LemniscateEngine} from "../../src/LemniscateEngine.sol";
 import {WriterPool} from "../../src/WriterPool.sol";
@@ -163,6 +164,8 @@ contract SystemHandler is Test {
         if (bal == 0) return;
         uint256 tokens = bal * bound(frac, 1, 100) / 100;
         if (tokens == 0) return;
+        // Review F08/F14: a partial sell must move and leave at least the minimum trade; the whole balance always sells.
+        if (tokens < bal && !_partialSellAllowed(id, who, tokens, bal)) tokens = bal;
         uint256 before = usdg.balanceOf(who);
         PriceReading memory r = guard.readLite(registry.seriesOf(id).stock);
         bool fresh = r.fresh && r.session != SessionKind.HALTED;
@@ -181,6 +184,17 @@ contract SystemHandler is Test {
             }
         }
         _afterAction();
+    }
+
+    function _partialSellAllowed(bytes32 id, address who, uint256 tokens, uint256 bal) internal view returns (bool) {
+        who;
+        (uint256 v,,,) = engine.vMark(id);
+        uint256 norm = registry.seriesOf(id).norm;
+        uint256 minWad = 1e18; // the default $1 minimum trade
+        // a margin for the accrual the sell runs first (norm only falls)
+        uint256 sold = Math.mulDiv(Math.mulDiv(tokens, norm, 1e18), v, 1e18);
+        uint256 left = Math.mulDiv(Math.mulDiv(bal - tokens, norm, 1e18), v, 1e18);
+        return sold >= 2 * minWad && left >= 2 * minWad;
     }
 
     // -------------------------------------------------------------------------------------------------- LPs
@@ -450,6 +464,12 @@ contract SystemHandler is Test {
         }
         try engine.accrueMany(all) {} catch (bytes memory err) {
             _checkPanic(err);
+        }
+        // accrueMany skips dust series (review F08/F24: they accrue lazily); the invariant re-marks them one by one.
+        for (uint256 i; i < all.length; ++i) {
+            try engine.accrue(all[i]) {} catch (bytes memory err) {
+                _checkPanic(err);
+            }
         }
     }
 

@@ -60,6 +60,71 @@ export const OptionEngineAbi = [
   },
   {
     "type": "function",
+    "name": "MAX_HOLD_SECONDS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_MIN_TRADE_USDG",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_SETTLE_DELAY",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MIN_HOLD_SECONDS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MIN_SETTLE_DELAY",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "UPGRADE_INTERFACE_VERSION",
     "inputs": [],
     "outputs": [
@@ -379,6 +444,29 @@ export const OptionEngineAbi = [
   },
   {
     "type": "function",
+    "name": "guards",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "minTradeUsdg",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "holdSeconds",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "haltSettleDelay",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "hasRole",
     "inputs": [
       {
@@ -416,6 +504,42 @@ export const OptionEngineAbi = [
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "holdOf",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "account",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct EngineStorage.Hold",
+        "components": [
+          {
+            "name": "until",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "s",
+            "type": "uint128",
+            "internalType": "uint128"
+          }
+        ]
       }
     ],
     "stateMutability": "view"
@@ -535,6 +659,86 @@ export const OptionEngineAbi = [
   },
   {
     "type": "function",
+    "name": "nameMark",
+    "inputs": [
+      {
+        "name": "stock",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct EngineStorage.NameMark",
+        "components": [
+          {
+            "name": "d",
+            "type": "int256",
+            "internalType": "int256"
+          },
+          {
+            "name": "ds",
+            "type": "int256",
+            "internalType": "int256"
+          },
+          {
+            "name": "uCall",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "uPut",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "lo",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "hi",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "vg",
+            "type": "uint256[2]",
+            "internalType": "uint256[2]"
+          },
+          {
+            "name": "vb",
+            "type": "uint256[2]",
+            "internalType": "uint256[2]"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "navLiability",
+    "inputs": [
+      {
+        "name": "high",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "liabilityWad",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "netGreeks",
     "inputs": [
       {
@@ -561,6 +765,29 @@ export const OptionEngineAbi = [
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "onTokenTransfer",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "from",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "to",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -603,7 +830,7 @@ export const OptionEngineAbi = [
             "internalType": "uint16"
           },
           {
-            "name": "staleVolBumpBps",
+            "name": "staleVolCutBps",
             "type": "uint16",
             "internalType": "uint16"
           },
@@ -785,6 +1012,11 @@ export const OptionEngineAbi = [
           },
           {
             "name": "tokens",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "minProceeds",
             "type": "uint128",
             "internalType": "uint128"
           }
@@ -983,6 +1215,25 @@ export const OptionEngineAbi = [
   },
   {
     "type": "function",
+    "name": "retireDust",
+    "inputs": [
+      {
+        "name": "ids",
+        "type": "bytes32[]",
+        "internalType": "bytes32[]"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "retired",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "revokeRole",
     "inputs": [
       {
@@ -1092,6 +1343,11 @@ export const OptionEngineAbi = [
             "name": "known",
             "type": "bool",
             "internalType": "bool"
+          },
+          {
+            "name": "rateMicro",
+            "type": "uint48",
+            "internalType": "uint48"
           },
           {
             "name": "token",
@@ -1231,6 +1487,36 @@ export const OptionEngineAbi = [
   },
   {
     "type": "function",
+    "name": "setGuards",
+    "inputs": [
+      {
+        "name": "g",
+        "type": "tuple",
+        "internalType": "struct EngineStorage.Guards",
+        "components": [
+          {
+            "name": "minTradeUsdg",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "holdSeconds",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "haltSettleDelay",
+            "type": "uint32",
+            "internalType": "uint32"
+          }
+        ]
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setHedgeDepthCap",
     "inputs": [
       {
@@ -1287,7 +1573,7 @@ export const OptionEngineAbi = [
             "internalType": "uint16"
           },
           {
-            "name": "staleVolBumpBps",
+            "name": "staleVolCutBps",
             "type": "uint16",
             "internalType": "uint16"
           },
@@ -1374,6 +1660,44 @@ export const OptionEngineAbi = [
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "settleHalted",
+    "inputs": [
+      {
+        "name": "stock",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "s",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "settlePrice",
+    "inputs": [
+      {
+        "name": "stock",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -1788,6 +2112,36 @@ export const OptionEngineAbi = [
   },
   {
     "type": "event",
+    "name": "GuardsSet",
+    "inputs": [
+      {
+        "name": "guards",
+        "type": "tuple",
+        "indexed": false,
+        "internalType": "struct EngineStorage.Guards",
+        "components": [
+          {
+            "name": "minTradeUsdg",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "holdSeconds",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "haltSettleDelay",
+            "type": "uint32",
+            "internalType": "uint32"
+          }
+        ]
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "HedgeDepthCapSet",
     "inputs": [
       {
@@ -1859,7 +2213,7 @@ export const OptionEngineAbi = [
             "internalType": "uint16"
           },
           {
-            "name": "staleVolBumpBps",
+            "name": "staleVolCutBps",
             "type": "uint16",
             "internalType": "uint16"
           },
@@ -2299,6 +2653,11 @@ export const OptionEngineAbi = [
   },
   {
     "type": "error",
+    "name": "InvalidGuards",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "InvalidInitialization",
     "inputs": []
   },
@@ -2310,6 +2669,11 @@ export const OptionEngineAbi = [
   {
     "type": "error",
     "name": "NotInitializing",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotSeriesToken",
     "inputs": []
   },
   {

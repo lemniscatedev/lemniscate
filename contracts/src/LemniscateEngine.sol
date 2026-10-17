@@ -19,6 +19,8 @@ import {EngineHelper} from "./EngineHelper.sol";
 import {EngineStorage} from "./engine/EngineStorage.sol";
 import {EngineTradeLib} from "./engine/EngineTradeLib.sol";
 import {EngineOpsLib} from "./engine/EngineOpsLib.sol";
+import {EngineSellLib} from "./engine/EngineSellLib.sol";
+import {EngineMarkLib} from "./engine/EngineMarkLib.sol";
 import {EngineViewLib} from "./engine/EngineViewLib.sol";
 import {EngineCore} from "./engine/EngineCore.sol";
 
@@ -45,6 +47,12 @@ import {EngineCore} from "./engine/EngineCore.sol";
 ///    cannot make, e.g. an issuer pause) escrows the tokens in a ticket that anyone can fill at the first non-HALTED
 ///    price (`fillQueued`) and the seller can cancel. Pauses (global, series, guardian, stress, drawdown) stop buys
 ///    only.
+///  - Review fixes (todo 27, decisions 30-38): trades are priced at the worse for the trader of the feed S and
+///    PriceGuard's short trade TWAP, and a sell inside the account's hold (30 min after its buy, carried through
+///    transfers) at the worse of that and the buy S; every buy costs and every partial sell moves at least the minimum
+///    trade ($1) and leaves at least it behind; a gap is charged funding at max(rate at its start, rate now); stale vol
+///    lowers the sell sigma; a stock HALTED past the settle delay can be settled at its last price (ORC-4); dust series
+///    can be retired from the live list; the pool prices LP entries and exits on `navLiability` bounds.
 contract LemniscateEngine is
     Initializable,
     AccessControlUpgradeable,
@@ -54,9 +62,16 @@ contract LemniscateEngine is
 {
     bytes32 public constant GUARDIAN_ROLE = Roles.GUARDIAN_ROLE;
     /// @notice Buys stop on a series whose norm fell below this (see EngineCore.BUY_MIN_NORM).
-    uint256 public constant BUY_MIN_NORM = 1e14;
+    uint256 public constant BUY_MIN_NORM = 1e15;
+    /// @notice Hard bounds of the deploy-time trade guards (`setGuards`).
+    uint64 public constant MAX_MIN_TRADE_USDG = 1_000e6;
+    uint32 public constant MIN_HOLD_SECONDS = 5 minutes;
+    uint32 public constant MAX_HOLD_SECONDS = 1 days;
+    uint32 public constant MIN_SETTLE_DELAY = 1 days;
+    uint32 public constant MAX_SETTLE_DELAY = 90 days;
 
     event ParamsSet(EngineHelper.Params params);
+    event GuardsSet(EngineStorage.Guards guards);
     event HedgeDepthCapSet(address indexed stock, uint256 capWad);
     event UpgradesFrozen();
     event FeeTiersSet(address feeTiers);
@@ -64,6 +79,8 @@ contract LemniscateEngine is
     error ZeroAddress();
     error UpgradesAreFrozen();
     error NotGuardian();
+    error InvalidGuards();
+    error NotSeriesToken();
 
     EngineHelper public immutable HELPER;
 
@@ -110,6 +127,28 @@ contract LemniscateEngine is
         HELPER.validate(p);
         EngineStorage.layout().p = p;
         emit ParamsSet(p);
+    }
+
+    /// @notice Admin (timelock): the trade guards, each inside its hard bounds; a zero field means the default ($1
+    /// minimum trade, 30-minute hold, 7-day settle delay). The minimum trade and the hold cannot be switched off.
+    function setGuards(EngineStorage.Guards calldata g) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (
+            g.minTradeUsdg > MAX_MIN_TRADE_USDG
+                || (g.holdSeconds != 0 && (g.holdSeconds < MIN_HOLD_SECONDS || g.holdSeconds > MAX_HOLD_SECONDS))
+                || (g.haltSettleDelay != 0 && (g.haltSettleDelay < MIN_SETTLE_DELAY || g.haltSettleDelay > MAX_SETTLE_DELAY))
+        ) revert InvalidGuards();
+        EngineStorage.layout().guards = g;
+        emit GuardsSet(g);
+    }
+
+    /// @notice The guards in force (defaults filled in).
+    function guards() external view returns (uint64 minTradeUsdg, uint32 holdSeconds, uint32 haltSettleDelay) {
+        EngineStorage.Guards memory g = EngineStorage.layout().guards;
+        return (
+            uint64(EngineCore.minTradeUsdg()),
+            uint32(EngineCore.holdSeconds()),
+            g.haltSettleDelay == 0 ? EngineCore.DEFAULT_SETTLE_DELAY : g.haltSettleDelay
+        );
     }
 
     /// @notice Per-name outstanding cap from the hedge pool's depth (0 = none): the name cap is min(8% NAV, this).
@@ -200,7 +239,7 @@ contract LemniscateEngine is
         nonReentrant
         returns (uint256 proceedsUsdg)
     {
-        return EngineTradeLib.sell(HELPER, id, tokens, minProceedsUsdg, deadline, recipient);
+        return EngineSellLib.sell(HELPER, id, tokens, minProceedsUsdg, deadline, recipient);
     }
 
     /// @inheritdoc IOptionEngine
@@ -214,12 +253,54 @@ contract LemniscateEngine is
 
     /// @inheritdoc IOptionEngine
     function fillQueued(uint256 ticket) external nonReentrant returns (uint256 usdgOut) {
-        return EngineOpsLib.fillQueued(HELPER, ticket);
+        return EngineSellLib.fillQueued(HELPER, ticket);
     }
 
     /// @inheritdoc IOptionEngine
     function cancelQueued(uint256 ticket) external nonReentrant {
-        EngineOpsLib.cancelQueued(ticket);
+        EngineSellLib.cancelQueued(ticket);
+    }
+
+    /// @notice Called by a series' option token on every holder-to-holder transfer (after it accrues): the receiver
+    /// takes over the sender's open hold (review F01: a transfer must not reset the minimum hold).
+    function onTokenTransfer(bytes32 id, address from, address to) external {
+        EngineStorage.Layout storage $ = EngineStorage.layout();
+        if (msg.sender != $.info[id].token || msg.sender == address(0)) revert NotSeriesToken();
+        EngineStorage.Hold memory f = $.holds[id][from];
+        if (f.until <= block.timestamp) return;
+        EngineStorage.Hold storage t = $.holds[id][to];
+        if (t.until <= block.timestamp || ($.info[id].isCall ? f.s < t.s : f.s > t.s)) t.s = f.s;
+        if (f.until > t.until) t.until = f.until;
+    }
+
+    /// @notice An account's open hold on a series (until 0 or in the past: none).
+    function holdOf(bytes32 id, address account) external view returns (EngineStorage.Hold memory) {
+        return EngineStorage.layout().holds[id][account];
+    }
+
+    /// @notice Permissionless: takes series worth less than the minimum trade off the live list (review F08/F24).
+    function retireDust(bytes32[] calldata ids) external nonReentrant returns (uint256 retired) {
+        return EngineOpsLib.retireDust(HELPER, ids);
+    }
+
+    /// @notice Permissionless ORC-4: settles a stock HALTED for the settle delay at its last good price.
+    function settleHalted(address stock) external nonReentrant returns (uint256 s) {
+        return EngineOpsLib.settleHalted(stock);
+    }
+
+    /// @notice The ORC-4 settlement price of `stock` (0 = not settled).
+    function settlePrice(address stock) external view returns (uint256) {
+        return EngineStorage.layout().settleS[stock];
+    }
+
+    /// @notice The liability the Writer Pool prices LP flows at (review F12/F15): `high` an upper bound at today's
+    /// prices (claims, checkpoint), else a lower bound (deposits). O(names). See EngineMarkLib.
+    function navLiability(bool high) external view returns (uint256 liabilityWad) {
+        return EngineMarkLib.navLiability(high);
+    }
+
+    function nameMark(address stock) external view returns (EngineStorage.NameMark memory) {
+        return EngineStorage.layout().marks[stock];
     }
 
     // --------------------------------------------------------------------------------------------------- accrue
