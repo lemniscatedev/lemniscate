@@ -289,7 +289,13 @@ abstract contract SystemChecks is SystemDeployer {
     }
 
     /// @dev Todo 19: vaults off unless the flag is on; when on, wired to this pool and every vault closed on its epoch.
+    /// Todo 20: the $LMNS modules are never wired by this deploy (DeployLmns does it later): no staking loss layer on the
+    /// pool and no fee-tier contract on the engine.
     function _checkVaults(Config memory c, Deployed memory d) private {
+        _failIf(
+            address(WriterPool(d.pool).staking()) != address(0) || LemniscateEngine(d.engine).feeTiers() != address(0),
+            "LMNS_NOT_OFF"
+        );
         address hook = WriterPool(d.pool).vaultHook();
         if (!c.vaults.enabled) {
             _failIf(hook != address(0), "VAULTS_NOT_OFF");

@@ -257,6 +257,13 @@ engine and agent router, and the factory is owned by the series registry that cr
   slippage allowance, and only up to the high-water mark. A manipulated TWAP can at most make an uncovered loss look covered until
   the next payout or claim; the slash itself is floored at the same TWAP, so a bad price makes it sell nothing rather than sell cheap.
   The admin (timelock) chooses the TWAP source and swap route; only the pool can slash.
+- Phase 2 writer vaults (closed and unwired at launch; `PostDeployCheck` fails if a deploy wires them without the flag, or wires
+  `$LMNS` staking or fee tiers at all). A vault's loss on a buyback is the intrinsic value of the covered slice, and vaults cover
+  out-of-the-money bands only. The vaults' share of funding and spread is paid only from the pool's cash at that moment: what cash
+  cannot cover is not carried forward or owed later. A vault hook that reverts never blocks a buy, a sell or a funding report; one
+  that runs out of gas reverts the sell (so a seller cannot pick the gas that skips the vaults' settlement).
+- Loss order with both phase-2 modules on: the Reserve, then staked `$LMNS`, then LP NAV. Writer vaults bear only their covered
+  slices and are settled in their own collateral.
 
 ## Audit history
 

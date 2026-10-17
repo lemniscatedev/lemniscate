@@ -763,6 +763,16 @@ contract DeploySystemTest is Test, SystemChecks {
         _assertClean(c, d);
     }
 
+    /// todo 20c: $LMNS staking and fee tiers are off after DeploySystem; PostDeployCheck fails if either is wired.
+    function test_T20_lmnsOffByDefaultAndChecked() public {
+        (Config memory c, Deployed memory d) = _fresh();
+        assertEq(address(WriterPool(d.pool).staking()), address(0), "no staking loss layer");
+        assertEq(LemniscateEngine(d.engine).feeTiers(), address(0), "no fee tiers");
+        vm.prank(d.timelock);
+        LemniscateEngine(d.engine).setFeeTiers(d.registry); // any contract: the check only asks "is anything wired"
+        _expectFail(c, d, "LMNS_NOT_OFF");
+    }
+
     function test_T19_vaultsFlagDeploysClosedVaults_fork() public {
         Config memory c = _forkConfig();
         c.vaults = VaultCfg({enabled: true, epoch: FULL_VAULT_EPOCH});
