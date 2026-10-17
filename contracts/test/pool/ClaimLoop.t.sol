@@ -132,4 +132,15 @@ contract ClaimLoopTest is PoolFixture {
         { (address owner_,,) = pool.ticketOf(tb); vm.prank(owner_); }
         assertApproxEqRel(pool.claim(tb), got, 0.003e18);
     }
+
+    /// Review F12(c) S-3: a ticket being paid down pro rata, one partial a day during a long cash shortfall, never lapses
+    /// into a re-queue: its claim window runs from its last partial payment.
+    function test_F12c_ticketPaidDownDailyNeverLapses() public {
+        _brokenRouteQueue();
+        for (uint256 d; d < 12; ++d) {
+            vm.prank(alice);
+            assertGt(pool.claim(t[0]), 0, "a partial every day, past the 7-day window");
+            vm.warp((vm.getBlockTimestamp() / 1 days + 1) * 1 days);
+        }
+    }
 }
