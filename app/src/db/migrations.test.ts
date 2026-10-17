@@ -9,7 +9,7 @@ const suite = enabled ? describe : describe.skip;
 
 const NEW_TABLES = [
   "series", "series_flag_log", "trades", "shields", "agent_trades", "norm_history", "ticks", "vol_posts", "pool_nav",
-  "limits_state", "hedges", "queued_sells", "withdrawals", "pool_events", "hedge_equity_posts", "pause_log", "transfers",
+  "limits_state", "hedges", "queued_sells", "withdrawals", "pool_events", "hedge_equity_posts", "pool_hedge_events", "pause_log", "transfers",
   "receipts", "block_hashes", "vol_post_intents", "vol_alerts",
 ];
 const KEPT_TABLES = [

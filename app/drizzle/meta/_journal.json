@@ -92,6 +92,13 @@
       "when": 1790780000011,
       "tag": "0012_invite_codes",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1790780000012,
+      "tag": "0013_pool_hedge_events",
+      "breakpoints": true
     }
   ]
 }

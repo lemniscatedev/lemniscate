@@ -1,5 +1,4 @@
 import type { Logger } from "pino";
-import type { Address } from "viem";
 import type { ServiceClients } from "../chain/clients";
 import type { OptionDeployment } from "../chain/deployment";
 import type { RuntimeConfig } from "../config";

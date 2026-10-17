@@ -289,6 +289,9 @@ export const ev = {
   volPosted: (stock: Address, speed: number, sigmaBps: bigint, skewK: bigint, eventBumpBps: bigint, validUntil: bigint, nonce: bigint): LogSpec => ({
     address: ADDR.volOracle, abi: VolOracleAbi as Abi, eventName: "VolPosted", args: { stock, speed, sigmaBps, skewK, eventBumpBps, validUntil, nonce },
   }),
+  rebalanced: (stock: Address, buy: boolean, amountIn: bigint, amountOut: bigint, unitsAfter: bigint): LogSpec => ({ address: ADDR.pool, abi: PoolAbi as Abi, eventName: "Rebalanced", args: { stock, buy, amountIn, amountOut, unitsAfter } }),
+  cashRaised: (stock: Address, stockSold: bigint, usdgOut: bigint): LogSpec => ({ address: ADDR.pool, abi: PoolAbi as Abi, eventName: "CashRaised", args: { stock, stockSold, usdgOut } }),
+  hedgeUnitsSynced: (stock: Address, units: bigint): LogSpec => ({ address: ADDR.pool, abi: PoolAbi as Abi, eventName: "HedgeUnitsSynced", args: { stock, units } }),
   hedgeEquity: (equityUsdg: bigint, asOf: bigint, ref: Hex): LogSpec => ({ address: ADDR.pool, abi: PoolAbi as Abi, eventName: "HedgeEquityPosted", args: { equityUsdg, asOf, ref } }),
   withdrawalQueued: (owner: Address, ticket: bigint, shares: bigint, claimableAt: bigint): LogSpec => ({ address: ADDR.pool, abi: PoolAbi as Abi, eventName: "WithdrawalQueued", args: { owner, ticket, shares, claimableAt } }),
   withdrawalClaimed: (owner: Address, ticket: bigint, usdg: bigint): LogSpec => ({ address: ADDR.pool, abi: PoolAbi as Abi, eventName: "WithdrawalClaimed", args: { owner, ticket, usdg } }),

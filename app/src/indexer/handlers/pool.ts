@@ -1,5 +1,5 @@
 import type { ChainEvent, IndexerContext } from "../types";
-import { asBigInt, unixToDate, units, usdg } from "../units";
+import { asBigInt, unixToDate, units, usdg, WAD_DECIMALS } from "../units";
 import { accountSeen, addr, iso } from "./common";
 
 export async function handlePoolEvent(context: IndexerContext, event: ChainEvent): Promise<void> {
@@ -17,6 +17,33 @@ export async function handlePoolEvent(context: IndexerContext, event: ChainEvent
       context.snapshotNeeded = true;
       context.kinds.add("hedge");
       return;
+    case "Rebalanced":
+    case "CashRaised":
+    case "HedgeUnitsSynced": {
+      const stock = addr(event, "stock");
+      const rebalance = event.eventName === "Rebalanced";
+      const buy = rebalance && event.args.buy === true;
+      // Rebalanced: a buy spends USDG (amountIn) for stock (amountOut); a sell spends stock for USDG.
+      const stockAmount = rebalance ? units(buy ? event.args.amountOut : event.args.amountIn, WAD_DECIMALS)
+        : event.eventName === "CashRaised" ? units(event.args.stockSold, WAD_DECIMALS) : null;
+      const usdgAmount = rebalance ? usdg(buy ? event.args.amountIn : event.args.amountOut)
+        : event.eventName === "CashRaised" ? usdg(event.args.usdgOut) : null;
+      const unitsAfter = rebalance ? units(event.args.unitsAfter, WAD_DECIMALS)
+        : event.eventName === "HedgeUnitsSynced" ? units(event.args.units, WAD_DECIMALS) : null;
+      await context.tx`
+        INSERT INTO pool_hedge_events (tx_hash, log_index, block, ts, kind, stock, side, stock_amount, usdg_amount, units_after)
+        VALUES (
+          ${event.txHash}, ${event.logIndex}, ${event.blockNumber.toString()}, ${iso(event.ts)},
+          ${rebalance ? "rebalance" : event.eventName === "CashRaised" ? "cash_raised" : "units_synced"}, ${stock},
+          ${rebalance ? (buy ? "buy" : "sell") : event.eventName === "CashRaised" ? "sell" : null},
+          ${stockAmount}, ${usdgAmount}, ${unitsAfter}
+        )
+        ON CONFLICT (tx_hash, log_index) DO NOTHING
+      `;
+      context.snapshotNeeded = true;
+      context.kinds.add("hedge");
+      return;
+    }
     case "WithdrawalQueued": {
       const owner = addr(event, "owner");
       await context.tx`

@@ -29,6 +29,54 @@ jobs:
         run: forge build --sizes
       - name: Test
         run: forge test -vv
+      - name: Privileged functions are all listed (PRIV-1/2)
+        run: python3 script/ci/privileged-functions.py check
+      - name: Deployment verification script (offline test)
+        run: script/ci/verify-deployment.test.sh
+
+  # TEST-2: the deep stateful run (>= 100k handler calls per invariant). Slow, so it runs on every push to main, not on PRs.
+  invariants-deep:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: v1.8.1
+      - name: Deep invariants (FOUNDRY_PROFILE=deep, 500 runs x 200 calls)
+        run: contracts/script/ci/deep-invariants.sh
+
+  # TEST-5: line and branch coverage of contracts/src. --ir-minimum avoids stack-too-deep under coverage instrumentation.
+  coverage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: v1.8.1
+      - name: Coverage summary
+        # Gas-bound tests are skipped (instrumented code costs more gas, so they would fail here and pass in the contracts job);
+        # the fuzz seed is fixed so the report is reproducible.
+        run: >-
+          forge coverage --ir-minimum --no-match-path 'test/fork/*' --no-match-test '[gG]as' --fuzz-seed 0x5eed
+          --report summary --report lcov --report-file lcov.info | tee coverage-summary.txt
+      - name: Add summary to the run page
+        run: |
+          { echo '### Contract coverage'; echo '```'; grep -E '^\| *(src/|File|Total)' coverage-summary.txt || tail -40 coverage-summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: contracts-lcov
+          path: contracts/lcov.info
+          retention-days: 30
 
   slither:
     runs-on: ubuntu-24.04
@@ -120,6 +168,26 @@ jobs:
       - name: Copy lint (website, docs, API and tool descriptions)
         working-directory: app
         run: bun run lint:copy
+
+  deps:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Exact pins, frozen installs, release-age guards
+        run: .github/scripts/check-deps.sh
+
+  docs:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: README deployment status matches app/deployments (DOC-6)
+        run: |
+          .github/scripts/check-readme-deployment.test.sh
+          .github/scripts/check-readme-deployment.py
 
   semgrep:
     runs-on: ubuntu-24.04

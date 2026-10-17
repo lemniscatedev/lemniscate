@@ -3,7 +3,7 @@ import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import { isAddress, type Address, type Hex } from "viem";
 import type { ApiDependencies } from "../types";
-import { rateLimit } from "../rate-limit";
+import { rateLimit, walletsFromBody } from "../rate-limit";
 import { createAaServices } from "../../aa/service";
 import { AaConfigError } from "../../aa/config";
 import { BundlerError, toRpcUserOp, type Op } from "../../aa/bundler";
@@ -164,6 +164,7 @@ export function registerIntentUserOp(app: OpenAPIHono, deps: ApiDependencies): v
   const limiter = rateLimit({
     limit: deps.config.API_RATE_LIMIT_PER_MINUTE === 0 ? 0 : 60,
     windowMs: 60_000, clientIpHeader: deps.config.API_CLIENT_IP_HEADER,
+    walletKeys: walletsFromBody([]),
   });
   app.use("/v1/userop/*", async (context, next) => { context.header("Cache-Control", "no-store"); await next(); });
   app.use("/v1/userop/send", bodyLimit({ maxSize: 16 * 1024 }));

@@ -72,6 +72,10 @@ suite("handlersStoreEvents", () => {
 
     blocks.pool = chain.mine([
       ev.hedgeEquity(250_500_000n, 1_790_000_000n, b32(0x5eed)),
+      ev.rebalanced(ADDR.nvda, true, 100n * BigInt(USDG), 2n * WAD, 2n * WAD),
+      ev.rebalanced(ADDR.nvda, false, WAD / 2n, 52_000_000n, 3n * WAD / 2n),
+      ev.cashRaised(ADDR.nvda, WAD / 4n, 26_000_000n),
+      ev.hedgeUnitsSynced(ADDR.nvda, WAD),
       ev.poolDeposit(ADDR.alice, ADDR.alice, 100n * BigInt(USDG), 100n * 10n ** 12n),
       ev.withdrawalQueued(ADDR.alice, 1n, 40n * 10n ** 12n, 1_790_259_200n),
     ]);
@@ -150,6 +154,15 @@ suite("handlersStoreEvents", () => {
   test("HedgeEquityPosted is stored", async () => {
     expect(await rows(db, "SELECT equity_usdg, as_of, ref FROM hedge_equity_posts")).toEqual([
       { equity_usdg: "250.500000000000000000", as_of: new Date(1_790_000_000_000), ref: b32(0x5eed) },
+    ]);
+  });
+
+  test("pool hedge events (Rebalanced, CashRaised, HedgeUnitsSynced) are stored with the stock and USDG sides split", async () => {
+    expect(await rows(db, "SELECT kind, stock, side, stock_amount, usdg_amount, units_after FROM pool_hedge_events ORDER BY log_index")).toEqual([
+      { kind: "rebalance", stock: ADDR.nvda, side: "buy", stock_amount: "2.000000000000000000", usdg_amount: "100.000000000000000000", units_after: "2.000000000000000000" },
+      { kind: "rebalance", stock: ADDR.nvda, side: "sell", stock_amount: "0.500000000000000000", usdg_amount: "52.000000000000000000", units_after: "1.500000000000000000" },
+      { kind: "cash_raised", stock: ADDR.nvda, side: "sell", stock_amount: "0.250000000000000000", usdg_amount: "26.000000000000000000", units_after: null },
+      { kind: "units_synced", stock: ADDR.nvda, side: null, stock_amount: null, usdg_amount: null, units_after: "1.000000000000000000" },
     ]);
   });
 

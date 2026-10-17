@@ -11,10 +11,10 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=lemniscate
-Group=lemniscate
+User=lem-vol-engine
+Group=lem-vol-engine
 WorkingDirectory=/opt/lemniscate/current/app
-Environment=HOME=/var/lib/lemniscate
+Environment=HOME=/var/lib/lemniscate/vol-engine
 Environment=VOL_SIGNER_KEYSTORE=/etc/lemniscate/keys/vol-signer.json
 Environment=VOL_SIGNER_KEYSTORE_PASSWORD_FILE=/etc/lemniscate/keys/vol-signer.password
 EnvironmentFile=/etc/lemniscate/lemniscate.env
@@ -32,7 +32,10 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/lemniscate
+ReadWritePaths=/var/lib/lemniscate/vol-engine
+UMask=0077
+PrivateDevices=true
+ProtectProc=invisible
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

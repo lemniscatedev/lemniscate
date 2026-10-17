@@ -3,13 +3,13 @@ import { createPublicKey, generateKeyPairSync, verify } from "node:crypto";
 import { decodeFunctionData, type Address } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { createLogger } from "../log";
-import { UniswapV3HedgeAdapterAbi } from "../abi/UniswapV3HedgeAdapter";
+import { PoolAbi } from "../abi/Pool";
 import { ConfigurationError, loadConfig } from "../config";
 import {
-  ApiPerpVenue, assertHedgerKeyDistinct, createChainSpotPort, decideRehedge, depthUsdgFor, hedgerSettings, meanTick, minOutFor,
+  ApiPerpVenue, assertHedgerKeyDistinct, createChainPoolPort, decideRehedge, depthUsdgFor, healthMeta, hedgerSettings, limitFor, meanTick,
   MockPerpVenue, netDeltaFromBook, newHedgerState, postHedgeEquityOnce, pxFromTick, runHedgeCycle, snapshotRef, toWei,
-  UniswapV3SpotVenue, venueSnapshot, DEFAULT_SETTINGS, type BookSeries, type BookSnapshot, type IHedgeVenue, type NameMarket,
-  type PoolPrices, type SpotChainPort,
+  PoolSpotVenue, venueSnapshot, DEFAULT_SETTINGS, type BookSeries, type BookSnapshot, type IHedgeVenue, type NameMarket,
+  type PoolHedgePort, type PoolPrices, type RebalanceOutcome,
 } from "./index";
 
 const WAD = 10n ** 18n;
@@ -103,9 +103,9 @@ describe("spot math", () => {
     expect(meanTick(0n, 1800n * 10n, 1800)).toBe(10);
     expect(meanTick(0n, -(1800n * 10n) - 1n, 1800)).toBe(-11);
   });
-  test("minOutFor floors at the TWAP less slippage, both directions", () => {
-    expect(minOutFor(true, 100_000_000n, 100_000_000n, 100)).toBe((99n * WAD) / 100n); // 100 USDG at $100 = 1 stock, -1%
-    expect(minOutFor(false, WAD, 100_000_000n, 100)).toBe(99_000_000n);
+  test("limitFor: a ceiling on USDG spent when buying, a floor on USDG received when selling (R2)", () => {
+    expect(limitFor(true, WAD, 100_000_000n, 100)).toBe(101_000_001n); // $100 + 1%, rounded up
+    expect(limitFor(false, WAD, 100_000_000n, 100)).toBe(99_000_000n); // $100 - 1%
   });
   test("depth grows with liquidity and is symmetric in order", () => {
     const sqrt = 2n ** 96n / 100_000n;
@@ -114,60 +114,60 @@ describe("spot math", () => {
   });
 });
 
-/** A fake chain: balances move 1:1 with the TWAP price, approvals are tracked, nothing else. */
-class FakePort implements SpotChainPort {
-  balances = new Map<string, bigint>();
-  allowances = new Map<string, bigint>();
-  approvals: { token: string; amount: bigint }[] = [];
-  swaps: { tokenIn: Address; tokenOut: Address; fee: number; amountIn: bigint; minOut: bigint }[] = [];
+/** A fake pool: hedge units move 1:1 with the TWAP price, rebalance calls are recorded, and nothing of the hedger
+ * wallet exists in it at all (R3). */
+class FakePort implements PoolHedgePort {
+  units = new Map<string, bigint>();
+  cash = 10_000_000_000n;
+  rebalances: { stock: Address; targetUnits: bigint; limit: bigint }[] = [];
   up = true;
   prices_: PoolPrices = { twapPx: 100_000_000n, spotPx: 100_000_000n, depthUsdg: 1_000_000_000_000n };
-  slipBps = 0n;
-  constructor(readonly usdg: Address) {}
+  /** Fraction of the requested units the pool fills, in bps (the pool may cap a buy at its own limit). */
+  fillBps = 10_000n;
   async prices() { return this.prices_; }
-  async balance(token: Address) { return this.balances.get(token.toLowerCase()) ?? 0n; }
-  async allowance(token: Address) { return this.allowances.get(token.toLowerCase()) ?? 0n; }
-  async approve(token: Address, amount: bigint) { this.approvals.push({ token, amount }); this.allowances.set(token.toLowerCase(), amount); }
-  fee() { return 500; }
+  async hedgeUnits(stock: Address) { return this.units.get(stock.toLowerCase()) ?? 0n; }
+  async poolCash() { return this.cash; }
   async healthy() { if (!this.up) throw new Error("rpc down"); return true; }
-  async swap(p: { tokenIn: Address; tokenOut: Address; fee: number; amountIn: bigint; minOut: bigint }) {
-    this.swaps.push(p);
-    const buy = p.tokenIn.toLowerCase() === this.usdg.toLowerCase();
-    const px = this.prices_.twapPx;
-    const out = (buy ? (p.amountIn * WAD) / px : (p.amountIn * px) / WAD) * (10_000n - this.slipBps) / 10_000n;
-    if (out < p.minOut) throw new Error("Too little received");
-    this.balances.set(p.tokenIn.toLowerCase(), (await this.balance(p.tokenIn)) - p.amountIn);
-    this.balances.set(p.tokenOut.toLowerCase(), (await this.balance(p.tokenOut)) + out);
-    this.allowances.set(p.tokenIn.toLowerCase(), 0n); // the adapter consumes exactly amountIn
-    return { hash: `0xswap${this.swaps.length}` };
+  async rebalance(p: { stock: Address; targetUnits: bigint; limit: bigint }): Promise<RebalanceOutcome> {
+    this.rebalances.push(p);
+    const current = await this.hedgeUnits(p.stock);
+    const wantBuy = p.targetUnits > current;
+    const delta = ((wantBuy ? p.targetUnits - current : current - p.targetUnits) * this.fillBps) / 10_000n;
+    const usdgMoved = (delta * this.prices_.twapPx) / WAD;
+    if (wantBuy ? usdgMoved > p.limit : usdgMoved < p.limit) throw new Error("limit");
+    const after = wantBuy ? current + delta : current - delta;
+    this.units.set(p.stock.toLowerCase(), after);
+    return { hash: `0xrebalance${this.rebalances.length}`, unitsAfter: after, usdgMoved };
   }
 }
 
 function spotVenue(cash = 10_000_000_000n, held = 0n, maxLiquidityBps = 2500) {
-  const port = new FakePort(USDG);
-  port.balances.set(USDG.toLowerCase(), cash);
-  port.balances.set(NVDA.toLowerCase(), held);
-  return { port, venue: new UniswapV3SpotVenue(port, { usdg: USDG, stocks: [NVDA], maxLiquidityBps }) };
+  const port = new FakePort();
+  port.cash = cash;
+  port.units.set(NVDA.toLowerCase(), held);
+  return { port, venue: new PoolSpotVenue(port, { maxLiquidityBps }) };
 }
 
-describe("UniswapV3SpotVenue (R3, R7)", () => {
-  test("buys through the adapter with a TWAP floor and an exact approval, leaving no allowance", async () => {
-    const { port, venue } = spotVenue();
+describe("PoolSpotVenue (R2, R3)", () => {
+  test("R2: a buy calls rebalance with the target units and a USDG ceiling at the TWAP plus slippage", async () => {
+    const { port, venue } = spotVenue(10_000_000_000n, 2n * WAD);
     const fill = await venue.trade(NVDA, 5n * WAD, 100);
     expect(fill.filled).toBe(5n * WAD);
     expect(fill.px).toBe(100_000_000n);
-    expect(port.swaps).toHaveLength(1);
-    expect(port.swaps[0]!.amountIn).toBe(500_000_000n);
-    expect(port.swaps[0]!.minOut).toBe((5n * WAD * 99n) / 100n);
-    expect(port.approvals[0]).toEqual({ token: USDG, amount: 500_000_000n }); // exact, never MaxUint256
-    expect(await port.allowance(USDG)).toBe(0n);
-    expect(port.approvals.every((a) => a.amount < 2n ** 128n)).toBe(true);
+    expect(port.rebalances).toEqual([{ stock: NVDA, targetUnits: 7n * WAD, limit: 505_000_001n }]);
   });
-  test("sells are clamped to the held balance (spot cannot short) and return a negative fill", async () => {
-    const { venue } = spotVenue(0n, 3n * WAD);
+  test("R2: a sell calls rebalance with a lower target and a USDG floor, and returns a negative fill", async () => {
+    const { port, venue } = spotVenue(0n, 3n * WAD);
+    const fill = await venue.trade(NVDA, -WAD, 100);
+    expect(fill.filled).toBe(-WAD);
+    expect(port.rebalances).toEqual([{ stock: NVDA, targetUnits: 2n * WAD, limit: 99_000_000n }]);
+    expect(await venue.netPosition(NVDA)).toBe(2n * WAD);
+  });
+  test("sells are clamped to the held units: spot cannot short, the target never goes below zero", async () => {
+    const { port, venue } = spotVenue(0n, 3n * WAD);
     const fill = await venue.trade(NVDA, -10n * WAD, 100);
     expect(fill.filled).toBe(-3n * WAD);
-    expect(await venue.netPosition(NVDA)).toBe(0n);
+    expect(port.rebalances[0]!.targetUnits).toBe(0n);
   });
   test("caps each trade at a share of in-range liquidity and says how much it can take", async () => {
     const { port, venue } = spotVenue(10_000_000_000_000n, 0n, 1000); // 10% of $1M depth = $100k = 1000 stock
@@ -176,60 +176,62 @@ describe("UniswapV3SpotVenue (R3, R7)", () => {
     const fill = await venue.trade(NVDA, 5000n * WAD, 100);
     expect(fill.filled).toBe(1000n * WAD); // partial; the rest is reported as unhedged by the service
   });
+  test("a buy is also capped by the pool's own USDG", async () => {
+    const { venue } = spotVenue(250_000_000n);
+    expect(await venue.maxTrade(NVDA, true)).toBe(5n * WAD / 2n);
+  });
   test("refuses to trade into a pool that has drifted from its TWAP", async () => {
     const { port, venue } = spotVenue();
     port.prices_ = { ...port.prices_, spotPx: 103_000_000n };
     await expect(venue.trade(NVDA, WAD, 100)).rejects.toThrow("TWAP");
-    expect(port.swaps).toHaveLength(0);
+    expect(port.rebalances).toHaveLength(0);
   });
-  test("a swap that falls below the floor reverts and the approval is cleared", async () => {
+  test("a rebalance the pool refuses is an error, not a fill; one that moves nothing is too", async () => {
     const { port, venue } = spotVenue();
-    port.slipBps = 500n;
-    port.allowances.set(USDG.toLowerCase(), 0n);
-    const origApprove = port.approve.bind(port);
-    port.approve = async (t, a) => { await origApprove(t, a); };
-    await expect(venue.trade(NVDA, WAD, 100)).rejects.toThrow("Too little");
-    expect(await port.allowance(USDG)).toBe(0n);
+    port.fillBps = 0n;
+    await expect(venue.trade(NVDA, WAD, 100)).rejects.toThrow("moved no units");
+    const refused = new PoolSpotVenue({ ...port, prices: port.prices.bind(port), hedgeUnits: port.hedgeUnits.bind(port), poolCash: port.poolCash.bind(port), healthy: port.healthy.bind(port), rebalance: async () => { throw new Error("NoCash"); } }, { maxLiquidityBps: 2500 });
+    await expect(refused.trade(NVDA, WAD, 100)).rejects.toThrow("NoCash");
   });
-  test("equity is wallet USDG plus stock at the TWAP", async () => {
-    const { venue } = spotVenue(50_000_000n, 2n * WAD);
-    expect(await venue.equityUsdg()).toBe(250_000_000n);
+  test("R3: no wallet funds are involved: the port has no balance or allowance, and the venue reports zero equity", async () => {
+    const { port, venue } = spotVenue(10_000_000_000n, 4n * WAD);
+    expect(Object.getOwnPropertyNames(Object.getPrototypeOf(port)).filter((n) => /^(balance|balanceOf|allowance|approve|swap)$/i.test(n))).toEqual([]);
+    expect(await venue.equityUsdg()).toBe(0n);
+    expect(venue.canShort).toBe(false);
   });
 });
 
-describe("createChainSpotPort against a mock router (R3)", () => {
-  test("approve and swap are encoded for the adapter with the exact amounts", async () => {
+describe("createChainPoolPort against a mock chain (R2, R3)", () => {
+  const POOL = "0x00000000000000000000000000000000000000dd" as Address;
+  test("rebalance sends exactly one pool.rebalance(stock, target, limit) and reads the outcome back", async () => {
     const sent: { to: Address; data: `0x${string}`; label: string }[] = [];
-    const reads: string[] = [];
     const clients = {
-      stateClient: {
-        readContract: async ({ functionName }: { functionName: string }) => { reads.push(functionName); return 0n; },
-        getBlockNumber: async () => 1n,
-      },
+      stateClient: { readContract: async () => 6n * WAD, getBlockNumber: async () => 1n },
     } as never;
-    const hedger = "0x00000000000000000000000000000000000000aa" as Address;
-    const adapter = "0x00000000000000000000000000000000000000bb" as Address;
-    const port = createChainSpotPort({
-      clients, hedger, adapter, usdg: USDG, twapSeconds: 1800,
-      routes: new Map([[NVDA, { pool: "0x00000000000000000000000000000000000000cc" as Address, fee: 500 }]]),
+    const port = createChainPoolPort({
+      clients, pool: POOL, usdg: USDG, twapSeconds: 1800, routes: new Map(),
       submit: async (tx) => { sent.push(tx); return { simulated: false, hash: "0xabc" as `0x${string}` }; },
     });
-    await port.approve(USDG, 123n);
-    await port.swap({ tokenIn: USDG, tokenOut: NVDA, fee: 500, amountIn: 123n, minOut: 7n });
-    expect(sent[0]!.to).toBe(USDG);
-    expect(sent[1]!.to).toBe(adapter);
-    const decoded = decodeFunctionData({ abi: UniswapV3HedgeAdapterAbi, data: sent[1]!.data });
-    expect(decoded.functionName).toBe("swapExactIn");
-    expect(([...decoded.args!] as unknown[]).map((a) => (typeof a === "string" ? a.toLowerCase() : a))).toEqual([USDG, NVDA, 500, 123n, 7n, hedger]);
+    const outcome = await port.rebalance({ stock: NVDA, targetUnits: 6n * WAD, limit: 7n });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.to).toBe(POOL);
+    expect(sent[0]!.label).toBe("hedger:rebalance");
+    const decoded = decodeFunctionData({ abi: PoolAbi, data: sent[0]!.data });
+    expect(decoded.functionName).toBe("rebalance");
+    expect(([...decoded.args!] as unknown[]).map((a) => (typeof a === "string" ? a.toLowerCase() : a))).toEqual([NVDA, 6n * WAD, 7n]);
+    expect(outcome).toEqual({ hash: "0xabc", unitsAfter: 6n * WAD, usdgMoved: 0n });
     expect(await port.healthy()).toBe(true);
-    expect(() => port.fee("0x0000000000000000000000000000000000000001" as Address)).toThrow("no Uniswap route");
   });
-  test("a simulated-only swap is an error, never a fill", async () => {
-    const port = createChainSpotPort({
-      clients: { stateClient: {} } as never, hedger: NVDA, adapter: NVDA, usdg: USDG, twapSeconds: 60, routes: new Map(),
+  test("a simulated-only rebalance is an error, never a fill", async () => {
+    const port = createChainPoolPort({
+      clients: { stateClient: {} } as never, pool: POOL, usdg: USDG, twapSeconds: 60, routes: new Map(),
       submit: async () => ({ simulated: true }),
     });
-    await expect(port.swap({ tokenIn: USDG, tokenOut: NVDA, fee: 500, amountIn: 1n, minOut: 0n })).rejects.toThrow("simulated");
+    await expect(port.rebalance({ stock: NVDA, targetUnits: 1n, limit: 0n })).rejects.toThrow("simulated");
+  });
+  test("a name with no Uniswap route has no prices", async () => {
+    const port = createChainPoolPort({ clients: { stateClient: {} } as never, pool: POOL, usdg: USDG, twapSeconds: 60, routes: new Map(), submit: async () => ({ simulated: true }) });
+    await expect(port.prices(NVDA)).rejects.toThrow("no Uniswap route");
   });
 });
 
@@ -241,7 +243,7 @@ function venuesUnderTest(): { label: string; make: () => { venue: IHedgeVenue; f
       make: () => ({ venue: new MockPerpVenue({ collateral: 1_000_000_000n, prices: new Map([[NVDA, 100_000_000n]]) }), fund: () => {} }),
     },
     {
-      label: "UniswapV3SpotVenue",
+      label: "PoolSpotVenue",
       make: () => { const { venue } = spotVenue(1_000_000_000n); return { venue, fund: () => {} }; },
     },
   ];
@@ -336,7 +338,7 @@ describe("runHedgeCycle (R2, R6)", () => {
     expect(report.reason).toBe("band"); // ~50 stock = $5,046 > 0.5% of $1M
     expect(report.filledUnits).toBeCloseTo(report.netDelta, 4);
     expect(Math.abs(report.unhedgedUnits)).toBeLessThan(1e-6);
-    expect(port.swaps).toHaveLength(1);
+    expect(port.rebalances).toHaveLength(1);
     expect(ctx.records).toHaveLength(1);
     expect((ctx.records[0] as { side: string }).side).toBe("buy");
   });
@@ -346,7 +348,7 @@ describe("runHedgeCycle (R2, R6)", () => {
     const result = await runHedgeCycle(cycleDeps([venue], book({ session: "CLOSED" })).deps);
     expect(result.names.NVDA!.action).toBe("hold");
     expect(result.names.NVDA!.reason).toBe("session_closed");
-    expect(port.swaps).toHaveLength(0);
+    expect(port.rebalances).toHaveLength(0);
     expect(result.names.NVDA!.unhedgedUnits).toBeGreaterThan(40); // exposure is reported, not hidden
   });
 
@@ -366,21 +368,21 @@ describe("runHedgeCycle (R2, R6)", () => {
     const result = await runHedgeCycle(cycleDeps([venue], book(), { ...DEFAULT_SETTINGS, dryRun: true }).deps);
     expect(result.dryRun).toBe(true);
     expect(result.names.NVDA!.action).toBe("would_trade");
-    expect(port.swaps).toHaveLength(0);
+    expect(port.rebalances).toHaveLength(0);
   });
 
   test("incomplete inputs fail closed", async () => {
     const { venue, port } = spotVenue();
     const result = await runHedgeCycle(cycleDeps([venue], book({ sigma: {} })).deps);
     expect(result.names.NVDA!.reason).toBe("incomplete_inputs");
-    expect(port.swaps).toHaveLength(0);
+    expect(port.rebalances).toHaveLength(0);
   });
 
   test("stale ticks and unfresh prices do not trade", async () => {
     const { venue, port } = spotVenue();
     expect((await runHedgeCycle(cycleDeps([venue], book({ tickAgeMs: 20 * 60_000 })).deps)).names.NVDA!.reason).toBe("stale_inputs");
     expect((await runHedgeCycle(cycleDeps([venue], book({ fresh: false })).deps)).names.NVDA!.reason).toBe("stale_inputs");
-    expect(port.swaps).toHaveLength(0);
+    expect(port.rebalances).toHaveLength(0);
   });
 
   test("a thin pool takes only part of the trade and the rest is reported as unhedged", async () => {
@@ -410,7 +412,7 @@ describe("runHedgeCycle (R2, R6)", () => {
     expect(await perp.netPosition(NVDA)).toBeLessThan(0n);
     const spotOnly = await runHedgeCycle(cycleDeps([spotVenue().venue], putBook).deps);
     expect(spotOnly.names.NVDA!.reason).toBe("below_min_size"); // target clamps to 0, nothing to sell
-    expect(port.swaps).toHaveLength(0);
+    expect(port.rebalances).toHaveLength(0);
   });
 
   test("tracks how long a venue has been unhealthy", async () => {
@@ -426,22 +428,89 @@ describe("runHedgeCycle (R2, R6)", () => {
   });
 });
 
+describe("runHedgeCycle on the pool: targets from engine.netGreeks, health meta (R1, R2)", () => {
+  test("R1: the target is the on-chain delta of the outstanding options (holders' long side), not a recomputation", async () => {
+    const { venue, port } = spotVenue();
+    const ctx = cycleDeps([venue], book());
+    ctx.deps.chainDelta = async () => 80;
+    const report = (await runHedgeCycle(ctx.deps)).names.NVDA!;
+    expect(report.netDelta).toBe(80);
+    expect(report.action).toBe("traded");
+    expect(port.rebalances).toEqual([{ stock: NVDA, targetUnits: 80n * WAD, limit: 8_080_000_001n }]);
+    expect(await venue.netPosition(NVDA)).toBe(80n * WAD);
+  });
+  test("R1: negative chain delta (net long puts) wants no spot: the pool sells down to zero and not below", async () => {
+    const { venue, port } = spotVenue(0n, 30n * WAD);
+    const ctx = cycleDeps([venue], book());
+    ctx.deps.chainDelta = async () => -12;
+    await runHedgeCycle(ctx.deps);
+    expect(port.rebalances).toEqual([{ stock: NVDA, targetUnits: 0n, limit: 2_970_000_000n }]);
+  });
+  test("R1: a name whose options are gone is hedged back to zero even with no series in the book", async () => {
+    const { venue, port } = spotVenue(0n, 40n * WAD);
+    const ctx = cycleDeps([venue], { series: [], markets: book().markets });
+    ctx.deps.chainDelta = async () => 0;
+    const report = (await runHedgeCycle(ctx.deps)).names.NVDA!;
+    expect(report.action).toBe("traded");
+    expect(port.rebalances[0]!.targetUnits).toBe(0n);
+  });
+  test("an unreadable engine fails closed: the name is not traded", async () => {
+    const { venue, port } = spotVenue();
+    const ctx = cycleDeps([venue], book());
+    ctx.deps.chainDelta = async () => { throw new Error("rpc"); };
+    const report = (await runHedgeCycle(ctx.deps)).names.NVDA!;
+    expect(report.action).toBe("hold");
+    expect(report.reason).toBe("incomplete_inputs");
+    expect(port.rebalances).toHaveLength(0);
+  });
+  test("dry run (R6) never calls rebalance", async () => {
+    const { venue, port } = spotVenue();
+    const ctx = cycleDeps([venue], book(), { ...DEFAULT_SETTINGS, dryRun: true });
+    ctx.deps.chainDelta = async () => 80;
+    expect((await runHedgeCycle(ctx.deps)).names.NVDA!.action).toBe("would_trade");
+    expect(port.rebalances).toHaveLength(0);
+  });
+  test("the risk monitor's meta: healthy, then unhealthy with the time it went down, reported before any other work", async () => {
+    const { venue, port } = spotVenue();
+    const seen: unknown[] = [];
+    const ctx = cycleDeps([venue], book({ session: "CLOSED" }));
+    ctx.deps.onHealth = async (meta) => { seen.push(meta); };
+    expect(await runHedgeCycle(ctx.deps)).toMatchObject({ venueHealthy: true, venueUnhealthySince: null });
+    port.up = false;
+    const down = await runHedgeCycle(ctx.deps);
+    ctx.advance(60_000);
+    const stillDown = await runHedgeCycle(ctx.deps);
+    expect(down.venueHealthy).toBe(false);
+    expect(stillDown.venueUnhealthySince).toBe(down.venueUnhealthySince!); // the original start, not reset each cycle
+    expect(seen).toEqual([
+      { venueHealthy: true, venueUnhealthySince: null },
+      { venueHealthy: false, venueUnhealthySince: down.venueUnhealthySince },
+      { venueHealthy: false, venueUnhealthySince: down.venueUnhealthySince },
+    ]);
+    port.up = true;
+    expect((await runHedgeCycle(ctx.deps)).venueHealthy).toBe(true);
+  });
+  test("healthMeta takes the earliest of several down venues", () => {
+    expect(healthMeta(new Map([["a", 2_000], ["b", 1_000]]))).toEqual({ venueHealthy: false, venueUnhealthySince: new Date(1_000).toISOString() });
+    expect(healthMeta(new Map())).toEqual({ venueHealthy: true, venueUnhealthySince: null });
+  });
+});
+
 // R5 ----------------------------------------------------------------------------------------------------------------
 describe("equityPostHourly (R5)", () => {
   const posted: { equity: bigint; asOf: bigint; ref: string }[] = [];
   const post = async (equity: bigint, asOf: bigint, ref: `0x${string}`) => { posted.push({ equity, asOf, ref }); return { hash: "0xhash" }; };
   const base = { stocks: [NVDA], nowSeconds: 1_000_000, lastPostedAsOf: 0, intervalSeconds: 3600, dryRun: false, post };
 
-  test("posts the sum of venue equity with a reproducible snapshot ref", async () => {
+  test("R4: posts the perp venue equity only (pool-held spot is valued on chain) with a reproducible snapshot ref", async () => {
     posted.length = 0;
     const perp = new MockPerpVenue({ collateral: 400_000_000n, prices: new Map([[NVDA, 100_000_000n]]) });
-    const { venue } = spotVenue(600_000_000n);
-    const outcome = await postHedgeEquityOnce({ ...base, venues: [perp, venue] });
+    const outcome = await postHedgeEquityOnce({ ...base, venues: [perp] });
     expect(outcome.posted).toBe(true);
     expect(posted).toHaveLength(1);
-    expect(posted[0]!.equity).toBe(1_000_000_000n);
+    expect(posted[0]!.equity).toBe(400_000_000n);
     expect(posted[0]!.asOf).toBe(1_000_000n);
-    const snapshot = await venueSnapshot([perp, venue], [NVDA], 1_000_000);
+    const snapshot = await venueSnapshot([perp], [NVDA], 1_000_000);
     expect(posted[0]!.ref).toBe(snapshotRef(snapshot));
     expect(posted[0]!.ref).toMatch(/^0x[0-9a-f]{64}$/);
   });

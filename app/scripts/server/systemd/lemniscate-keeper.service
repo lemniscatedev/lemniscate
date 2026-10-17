@@ -12,10 +12,10 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=lemniscate
-Group=lemniscate
+User=lem-keeper
+Group=lem-keeper
 WorkingDirectory=/opt/lemniscate/current/app
-Environment=HOME=/var/lib/lemniscate
+Environment=HOME=/var/lib/lemniscate/keeper
 Environment=KEEPER_KEYSTORE=/etc/lemniscate/keys/keeper.json
 Environment=KEEPER_KEYSTORE_PASSWORD_FILE=/etc/lemniscate/keys/keeper.password
 EnvironmentFile=/etc/lemniscate/lemniscate.env
@@ -33,7 +33,10 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/lemniscate
+ReadWritePaths=/var/lib/lemniscate/keeper
+UMask=0077
+PrivateDevices=true
+ProtectProc=invisible
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

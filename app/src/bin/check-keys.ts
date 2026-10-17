@@ -1,4 +1,4 @@
-// Launch preflight for the signing keys. Usage: bun src/bin/check-keys.ts <keys dir>   (deploy.sh runs it as the service user)
+// Launch preflight for the signing keys. Usage: bun src/bin/check-keys.ts <keys dir>   (deploy.sh runs it as root: it must open every keystore, and no single service user may)
 // For each role with a <role>.json and <role>.password in the folder it unlocks the keystore (so a wrong password or a
 // damaged file is found now, not when the service starts), checks the files are not readable by other users, and checks that no
 // two roles control the same address. It prints each role and its public ADDRESS, never a key, so the addresses can be

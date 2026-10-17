@@ -1,0 +1,739 @@
+{
+  "functions": {
+    "AgentRouter.buyFor(address,bytes32,uint128,uint128,uint64)": {
+      "contract": "AgentRouter",
+      "function": "buyFor(address,bytes32,uint128,uint128,uint64)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "the owner's agent key, inside its policy"
+    },
+    "AgentRouter.cancelQueuedFor(uint256)": {
+      "contract": "AgentRouter",
+      "function": "cancelQueuedFor(uint256)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "the owner of that queued sell"
+    },
+    "AgentRouter.revoke(address)": {
+      "contract": "AgentRouter",
+      "function": "revoke(address)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "acts on the caller's own agents"
+    },
+    "AgentRouter.sellFor(address,bytes32,uint128,uint128,uint64)": {
+      "contract": "AgentRouter",
+      "function": "sellFor(address,bytes32,uint128,uint128,uint64)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "the owner's agent key, inside its policy"
+    },
+    "AgentRouter.setPolicy(address,uint128,uint128,uint64,bool,bool,address[])": {
+      "contract": "AgentRouter",
+      "function": "setPolicy(address,uint128,uint128,uint64,bool,bool,address[])",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "acts on the caller's own policy"
+    },
+    "AgentRouter.shieldFor(address,address,uint128,uint16,uint128,uint64)": {
+      "contract": "AgentRouter",
+      "function": "shieldFor(address,address,uint128,uint16,uint128,uint64)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "the owner's agent key, inside its policy"
+    },
+    "FeeRouter.distribute()": {
+      "contract": "FeeRouter",
+      "function": "distribute()",
+      "gate": "anyone",
+      "delay": "none (permissionless)"
+    },
+    "FeeRouter.grantRole(bytes32,address)": {
+      "contract": "FeeRouter",
+      "function": "grantRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "FeeRouter.renounceRole(bytes32,address)": {
+      "contract": "FeeRouter",
+      "function": "renounceRole(bytes32,address)",
+      "gate": "self",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "FeeRouter.revokeRole(bytes32,address)": {
+      "contract": "FeeRouter",
+      "function": "revokeRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "FeeRouter.setProtocolFeeBps(uint16)": {
+      "contract": "FeeRouter",
+      "function": "setProtocolFeeBps(uint16)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "FeeRouter.setRecipient(bytes32,address)": {
+      "contract": "FeeRouter",
+      "function": "setRecipient(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "FeeRouter.setSplit(uint16,uint16,uint16,uint16)": {
+      "contract": "FeeRouter",
+      "function": "setSplit(uint16,uint16,uint16,uint16)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "FeeRouter.setWorkerSplit(uint16,uint16,uint16)": {
+      "contract": "FeeRouter",
+      "function": "setWorkerSplit(uint16,uint16,uint16)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "LemniscateEngine.accrue(bytes32)": {
+      "contract": "LemniscateEngine",
+      "function": "accrue(bytes32)",
+      "gate": "anyone",
+      "delay": "none (permissionless)"
+    },
+    "LemniscateEngine.accrueMany(bytes32[])": {
+      "contract": "LemniscateEngine",
+      "function": "accrueMany(bytes32[])",
+      "gate": "anyone",
+      "delay": "none (permissionless)"
+    },
+    "LemniscateEngine.buy(bytes32,uint128,uint128,uint64,address)": {
+      "contract": "LemniscateEngine",
+      "function": "buy(bytes32,uint128,uint128,uint64,address)",
+      "gate": "anyone",
+      "delay": "none (permissionless)"
+    },
+    "LemniscateEngine.buyWithPermit(bytes32,uint128,uint128,uint64,address,uint256,uint8,bytes32,bytes32)": {
+      "contract": "LemniscateEngine",
+      "function": "buyWithPermit(bytes32,uint128,uint128,uint64,address,uint256,uint8,bytes32,bytes32)",
+      "gate": "anyone",
+      "delay": "none (permissionless)"
+    },
+    "LemniscateEngine.cancelQueued(uint256)": {
+      "contract": "LemniscateEngine",
+      "function": "cancelQueued(uint256)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "the ticket's seller only"
+    },
+    "LemniscateEngine.fillQueued(uint256)": {
+      "contract": "LemniscateEngine",
+      "function": "fillQueued(uint256)",
+      "gate": "anyone",
+      "delay": "none (permissionless)"
+    },
+    "LemniscateEngine.freezeUpgrades()": {
+      "contract": "LemniscateEngine",
+      "function": "freezeUpgrades()",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "LemniscateEngine.grantRole(bytes32,address)": {
+      "contract": "LemniscateEngine",
+      "function": "grantRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "LemniscateEngine.initialize(address,address,address,address,address,address)": {
+      "contract": "LemniscateEngine",
+      "function": "initialize(address,address,address,address,address,address)",
+      "gate": "once:initializer",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "LemniscateEngine.pokeRisk()": {
+      "contract": "LemniscateEngine",
+      "function": "pokeRisk()",
+      "gate": "anyone",
+      "delay": "none (permissionless)"
+    },
+    "LemniscateEngine.pruneShieldList(address,uint256)": {
+      "contract": "LemniscateEngine",
+      "function": "pruneShieldList(address,uint256)",
+      "gate": "anyone",
+      "delay": "none (permissionless)"
+    },
+    "LemniscateEngine.renounceRole(bytes32,address)": {
+      "contract": "LemniscateEngine",
+      "function": "renounceRole(bytes32,address)",
+      "gate": "self",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "LemniscateEngine.revokeRole(bytes32,address)": {
+      "contract": "LemniscateEngine",
+      "function": "revokeRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "LemniscateEngine.sell(bytes32,uint128,uint128,uint64,address)": {
+      "contract": "LemniscateEngine",
+      "function": "sell(bytes32,uint128,uint128,uint64,address)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "sells the caller's own tokens; never paused"
+    },
+    "LemniscateEngine.setBuysPaused(bool)": {
+      "contract": "LemniscateEngine",
+      "function": "setBuysPaused(bool)",
+      "gate": "role:DEFAULT_ADMIN_ROLE|role:GUARDIAN_ROLE",
+      "delay": "default_admin 48h timelock / guardian instant"
+    },
+    "LemniscateEngine.setHedgeDepthCap(address,uint256)": {
+      "contract": "LemniscateEngine",
+      "function": "setHedgeDepthCap(address,uint256)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "LemniscateEngine.setParams(tuple)": {
+      "contract": "LemniscateEngine",
+      "function": "setParams(tuple)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "LemniscateEngine.setSeriesBuysPaused(bytes32,bool)": {
+      "contract": "LemniscateEngine",
+      "function": "setSeriesBuysPaused(bytes32,bool)",
+      "gate": "role:DEFAULT_ADMIN_ROLE|role:GUARDIAN_ROLE",
+      "delay": "default_admin 48h timelock / guardian instant"
+    },
+    "LemniscateEngine.shield(address,uint128,uint16,uint128,uint64)": {
+      "contract": "LemniscateEngine",
+      "function": "shield(address,uint128,uint16,uint128,uint64)",
+      "gate": "anyone",
+      "delay": "none (permissionless)"
+    },
+    "LemniscateEngine.syncSeries(uint256)": {
+      "contract": "LemniscateEngine",
+      "function": "syncSeries(uint256)",
+      "gate": "anyone",
+      "delay": "none (permissionless)"
+    },
+    "LemniscateEngine.upgradeToAndCall(address,bytes)": {
+      "contract": "LemniscateEngine",
+      "function": "upgradeToAndCall(address,bytes)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "LemniscatePaymaster.acceptOwnership()": {
+      "contract": "LemniscatePaymaster",
+      "function": "acceptOwnership()",
+      "gate": "pending-owner",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "LemniscatePaymaster.addStake(uint32)": {
+      "contract": "LemniscatePaymaster",
+      "function": "addStake(uint32)",
+      "gate": "owner",
+      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+    },
+    "LemniscatePaymaster.deposit()": {
+      "contract": "LemniscatePaymaster",
+      "function": "deposit()",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "funds the paymaster"
+    },
+    "LemniscatePaymaster.postOp(uint8,bytes,uint256,uint256)": {
+      "contract": "LemniscatePaymaster",
+      "function": "postOp(uint8,bytes,uint256,uint256)",
+      "gate": "contract:entrypoint",
+      "delay": "entrypoint only",
+      "note": "ERC-4337 entry point only"
+    },
+    "LemniscatePaymaster.renounceOwnership()": {
+      "contract": "LemniscatePaymaster",
+      "function": "renounceOwnership()",
+      "gate": "owner",
+      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+    },
+    "LemniscatePaymaster.setLimits(uint256,uint256,uint256)": {
+      "contract": "LemniscatePaymaster",
+      "function": "setLimits(uint256,uint256,uint256)",
+      "gate": "owner",
+      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+    },
+    "LemniscatePaymaster.setPaused(bool)": {
+      "contract": "LemniscatePaymaster",
+      "function": "setPaused(bool)",
+      "gate": "owner",
+      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+    },
+    "LemniscatePaymaster.setSigner(address)": {
+      "contract": "LemniscatePaymaster",
+      "function": "setSigner(address)",
+      "gate": "owner",
+      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+    },
+    "LemniscatePaymaster.transferOwnership(address)": {
+      "contract": "LemniscatePaymaster",
+      "function": "transferOwnership(address)",
+      "gate": "owner",
+      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+    },
+    "LemniscatePaymaster.unlockStake()": {
+      "contract": "LemniscatePaymaster",
+      "function": "unlockStake()",
+      "gate": "owner",
+      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+    },
+    "LemniscatePaymaster.validatePaymasterUserOp(tuple,bytes32,uint256)": {
+      "contract": "LemniscatePaymaster",
+      "function": "validatePaymasterUserOp(tuple,bytes32,uint256)",
+      "gate": "contract:entrypoint",
+      "delay": "entrypoint only",
+      "note": "ERC-4337 entry point only"
+    },
+    "LemniscatePaymaster.withdrawStake(address)": {
+      "contract": "LemniscatePaymaster",
+      "function": "withdrawStake(address)",
+      "gate": "owner",
+      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+    },
+    "LemniscatePaymaster.withdrawTo(address,uint256)": {
+      "contract": "LemniscatePaymaster",
+      "function": "withdrawTo(address,uint256)",
+      "gate": "owner",
+      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+    },
+    "MarketHours.grantRole(bytes32,address)": {
+      "contract": "MarketHours",
+      "function": "grantRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "MarketHours.initialize(address,address)": {
+      "contract": "MarketHours",
+      "function": "initialize(address,address)",
+      "gate": "once:initializer",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "MarketHours.renounceRole(bytes32,address)": {
+      "contract": "MarketHours",
+      "function": "renounceRole(bytes32,address)",
+      "gate": "self",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "MarketHours.revokeRole(bytes32,address)": {
+      "contract": "MarketHours",
+      "function": "revokeRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "MarketHours.setFallbackEnabled(bool)": {
+      "contract": "MarketHours",
+      "function": "setFallbackEnabled(bool)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "MarketHours.setHolidays(tuple[])": {
+      "contract": "MarketHours",
+      "function": "setHolidays(tuple[])",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "MarketHours.setSessions(tuple[])": {
+      "contract": "MarketHours",
+      "function": "setSessions(tuple[])",
+      "gate": "role:KEEPER_ROLE",
+      "delay": "keeper instant"
+    },
+    "MarketHours.setSessionsWithKinds(tuple[],uint8[])": {
+      "contract": "MarketHours",
+      "function": "setSessionsWithKinds(tuple[],uint8[])",
+      "gate": "role:KEEPER_ROLE",
+      "delay": "keeper instant"
+    },
+    "MarketHours.upgradeToAndCall(address,bytes)": {
+      "contract": "MarketHours",
+      "function": "upgradeToAndCall(address,bytes)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "OptionToken.approve(address,uint256)": {
+      "contract": "OptionToken",
+      "function": "approve(address,uint256)",
+      "gate": "holder",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "OptionToken.burn(address,uint256)": {
+      "contract": "OptionToken",
+      "function": "burn(address,uint256)",
+      "gate": "contract:engine",
+      "delay": "engine only"
+    },
+    "OptionToken.initialize(address,bytes32,string,string)": {
+      "contract": "OptionToken",
+      "function": "initialize(address,bytes32,string,string)",
+      "gate": "once:initializer",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "OptionToken.mint(address,uint256)": {
+      "contract": "OptionToken",
+      "function": "mint(address,uint256)",
+      "gate": "contract:engine",
+      "delay": "engine only"
+    },
+    "OptionToken.transfer(address,uint256)": {
+      "contract": "OptionToken",
+      "function": "transfer(address,uint256)",
+      "gate": "holder",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "OptionToken.transferFrom(address,address,uint256)": {
+      "contract": "OptionToken",
+      "function": "transferFrom(address,address,uint256)",
+      "gate": "holder-or-approved",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "OptionTokenFactory.deploy(bytes32,address,string,string)": {
+      "contract": "OptionTokenFactory",
+      "function": "deploy(bytes32,address,string,string)",
+      "gate": "owner",
+      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+    },
+    "PriceGuard.grantRole(bytes32,address)": {
+      "contract": "PriceGuard",
+      "function": "grantRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "PriceGuard.poke(address)": {
+      "contract": "PriceGuard",
+      "function": "poke(address)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "records a price reading; cannot set one"
+    },
+    "PriceGuard.renounceRole(bytes32,address)": {
+      "contract": "PriceGuard",
+      "function": "renounceRole(bytes32,address)",
+      "gate": "self",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "PriceGuard.revokeRole(bytes32,address)": {
+      "contract": "PriceGuard",
+      "function": "revokeRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "PriceGuard.setBuysPaused(address,bool)": {
+      "contract": "PriceGuard",
+      "function": "setBuysPaused(address,bool)",
+      "gate": "role:DEFAULT_ADMIN_ROLE|role:GUARDIAN_ROLE",
+      "delay": "default_admin 48h timelock / guardian instant"
+    },
+    "PriceGuard.setMarketHours(address)": {
+      "contract": "PriceGuard",
+      "function": "setMarketHours(address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "PriceGuard.setSequencerFeed(address,uint32)": {
+      "contract": "PriceGuard",
+      "function": "setSequencerFeed(address,uint32)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "PriceGuard.setStock(address,tuple)": {
+      "contract": "PriceGuard",
+      "function": "setStock(address,tuple)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "PriceGuard.setTwapSource(address,address,uint32,uint16)": {
+      "contract": "PriceGuard",
+      "function": "setTwapSource(address,address,uint32,uint16)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "Reserve.cover(uint256)": {
+      "contract": "Reserve",
+      "function": "cover(uint256)",
+      "gate": "contract:pool",
+      "delay": "pool only"
+    },
+    "Reserve.grantRole(bytes32,address)": {
+      "contract": "Reserve",
+      "function": "grantRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "Reserve.renounceRole(bytes32,address)": {
+      "contract": "Reserve",
+      "function": "renounceRole(bytes32,address)",
+      "gate": "self",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "Reserve.revokeRole(bytes32,address)": {
+      "contract": "Reserve",
+      "function": "revokeRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "Reserve.setParams(uint16,uint16)": {
+      "contract": "Reserve",
+      "function": "setParams(uint16,uint16)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "SeriesRegistry.archive(bytes32)": {
+      "contract": "SeriesRegistry",
+      "function": "archive(bytes32)",
+      "gate": "role:KEEPER_ROLE",
+      "delay": "keeper instant"
+    },
+    "SeriesRegistry.grantRole(bytes32,address)": {
+      "contract": "SeriesRegistry",
+      "function": "grantRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "SeriesRegistry.listSeries(address,bool,uint128,uint32)": {
+      "contract": "SeriesRegistry",
+      "function": "listSeries(address,bool,uint128,uint32)",
+      "gate": "role:KEEPER_ROLE",
+      "delay": "keeper instant"
+    },
+    "SeriesRegistry.renounceRole(bytes32,address)": {
+      "contract": "SeriesRegistry",
+      "function": "renounceRole(bytes32,address)",
+      "gate": "self",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "SeriesRegistry.revokeRole(bytes32,address)": {
+      "contract": "SeriesRegistry",
+      "function": "revokeRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "SeriesRegistry.setBuyable(bytes32,bool)": {
+      "contract": "SeriesRegistry",
+      "function": "setBuyable(bytes32,bool)",
+      "gate": "role:KEEPER_ROLE",
+      "delay": "keeper instant"
+    },
+    "SeriesRegistry.setEngine(address)": {
+      "contract": "SeriesRegistry",
+      "function": "setEngine(address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "SeriesRegistry.setRelistNormThreshold(uint128)": {
+      "contract": "SeriesRegistry",
+      "function": "setRelistNormThreshold(uint128)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "SeriesRegistry.setStock(address,bool,uint128,string)": {
+      "contract": "SeriesRegistry",
+      "function": "setStock(address,bool,uint128,string)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "SeriesRegistry.storeAccrual(bytes32,uint128,uint64)": {
+      "contract": "SeriesRegistry",
+      "function": "storeAccrual(bytes32,uint128,uint64)",
+      "gate": "contract:engine",
+      "delay": "engine only"
+    },
+    "UniswapV3HedgeAdapter.swapExactIn(address,address,uint24,uint256,uint256,address)": {
+      "contract": "UniswapV3HedgeAdapter",
+      "function": "swapExactIn(address,address,uint24,uint256,uint256,address)",
+      "gate": "anyone",
+      "delay": "none (permissionless)"
+    },
+    "VolOracle.grantRole(bytes32,address)": {
+      "contract": "VolOracle",
+      "function": "grantRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "VolOracle.post(tuple,bytes)": {
+      "contract": "VolOracle",
+      "function": "post(tuple,bytes)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "needs the vol signer's EIP-712 signature"
+    },
+    "VolOracle.renounceRole(bytes32,address)": {
+      "contract": "VolOracle",
+      "function": "renounceRole(bytes32,address)",
+      "gate": "self",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "VolOracle.revokeRole(bytes32,address)": {
+      "contract": "VolOracle",
+      "function": "revokeRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "VolOracle.setFloor(address,uint64)": {
+      "contract": "VolOracle",
+      "function": "setFloor(address,uint64)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "VolOracle.setSigner(address)": {
+      "contract": "VolOracle",
+      "function": "setSigner(address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "WriterPool.approve(address,uint256)": {
+      "contract": "WriterPool",
+      "function": "approve(address,uint256)",
+      "gate": "holder",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "WriterPool.checkpoint()": {
+      "contract": "WriterPool",
+      "function": "checkpoint()",
+      "gate": "anyone",
+      "delay": "none (permissionless)"
+    },
+    "WriterPool.claim(uint256)": {
+      "contract": "WriterPool",
+      "function": "claim(uint256)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "pays the ticket's owner"
+    },
+    "WriterPool.deposit(uint256,address)": {
+      "contract": "WriterPool",
+      "function": "deposit(uint256,address)",
+      "gate": "anyone",
+      "delay": "none (permissionless)"
+    },
+    "WriterPool.grantRole(bytes32,address)": {
+      "contract": "WriterPool",
+      "function": "grantRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "WriterPool.initialize(address,address,address,address)": {
+      "contract": "WriterPool",
+      "function": "initialize(address,address,address,address)",
+      "gate": "once:initializer",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "WriterPool.onFunding(bytes32,uint256)": {
+      "contract": "WriterPool",
+      "function": "onFunding(bytes32,uint256)",
+      "gate": "contract:engine",
+      "delay": "engine only"
+    },
+    "WriterPool.onSale(bytes32,uint256,uint256)": {
+      "contract": "WriterPool",
+      "function": "onSale(bytes32,uint256,uint256)",
+      "gate": "contract:engine",
+      "delay": "engine only"
+    },
+    "WriterPool.pay(address,uint256,uint256)": {
+      "contract": "WriterPool",
+      "function": "pay(address,uint256,uint256)",
+      "gate": "contract:engine",
+      "delay": "engine only"
+    },
+    "WriterPool.postHedgeEquity(uint256,uint64,bytes32)": {
+      "contract": "WriterPool",
+      "function": "postHedgeEquity(uint256,uint64,bytes32)",
+      "gate": "role:HEDGER_ROLE",
+      "delay": "hedger instant"
+    },
+    "WriterPool.rebalance(address,uint256,uint256)": {
+      "contract": "WriterPool",
+      "function": "rebalance(address,uint256,uint256)",
+      "gate": "role:HEDGER_ROLE",
+      "delay": "hedger instant"
+    },
+    "WriterPool.renounceRole(bytes32,address)": {
+      "contract": "WriterPool",
+      "function": "renounceRole(bytes32,address)",
+      "gate": "self",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "WriterPool.requestWithdraw(uint256)": {
+      "contract": "WriterPool",
+      "function": "requestWithdraw(uint256)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "burns the caller's own shares; never paused"
+    },
+    "WriterPool.revokeRole(bytes32,address)": {
+      "contract": "WriterPool",
+      "function": "revokeRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "WriterPool.setDepositor(address,bool)": {
+      "contract": "WriterPool",
+      "function": "setDepositor(address,bool)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "WriterPool.setDepositsPaused(bool)": {
+      "contract": "WriterPool",
+      "function": "setDepositsPaused(bool)",
+      "gate": "role:DEFAULT_ADMIN_ROLE|role:GUARDIAN_ROLE",
+      "delay": "default_admin 48h timelock / guardian instant"
+    },
+    "WriterPool.setHedgeRoute(address,address,uint24)": {
+      "contract": "WriterPool",
+      "function": "setHedgeRoute(address,address,uint24)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "WriterPool.setModules(address,address,address,address)": {
+      "contract": "WriterPool",
+      "function": "setModules(address,address,address,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "WriterPool.setNavGuard(uint16,uint16)": {
+      "contract": "WriterPool",
+      "function": "setNavGuard(uint16,uint16)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "WriterPool.setParams(uint32,uint16,uint16,uint128)": {
+      "contract": "WriterPool",
+      "function": "setParams(uint32,uint16,uint16,uint128)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "WriterPool.setPublicDeposits(bool)": {
+      "contract": "WriterPool",
+      "function": "setPublicDeposits(bool)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "WriterPool.syncHedgeUnits(address)": {
+      "contract": "WriterPool",
+      "function": "syncHedgeUnits(address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "WriterPool.transfer(address,uint256)": {
+      "contract": "WriterPool",
+      "function": "transfer(address,uint256)",
+      "gate": "holder",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "WriterPool.transferFrom(address,address,uint256)": {
+      "contract": "WriterPool",
+      "function": "transferFrom(address,address,uint256)",
+      "gate": "holder-or-approved",
+      "delay": "n/a (caller's own balance, role or one-time setup)"
+    },
+    "WriterPool.upgradeToAndCall(address,bytes)": {
+      "contract": "WriterPool",
+      "function": "upgradeToAndCall(address,bytes)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    }
+  }
+}

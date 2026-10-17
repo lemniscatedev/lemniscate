@@ -11,10 +11,10 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=lemniscate
-Group=lemniscate
+User=lem-indexer
+Group=lem-indexer
 WorkingDirectory=/opt/lemniscate/current/app
-Environment=HOME=/var/lib/lemniscate
+Environment=HOME=/var/lib/lemniscate/indexer
 EnvironmentFile=/etc/lemniscate/lemniscate.env
 EnvironmentFile=/etc/lemniscate/db.env
 EnvironmentFile=-/etc/lemniscate/indexer.env
@@ -30,7 +30,10 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/lemniscate
+ReadWritePaths=/var/lib/lemniscate/indexer
+UMask=0077
+PrivateDevices=true
+ProtectProc=invisible
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

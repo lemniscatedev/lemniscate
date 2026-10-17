@@ -12,10 +12,10 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=lemniscate
-Group=lemniscate
+User=lem-api
+Group=lem-api
 WorkingDirectory=/opt/lemniscate/current/app
-Environment=HOME=/var/lib/lemniscate
+Environment=HOME=/var/lib/lemniscate/api
 EnvironmentFile=/etc/lemniscate/lemniscate.env
 EnvironmentFile=/etc/lemniscate/db.env
 EnvironmentFile=-/etc/lemniscate/api.env
@@ -32,7 +32,10 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/lemniscate
+ReadWritePaths=/var/lib/lemniscate/api
+UMask=0077
+PrivateDevices=true
+ProtectProc=invisible
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

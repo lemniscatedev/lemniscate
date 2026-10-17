@@ -28,10 +28,29 @@ export interface CycleDeps {
   /** Priority order: perp venues first (primary), spot last (small residuals). */
   venues: readonly IHedgeVenue[];
   record(row: HedgeRecord): Promise<void>;
+  /** On-chain target source (decision 21): `engine.netGreeks(stock).delta` in stock units, the holders' long side, which
+   * is exactly what the short pool must hold. Returning null means unreadable: the name is reported incomplete and
+   * not traded (fail closed). When absent, the delta is priced from the indexed book instead. */
+  chainDelta?(stock: Address): Promise<number | null>;
+  /** Called right after the venue health check, before any other work, so the risk monitor sees a down venue even if
+   * the rest of the cycle then fails. */
+  onHealth?(meta: HedgerHealthMeta): Promise<void>;
   settings: HedgerSettings;
   state: HedgerState;
   now(): number;
   logger: Logger;
+}
+
+/** What the risk monitor reads from keeper_status job 'hedger' meta. */
+export interface HedgerHealthMeta {
+  venueHealthy: boolean;
+  venueUnhealthySince: string | null;
+}
+
+/** Healthy only when every venue is; "since" is the earliest time any venue went down. */
+export function healthMeta(unhealthySince: ReadonlyMap<string, number>): HedgerHealthMeta {
+  if (unhealthySince.size === 0) return { venueHealthy: true, venueUnhealthySince: null };
+  return { venueHealthy: false, venueUnhealthySince: new Date(Math.min(...unhealthySince.values())).toISOString() };
 }
 
 export interface NameReport {
@@ -48,7 +67,7 @@ export interface NameReport {
   unhedgedUsdg: number;
 }
 
-export interface CycleResult {
+export interface CycleResult extends HedgerHealthMeta {
   cycleAt: string;
   dryRun: boolean;
   names: Record<string, NameReport>;
@@ -69,9 +88,22 @@ export async function runHedgeCycle(deps: CycleDeps): Promise<CycleResult> {
     else if (!state.unhealthySince.has(venue.name)) state.unhealthySince.set(venue.name, nowMs);
   }
   const healthyVenues = deps.venues.filter((v) => health.get(v.name));
+  const healthReport = healthMeta(state.unhealthySince);
+  if (deps.onHealth) await deps.onHealth(healthReport).catch((error) => logger.warn({ err: error instanceof Error ? error.message : String(error) }, "Could not record hedger health"));
 
   const book = await deps.loadBook();
   const exposures = netDeltaFromBook(book.series, book.markets);
+  if (deps.chainDelta) {
+    // The chain's own aggregate is the truth for the target. Every listed name is covered, so a name whose options
+    // all expired is hedged back down to zero instead of keeping a stale position.
+    for (const stock of book.markets.keys()) {
+      const delta = await deps.chainDelta(stock as Address).catch(() => null);
+      const entry = exposures.get(stock) ?? { stock, netDelta: 0, netGamma: 0, netVega: 0, seriesCount: 0, skipped: [], complete: true };
+      entry.netDelta = delta ?? 0;
+      entry.complete = delta !== null;
+      exposures.set(stock, entry);
+    }
+  }
   const nav = await deps.navUsdg();
   const names: Record<string, NameReport> = {};
 
@@ -154,7 +186,7 @@ export async function runHedgeCycle(deps: CycleDeps): Promise<CycleResult> {
   }
 
   return {
-    cycleAt: new Date(nowMs).toISOString(), dryRun: settings.dryRun, names,
+    cycleAt: new Date(nowMs).toISOString(), dryRun: settings.dryRun, names, ...healthMeta(state.unhealthySince),
     unhealthyVenues: Object.fromEntries([...state.unhealthySince].map(([name, since]) => [name, new Date(since).toISOString()])),
   };
 }

@@ -41,7 +41,7 @@ web/          Website (static build, subtree of the frontend repository; extra d
 
 Phase 2 (writer vaults, the `$LMNS` token and staking) is designed but not written, and ships closed.
 
-The engine, pool and market hours sit behind UUPS proxies that only the admin can upgrade; the engine's upgrades can be frozen for good. OpenZeppelin v5.4.0 and forge-std v1.9.7 are vendored in `contracts/lib`. Roles, trust assumptions and accepted risks are in [SECURITY.md](.github/SECURITY.md); each invariant and the test that checks it is in [contracts/INVARIANTS.md](contracts/INVARIANTS.md).
+The engine, pool and market hours sit behind UUPS proxies that only the admin can upgrade; the engine's upgrades can be frozen for good. OpenZeppelin v5.4.0 and forge-std v1.9.7 are vendored in `contracts/lib`. Roles, trust assumptions and accepted risks are in [SECURITY.md](.github/SECURITY.md), what to do in an emergency in [INCIDENT.md](.github/INCIDENT.md); each invariant and the test that checks it is in [contracts/INVARIANTS.md](contracts/INVARIANTS.md).
 
 ### Deployment
 
@@ -53,7 +53,7 @@ Not deployed. After the first deployment this section lists the network, the dep
 | --- | --- | --- |
 | API | `bin/api.ts` | Read-only REST API (Hono). Reads only from Postgres, makes no RPC calls |
 | Indexer | `bin/indexer.ts` | The only process that polls the chain. Writes events and snapshots to Postgres |
-| Keeper | `bin/keeper.ts` | Scheduled jobs that send transactions: `sessions`, `lister`, `accrue`, `risk`, `corp-actions`, `receipts`, `reference`, `earnings` |
+| Keeper | `bin/keeper.ts` | Scheduled jobs that send transactions: `sessions`, `lister`, `accrue`, `risk`, `corp-actions`, `receipts`, `reference`, `earnings`, `queued-sells`, `fee-distribute` |
 | Hedger | `bin/hedger.ts` | Computes the pool's net delta and calls the pool's `rebalance`. Dry run by default. Never holds pool funds |
 | Migrate | `bin/migrate.ts` | Applies Drizzle migrations from `app/drizzle` |
 | Launch switch | `bin/launch-market.ts` | Turns a name on or off for the website's market list |

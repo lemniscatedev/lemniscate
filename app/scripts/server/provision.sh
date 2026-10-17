@@ -6,8 +6,12 @@
 #
 #   bash provision.sh                 everything below
 #   bash provision.sh --units-only    only (re)install the systemd units and the backup script (deploy.sh uses this)
+#   bash provision.sh --service-users only create/refresh the per-service users, their state dirs and env files, and the
+#                                     ownership of the keystores in /etc/lemniscate/keys (deploy.sh and the owner use this)
 #
-# What it does: a `lemniscate` system user; apt upgrade; git, build tools, jq, Python 3 with venv (for vol-engine);
+# What it does: a `lemniscate` system user (owns the releases, runs migrations) and one unprivileged user per service
+# (lem-api, lem-indexer, lem-keeper, lem-hedger, lem-vol-engine, lem-mcp), each with its own state dir, env file and key
+# files; apt upgrade; git, build tools, jq, Python 3 with venv (for vol-engine);
 # Postgres (the distro's current major) plus TimescaleDB from Timescale's apt repository, with a `lemniscate` role and
 # database whose random password goes to /etc/lemniscate/db.env (0600); ufw allowing only 22, 80 and 443; fail2ban for
 # SSH; unattended security upgrades; a swap file when there is none; Bun and cast (Foundry) at pinned versions; Caddy as
@@ -38,10 +42,12 @@ warn() { printf '[provision] WARNING: %s\n' "$*" >&2; }
 die() { printf 'provision: %s\n' "$*" >&2; exit 1; }
 
 UNITS_ONLY=0
+USERS_ONLY=0
 case "${1:-}" in
   "") ;;
   --units-only) UNITS_ONLY=1 ;;
-  -h | --help) sed -n '2,23p' "$0"; exit 0 ;;
+  --service-users | --fix-key-perms) USERS_ONLY=1 ;;
+  -h | --help) sed -n '2,25p' "$0"; exit 0 ;;
   *) die "unknown argument $1 (try --help)" ;;
 esac
 
@@ -50,6 +56,67 @@ for f in systemd/lemniscate.target Caddyfile env.example backup.sh; do
   [[ -e "$HERE/$f" ]] || die "missing $HERE/$f: run provision.sh from the app/scripts/server folder"
 done
 cd /
+
+
+# ---------------------------------------------------------------- one Unix user per service (PRIV-5)
+# Every service runs as its own user, so a flaw in one cannot read another's keystore, password file or state. A signer's
+# files (keys/<role>.json and .password) belong to exactly one service user; the other services cannot even open them.
+SERVICES=(api indexer keeper hedger vol-engine mcp)
+KEYS_DIR=/etc/lemniscate/keys
+# keystore role -> the service that signs with it
+key_owner() {
+  case "$1" in
+    keeper) echo keeper ;;
+    hedger) echo hedger ;;
+    vol-signer | vol-sender) echo vol-engine ;;
+    paymaster-signer | x402-settler) echo api ;;
+    *) echo "" ;;
+  esac
+}
+
+ensure_service_users() {
+  local s u f base owner
+  id lemniscate >/dev/null 2>&1 || die "the lemniscate user is missing: run provision.sh without arguments first"
+  install -d -o root -g root -m 0711 /etc/lemniscate /etc/lemniscate/keys
+  for s in "${SERVICES[@]}"; do
+    u="lem-$s"
+    if ! id "$u" >/dev/null 2>&1; then
+      log "creating the $u system user"
+      useradd --system --user-group --home-dir "/var/lib/lemniscate/$s" --no-create-home --shell /usr/sbin/nologin "$u"
+    fi
+    install -d -o "$u" -g "$u" -m 0700 "/var/lib/lemniscate/$s"
+    # Per-service overrides (root-only; systemd reads it as root before dropping to the service user).
+    if [[ ! -e "/etc/lemniscate/$s.env" ]]; then
+      printf '# Overrides for lemniscate-%s only. Written by provision.sh.\n' "$s" >"/etc/lemniscate/$s.env"
+    fi
+    chown root:root "/etc/lemniscate/$s.env"
+    chmod 0600 "/etc/lemniscate/$s.env"
+  done
+  install -d -o lemniscate -g lemniscate -m 0750 /var/lib/lemniscate
+  # /var/lib/lemniscate must be traversable by the service users to reach their own dir.
+  chmod 0751 /var/lib/lemniscate
+  for f in "$KEYS_DIR"/*.json "$KEYS_DIR"/*.password; do
+    [[ -e "$f" ]] || continue
+    base="$(basename "$f")"
+    base="${base%.json}"
+    base="${base%.password}"
+    owner="$(key_owner "$base")"
+    if [[ -n "$owner" ]]; then
+      chown "root:lem-$owner" "$f"
+      chmod 0440 "$f"
+    else
+      warn "$f is not a known keystore role: left readable by root only"
+      chown root:root "$f"
+      chmod 0400 "$f"
+    fi
+  done
+}
+
+if [[ "$USERS_ONLY" == 1 ]]; then
+  ensure_service_users
+  log "service users, state dirs, env files and key ownership are in place"
+  exit 0
+fi
 
 # ---------------------------------------------------------------- systemd units + backup script
 install_units() {
@@ -70,6 +137,7 @@ install_units() {
 }
 
 if [[ "$UNITS_ONLY" == 1 ]]; then
+  ensure_service_users
   install_units
   exit 0
 fi
@@ -131,8 +199,9 @@ if ! id lemniscate >/dev/null 2>&1; then
 fi
 install -d -o lemniscate -g lemniscate -m 0750 /var/lib/lemniscate /var/lib/lemniscate/data
 install -d -o lemniscate -g lemniscate -m 0755 /opt/lemniscate /opt/lemniscate/releases
-install -d -o root -g lemniscate -m 0750 /etc/lemniscate /etc/lemniscate/keys
+install -d -o root -g root -m 0711 /etc/lemniscate /etc/lemniscate/keys
 install -d -o root -g root -m 0700 /var/backups/lemniscate
+ensure_service_users
 
 umask 077
 {
@@ -386,6 +455,7 @@ install_units
 cat <<EOF
 
 provision: done.
+  Users      lemniscate (releases, migrations) and lem-api, lem-indexer, lem-keeper, lem-hedger, lem-vol-engine, lem-mcp
   Postgres   database $DB_NAME, role lemniscate, DATABASE_URL in /etc/lemniscate/db.env (0600)
   Caddy      https://$API_DOMAIN -> API :3101${MCP_DOMAIN:+, https://$MCP_DOMAIN -> MCP :3102}
              (certificates arrive once the DNS record(s) point at this server, grey cloud)
@@ -393,6 +463,7 @@ provision: done.
 Next (README.md in this folder):
   1. Edit /etc/lemniscate/lemniscate.env: replace every CHANGE_ME.
   2. Copy the keystore (<role>.json) and password file (<role>.password) of keeper, hedger and vol-signer (and
-     paymaster-signer if sponsoring gas) into /etc/lemniscate/keys/, then chown root:lemniscate and chmod 0440.
+     paymaster-signer if sponsoring gas) into /etc/lemniscate/keys/, then run: bash provision.sh --service-users
+     (gives each file to the one service that signs with it, group-readable only by that service, mode 0440).
   3. From the owner's machine: app/scripts/server/deploy.sh <host>
 EOF

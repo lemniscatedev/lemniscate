@@ -15,6 +15,7 @@ const BLOCK_TABLES = [
   "pool_nav",
   "limits_state",
   "hedge_equity_posts",
+  "pool_hedge_events",
   "pause_log",
   "series_flag_log",
   "pool_events",

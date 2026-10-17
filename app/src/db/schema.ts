@@ -591,6 +591,27 @@ export const hedgeEquityPosts = pgTable(
   ],
 );
 
+export const poolHedgeEvents = pgTable(
+  "pool_hedge_events",
+  {
+    txHash: text("tx_hash").notNull(),
+    logIndex: integer("log_index").notNull(),
+    block: chainBlock().notNull(),
+    ts: at("ts").notNull(),
+    kind: text("kind").notNull(),
+    stock: text("stock").notNull(),
+    side: text("side"),
+    stockAmount: amount("stock_amount"),
+    usdgAmount: amount("usdg_amount"),
+    unitsAfter: amount("units_after"),
+  },
+  (table) => [
+    primaryKey({ name: "pool_hedge_events_pk", columns: [table.txHash, table.logIndex] }),
+    index("pool_hedge_events_stock_ts_idx").on(table.stock, table.ts.desc()),
+    index("pool_hedge_events_block_idx").on(table.block),
+  ],
+);
+
 export const pauseLog = pgTable(
   "pause_log",
   {

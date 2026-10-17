@@ -17,7 +17,7 @@ import { registerSeriesRoutes } from "./routes/series";
 import { registerVolRoutes } from "./routes/vol";
 import { registerUpcomingRoutes } from "./routes/upcoming";
 import { safeErrorSummary } from "../log";
-import { rateLimit } from "./rate-limit";
+import { rateLimit, walletsFromBody } from "./rate-limit";
 import { registerX402 } from "../x402";
 
 export function createApiApp(deps: ApiDependencies) {
@@ -63,6 +63,7 @@ export function createApiApp(deps: ApiDependencies) {
     limit: deps.config.API_RATE_LIMIT_PER_MINUTE === 0 ? 0 : 20,
     windowMs: 60_000,
     clientIpHeader: deps.config.API_CLIENT_IP_HEADER,
+    walletKeys: walletsFromBody(["address"]),
   });
   app.on(["POST", "PUT", "DELETE"], "/v1/upcoming/*", writeLimiter);
   // Quotes and intents are computed from Postgres and change nothing, so they get a roomier limit than signed writes.
@@ -72,6 +73,7 @@ export function createApiApp(deps: ApiDependencies) {
     limit: deps.config.API_RATE_LIMIT_PER_MINUTE === 0 ? 0 : 120,
     windowMs: 60_000,
     clientIpHeader: deps.config.API_CLIENT_IP_HEADER,
+    walletKeys: walletsFromBody(["account", "owner"]),
   });
   app.on(["POST"], ["/v1/quote", "/v1/intent/*"], quoteLimiter);
 
@@ -81,6 +83,7 @@ export function createApiApp(deps: ApiDependencies) {
     limit: deps.config.API_RATE_LIMIT_PER_MINUTE === 0 ? 0 : 10,
     windowMs: 60_000,
     clientIpHeader: deps.config.API_CLIENT_IP_HEADER,
+    walletKeys: walletsFromBody(["address"]),
   }));
 
   if (deps.x402) registerX402(app, deps.x402);

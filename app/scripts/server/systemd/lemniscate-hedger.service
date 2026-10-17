@@ -12,10 +12,10 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=lemniscate
-Group=lemniscate
+User=lem-hedger
+Group=lem-hedger
 WorkingDirectory=/opt/lemniscate/current/app
-Environment=HOME=/var/lib/lemniscate
+Environment=HOME=/var/lib/lemniscate/hedger
 Environment=HEDGER_KEYSTORE=/etc/lemniscate/keys/hedger.json
 Environment=HEDGER_KEYSTORE_PASSWORD_FILE=/etc/lemniscate/keys/hedger.password
 EnvironmentFile=/etc/lemniscate/lemniscate.env
@@ -33,7 +33,10 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/lemniscate
+ReadWritePaths=/var/lib/lemniscate/hedger
+UMask=0077
+PrivateDevices=true
+ProtectProc=invisible
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

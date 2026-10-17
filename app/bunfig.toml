@@ -2,3 +2,9 @@
 # Starts a throwaway local Postgres for the database tests when TEST_DATABASE_URL is not set (and skips them when
 # no Postgres binaries are found).
 preload = ["./src/testing/preload.ts"]
+
+[install]
+# DEPS-2: never install a release younger than 7 days (seconds). A hijacked or yanked package is usually caught in that window.
+minimumReleaseAge = 604800
+# DEPS-1: new dependencies are saved with an exact version.
+exact = true

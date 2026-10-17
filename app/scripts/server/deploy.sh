@@ -16,7 +16,8 @@
 #      new /opt/lemniscate/releases/<time>-<sha>;
 #   2. checks /etc/lemniscate/lemniscate.env: no CHANGE_ME left, NETWORK=mainnet and CHAIN_ID=4663, the RPC answers chain
 #      id 4663, the oracle address matches 4663.json, no raw key in any env file, and every keystore / password file in
-#      /etc/lemniscate/keys is readable by the lemniscate user (only tested for access, never read);
+#      /etc/lemniscate/keys is readable by the one service user that signs with it and by no other service user (only
+#      tested for access, never read);
 #   3. refreshes the systemd units, runs bun install --frozen-lockfile as lemniscate, builds the vol-engine virtualenv;
 #   4. points /opt/lemniscate/current at the release and runs the migrations (lemniscate-migrate.service); if they fail,
 #      the link goes back to the previous release and nothing is restarted;
@@ -205,17 +206,31 @@ main() {
   have="$(envval VOL_ORACLE_ADDRESS)"
   [[ -z "$want" || "$(lower "$want")" == "$(lower "$have")" ]] || die "VOL_ORACLE_ADDRESS in lemniscate.env is $have but 4663.json says volOracle = $want"
 
+  # One Unix user per service (PRIV-5): make sure the users, state dirs and env files exist and each keystore belongs to the
+  # one service that signs with it (a server provisioned before this change gets them here).
+  bash "$R/app/scripts/server/provision.sh" --service-users
   # Keystores: the three required roles, then every file in the folder must be a readable pair.
-  local role
+  local role owner other
   for role in keeper hedger vol-signer; do
     [[ -e "$KEYS/$role.json" && -e "$KEYS/$role.password" ]] || die "$KEYS/$role.json and $role.password are missing (copy the $role keystore and password file in)"
   done
   for f in "$KEYS"/*.json; do
     [[ -e "$f" ]] || continue
     role="$(basename "$f" .json)"
-    # Access test only: the files are never read or printed here.
-    runuser -u lemniscate -- test -r "$f" && runuser -u lemniscate -- test -r "$KEYS/$role.password" \
-      || die "$KEYS/$role.json or $role.password is not readable by the lemniscate user: chown root:lemniscate, chmod 0440"
+    case "$role" in
+      keeper) owner=keeper ;;
+      hedger) owner=hedger ;;
+      vol-signer | vol-sender) owner=vol-engine ;;
+      paymaster-signer | x402-settler) owner=api ;;
+      *) die "$f is not a known keystore role (keeper, hedger, vol-signer, paymaster-signer, x402-settler)" ;;
+    esac
+    # Access test only: the files are never read or printed here. Only the owning service's user may open them.
+    runuser -u "lem-$owner" -- test -r "$f" && runuser -u "lem-$owner" -- test -r "$KEYS/$role.password" \
+      || die "$KEYS/$role.json or $role.password is not readable by lem-$owner: run provision.sh --service-users"
+    for other in keeper hedger vol-engine api; do
+      [[ "$other" == "$owner" ]] && continue
+      if runuser -u "lem-$other" -- test -r "$f" 2>/dev/null; then die "$f is readable by lem-$other, which does not sign with it: run provision.sh --service-users"; fi
+    done
   done
   # Paymaster: address and keystore go together.
   if [[ -e "$KEYS/paymaster-signer.json" && -z "$(envval PAYMASTER_ADDRESS)" ]]; then die "paymaster-signer keystore exists but PAYMASTER_ADDRESS is empty"; fi
@@ -236,12 +251,14 @@ main() {
   bash "$R/app/scripts/server/provision.sh" --units-only
   printf '%s\n' "$sha" >"$R/REVISION"
   chown -R lemniscate:lemniscate "$R"
+  # The service users (not the owner of the files) run the code: readable and traversable by them, writable by nobody else.
+  chmod -R go-w,a+rX "$R"
   log "bun install --frozen-lockfile"
   (cd "$R/app" && runuser -u lemniscate -- env HOME=/var/lib/lemniscate PATH=/usr/local/bin:/usr/bin:/bin \
     bun install --frozen-lockfile --production) || die "bun install failed; /opt/lemniscate/current is unchanged"
   log "key preflight: every keystore unlocks, addresses are distinct (addresses only are printed)"
-  (cd "$R/app" && runuser -u lemniscate -- env HOME=/var/lib/lemniscate PATH=/usr/local/bin:/usr/bin:/bin \
-    bun src/bin/check-keys.ts "$KEYS") || die "key preflight failed (see above); /opt/lemniscate/current is unchanged"
+  # Runs as root: it must open every keystore to compare addresses, and no service user may open them all.
+  (cd "$R/app" && env HOME=/root PATH=/usr/local/bin:/usr/bin:/bin bun src/bin/check-keys.ts "$KEYS") || die "key preflight failed (see above); /opt/lemniscate/current is unchanged"
   log "vol-engine virtualenv"
   (cd "$R/vol-engine" && runuser -u lemniscate -- env HOME=/var/lib/lemniscate PATH=/usr/local/bin:/usr/bin:/bin \
     bash -c 'python3 -m venv .venv && ./.venv/bin/pip install --quiet --no-cache-dir .') \

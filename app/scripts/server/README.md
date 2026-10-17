@@ -22,9 +22,9 @@ for HTTPS. Nothing here is run by the test suites; `bash -n` and shellcheck are 
 | `/opt/lemniscate/current` | Link to the live release; every unit runs from here |
 | `/etc/lemniscate/lemniscate.env` | Settings for every service (root, 0600) |
 | `/etc/lemniscate/db.env` | `DATABASE_URL` and `POSTGRES_PASSWORD` with the random database password (root, 0600) |
-| `/etc/lemniscate/<service>.env` | Optional, overrides values for one service (for example `keeper.env`) |
+| `/etc/lemniscate/<service>.env` | One per service (root, 0600), overrides values for that service only (for example `keeper.env`) |
 | `/etc/lemniscate/keys/` | The keystores (`<role>.json`) and their password files (`<role>.password`), copied in by the owner |
-| `/var/lib/lemniscate` | Home of the service user |
+| `/var/lib/lemniscate/<service>` | Home and only writable dir of that service's user (0700) |
 | `/var/backups/lemniscate` | Database dumps |
 
 Services (only 22, 80 and 443 are open to the internet):
@@ -79,8 +79,10 @@ The owner wallet never goes on a server. Local development can still use `KEEPER
    vol-signer.json      vol-signer.password
    paymaster-signer.json  paymaster-signer.password     (only if sponsoring gas; also set PAYMASTER_ADDRESS)
 
-   chown root:lemniscate /etc/lemniscate/keys/* && chmod 0440 /etc/lemniscate/keys/*
+   bash /root/lemniscate-server/provision.sh --service-users
    ```
+
+   That gives each file to the one service that signs with it (`keeper` to `lem-keeper`, `hedger` to `lem-hedger`, `vol-signer` to `lem-vol-engine`, `paymaster-signer` and `x402-settler` to `lem-api`), group-readable only by that user, mode 0440. `deploy.sh` runs it again and refuses to continue if another service user can open a keystore.
 6. **Deployment file.** `deploy.sh` ships `app/deployments/4663.json` (point `LEMNISCATE_DEPLOYMENTS_SRC` at another folder if it lives elsewhere). It refuses a file that is not chain 4663 `mainnet` or has a `forkProof`.
 7. **Deploy.**
 
@@ -88,7 +90,7 @@ The owner wallet never goes on a server. Local development can still use `KEEPER
    app/scripts/server/deploy.sh <server>
    ```
 
-   It refuses to start anything while a `CHANGE_ME` is left, if the RPC does not answer chain id 4663, if `4663.json` and `lemniscate.env` disagree on the oracle address, if a raw key is in an env file, or if the service user cannot read a keystore or password file. Then it installs, migrates, and restarts the services one by one (indexer, api, keeper, hedger, vol-engine, mcp if enabled), checking each before the next. Exit code 0 means every service is healthy. If one is not, the link goes back to the previous release, every service is restarted on it, and the exit code is 1. Only committed code is shipped (`--ref <commit|tag>` for another one). Add `LEMNISCATE_PUBLIC_API_URL=https://api.<your-domain>` to also check from outside once DNS and the certificate are in place.
+   It refuses to start anything while a `CHANGE_ME` is left, if the RPC does not answer chain id 4663, if `4663.json` and `lemniscate.env` disagree on the oracle address, if a raw key is in an env file, or if the service that signs with a keystore cannot read it (or another service can). Then it installs, migrates, and restarts the services one by one (indexer, api, keeper, hedger, vol-engine, mcp if enabled), checking each before the next. Exit code 0 means every service is healthy. If one is not, the link goes back to the previous release, every service is restarted on it, and the exit code is 1. Only committed code is shipped (`--ref <commit|tag>` for another one). Add `LEMNISCATE_PUBLIC_API_URL=https://api.<your-domain>` to also check from outside once DNS and the certificate are in place.
 8. **Every later release:** step 7 again. `deploy.sh --check <server>` re-runs the checks without changing anything.
 
 ## Day to day
@@ -123,7 +125,7 @@ The API takes the client address from `X-Forwarded-For` (`API_CLIENT_IP_HEADER`)
 
 ## What provision.sh sets up
 
-- A `lemniscate` system user (no login shell) that every service runs as, with a read-only view of the system (`ProtectSystem=strict`) and write access only to `/var/lib/lemniscate`.
+- One system user per service (no login shell): `lem-api`, `lem-indexer`, `lem-keeper`, `lem-hedger`, `lem-vol-engine`, `lem-mcp`. Each has a read-only view of the system (`ProtectSystem=strict`), write access only to its own `/var/lib/lemniscate/<service>`, its own env file, and (for the signers) only its own keystore. A flaw in one service cannot read another's key. The `lemniscate` user owns the releases and runs the migrations and nothing else. All services still share one Postgres role (`db.env`); a separate role per service is a later hardening step.
 - Postgres from Ubuntu (its current major version) plus `timescaledb-2-postgresql-<major>` from Timescale's apt repository (falls back to the `noble` packages if the release is not published yet; set `TIMESCALE_CODENAME` to override), listening on localhost only, with a `lemniscate` role and the `lemniscate_mainnet` database that has the extension.
 - ufw: inbound 22/tcp, 80/tcp and 443 only. fail2ban on SSH. SSH password logins off when root has an authorized key. `hidepid=2` on `/proc`.
 - Unattended security upgrades, a 2 GB swap file when there is none, NTP on, journald capped at 1 GB / 30 days.

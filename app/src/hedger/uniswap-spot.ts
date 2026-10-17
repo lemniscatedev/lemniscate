@@ -1,6 +1,6 @@
-import { encodeFunctionData, parseAbi, type Address } from "viem";
+import { encodeFunctionData, parseAbi, parseEventLogs, type Address } from "viem";
 import { Erc20Abi } from "../abi/Erc20";
-import { UniswapV3HedgeAdapterAbi } from "../abi/UniswapV3HedgeAdapter";
+import { PoolAbi } from "../abi/Pool";
 import type { ServiceClients } from "../chain/clients";
 import type { KeeperTransaction, TransactionResult } from "../keeper/tx";
 import { abs, STOCK_DECIMALS, USDG_DECIMALS, WAD, type HedgeFill, type IHedgeVenue } from "./types";
@@ -46,49 +46,58 @@ export function meanTick(cumulativeBefore: bigint, cumulativeNow: bigint, second
   return Number(tick);
 }
 
-/** The slippage floor: expected output at the TWAP, less the allowed slippage. Buy: USDG in, stock out. Sell: stock in. */
-export function minOutFor(buy: boolean, amountIn: bigint, twapPx: bigint, slippageBps: number): bigint {
-  const expected = buy ? (amountIn * WAD) / twapPx : (amountIn * twapPx) / WAD;
-  return (expected * BigInt(10_000 - slippageBps)) / 10_000n;
-}
-
 export interface SpotRoute { pool: Address; fee: number }
 
-/** Everything the venue needs from the chain; the real one is {@link createChainSpotPort}, tests use a fake. */
-export interface SpotChainPort {
+/** The slippage limit handed to `pool.rebalance` (decision 19). `rebalance(stock, targetUnits, minOutOrMaxIn)` reads the
+ * last argument as a CEILING on the USDG spent when buying and a FLOOR on the USDG received when selling. Both are
+ * priced at the TWAP and widened by the allowed slippage; the pool applies its own, stricter, TWAP floor on top. */
+export function limitFor(buy: boolean, stockUnits: bigint, twapPx: bigint, slippageBps: number): bigint {
+  const value = (stockUnits * twapPx) / WAD;
+  return buy ? (((value * BigInt(10_000 + slippageBps)) / 10_000n) + 1n) : (value * BigInt(10_000 - slippageBps)) / 10_000n;
+}
+
+/** What `pool.rebalance` did, read back from the chain. */
+export interface RebalanceOutcome {
+  hash: string;
+  /** Stock units the pool holds after the call (`hedgeUnits`). */
+  unitsAfter: bigint;
+  /** USDG raw moved by the swap (spent when buying, received when selling), from the Rebalanced event; 0 if absent. */
+  usdgMoved: bigint;
+}
+
+/** Everything the venue needs from the chain; the real one is {@link createChainPoolPort}, tests use a fake.
+ * The hedger wallet holds gas only: no balance or allowance of the hedger wallet is ever read or used. */
+export interface PoolHedgePort {
   prices(stock: Address): Promise<PoolPrices>;
-  balance(token: Address): Promise<bigint>;
-  allowance(token: Address): Promise<bigint>;
-  approve(token: Address, amount: bigint): Promise<void>;
-  swap(params: { tokenIn: Address; tokenOut: Address; fee: number; amountIn: bigint; minOut: bigint }): Promise<{ hash: string }>;
-  fee(stock: Address): number;
+  /** Stock units the Writer Pool holds as hedge (`pool.hedgeUnits`). */
+  hedgeUnits(stock: Address): Promise<bigint>;
+  /** USDG raw the pool holds (an upper bound on what a buy can spend). */
+  poolCash(): Promise<bigint>;
+  rebalance(params: { stock: Address; targetUnits: bigint; limit: bigint }): Promise<RebalanceOutcome>;
   healthy(): Promise<boolean>;
 }
 
-export interface SpotVenueOptions {
-  usdg: Address;
-  stocks: Address[];
+export interface PoolVenueOptions {
   maxLiquidityBps: number;
 }
 
-/** R3 + R7. Spot hedging through the on-chain adapter: exact-amount approvals, TWAP-floored minOut, per-trade cap as a
- * share of in-range liquidity. Spot cannot be short: sells are clamped to the held balance. */
-export class UniswapV3SpotVenue implements IHedgeVenue {
-  readonly name = "uniswap-v3-spot";
+/** Decision 19 + R3. Spot hedging held BY THE WRITER POOL: this venue only computes a target and calls
+ * `pool.rebalance`. It never holds, approves or moves funds, and reports no equity (the pool values spot on chain
+ * inside NAV). Per-trade cap as a share of in-range liquidity; spot cannot be short, so targets never go below zero. */
+export class PoolSpotVenue implements IHedgeVenue {
+  readonly name = "pool-spot";
   readonly canShort = false;
-  constructor(private readonly port: SpotChainPort, private readonly options: SpotVenueOptions) {}
+  /** Spot is valued on chain inside NAV: never part of the posted (perp) hedge equity. */
+  readonly postsEquity = false;
+  constructor(private readonly port: PoolHedgePort, private readonly options: PoolVenueOptions) {}
 
   netPosition(stock: Address): Promise<bigint> {
-    return this.port.balance(stock);
+    return this.port.hedgeUnits(stock);
   }
 
+  /** Zero by design: pool-held spot is part of NAV on chain, so it is never posted as equity. */
   async equityUsdg(): Promise<bigint> {
-    let total = await this.port.balance(this.options.usdg);
-    for (const stock of this.options.stocks) {
-      const [balance, prices] = await Promise.all([this.port.balance(stock), this.port.prices(stock)]);
-      total += (balance * prices.twapPx) / WAD;
-    }
-    return total;
+    return 0n;
   }
 
   healthy(): Promise<boolean> {
@@ -103,11 +112,10 @@ export class UniswapV3SpotVenue implements IHedgeVenue {
     const prices = await this.port.prices(stock);
     const capStock = (this.capUsdg(prices) * WAD) / prices.twapPx;
     if (buy) {
-      const cash = await this.port.balance(this.options.usdg);
-      const affordable = (cash * WAD) / prices.twapPx;
+      const affordable = ((await this.port.poolCash()) * WAD) / prices.twapPx;
       return affordable < capStock ? affordable : capStock;
     }
-    const held = await this.port.balance(stock);
+    const held = await this.port.hedgeUnits(stock);
     return held < capStock ? held : capStock;
   }
 
@@ -121,42 +129,30 @@ export class UniswapV3SpotVenue implements IHedgeVenue {
     const wanted = abs(deltaUnits);
     const stockAmount = wanted < room ? wanted : room;
     if (stockAmount === 0n) return { ref: "", filled: 0n, px: 0n };
-    const tokenIn = buy ? this.options.usdg : stock;
-    const tokenOut = buy ? stock : this.options.usdg;
-    const amountIn = buy ? (stockAmount * prices.twapPx + WAD - 1n) / WAD : stockAmount;
-    if (amountIn === 0n) return { ref: "", filled: 0n, px: 0n };
-    const minOut = minOutFor(buy, amountIn, prices.twapPx, maxSlippageBps);
-    const beforeOut = await this.port.balance(tokenOut);
-    // R7: exactly amountIn, no standing allowance. The adapter pulls amountIn and resets the router approval itself.
-    await this.port.approve(tokenIn, amountIn);
-    let hash: string;
-    try {
-      ({ hash } = await this.port.swap({ tokenIn, tokenOut, fee: this.port.fee(stock), amountIn, minOut }));
-    } finally {
-      if ((await this.port.allowance(tokenIn)) !== 0n) await this.port.approve(tokenIn, 0n);
-    }
-    const out = (await this.port.balance(tokenOut)) - beforeOut;
-    if (out <= 0n) throw new Error(`swap ${hash} returned no output`);
-    const stockMoved = buy ? out : amountIn;
-    const usdgMoved = buy ? amountIn : out;
-    return { ref: hash, filled: buy ? stockMoved : -stockMoved, px: (usdgMoved * WAD) / stockMoved };
+    const before = await this.port.hedgeUnits(stock);
+    const targetUnits = buy ? before + stockAmount : before - stockAmount;
+    const limit = limitFor(buy, stockAmount, prices.twapPx, maxSlippageBps);
+    const outcome = await this.port.rebalance({ stock, targetUnits, limit });
+    const moved = outcome.unitsAfter - before;
+    if (moved === 0n) throw new Error(`rebalance ${outcome.hash} moved no units`);
+    const stockMoved = abs(moved);
+    const px = outcome.usdgMoved > 0n ? (outcome.usdgMoved * WAD) / stockMoved : prices.twapPx;
+    return { ref: outcome.hash, filled: moved, px };
   }
 }
 
-export interface ChainSpotConfig {
+export interface ChainPoolConfig {
   clients: ServiceClients;
   submit: (tx: KeeperTransaction) => Promise<TransactionResult>;
-  /** The hedger wallet (holds and swaps the tokens). */
-  hedger: Address;
-  adapter: Address;
+  pool: Address;
   usdg: Address;
   routes: ReadonlyMap<Address, SpotRoute>;
   twapSeconds: number;
 }
 
-/** The viem implementation of {@link SpotChainPort}. Swaps and approvals go through the transaction queue. */
-export function createChainSpotPort(config: ChainSpotConfig): SpotChainPort {
-  const { clients, submit, hedger, adapter, usdg, routes, twapSeconds } = config;
+/** The viem implementation of {@link PoolHedgePort}. The only transaction it ever sends is `pool.rebalance`. */
+export function createChainPoolPort(config: ChainPoolConfig): PoolHedgePort {
+  const { clients, submit, pool, usdg, routes, twapSeconds } = config;
   const stateClient = clients.stateClient;
   const route = (stock: Address): SpotRoute => {
     const found = routes.get(stock.toLowerCase() as Address);
@@ -164,20 +160,23 @@ export function createChainSpotPort(config: ChainSpotConfig): SpotChainPort {
     return found;
   };
   const ordering = new Map<string, boolean>();
+  const hedgeUnits = (stock: Address) =>
+    stateClient.readContract({ address: pool, abi: PoolAbi, functionName: "hedgeUnits", args: [stock] }) as Promise<bigint>;
   return {
-    fee: (stock) => route(stock).fee,
+    hedgeUnits,
+    poolCash: () => stateClient.readContract({ address: usdg, abi: Erc20Abi, functionName: "balanceOf", args: [pool] }) as Promise<bigint>,
     async prices(stock) {
-      const { pool } = route(stock);
-      const key = pool.toLowerCase();
+      const { pool: uniPool } = route(stock);
+      const key = uniPool.toLowerCase();
       if (!ordering.has(key)) {
-        const token0 = await stateClient.readContract({ address: pool, abi: poolAbi, functionName: "token0" });
+        const token0 = await stateClient.readContract({ address: uniPool, abi: poolAbi, functionName: "token0" });
         ordering.set(key, token0.toLowerCase() === stock.toLowerCase());
       }
       const stockIsToken0 = ordering.get(key)!;
       const [slot, liquidity, observed] = await Promise.all([
-        stateClient.readContract({ address: pool, abi: poolAbi, functionName: "slot0" }),
-        stateClient.readContract({ address: pool, abi: poolAbi, functionName: "liquidity" }),
-        stateClient.readContract({ address: pool, abi: poolAbi, functionName: "observe", args: [[twapSeconds, 0]] }),
+        stateClient.readContract({ address: uniPool, abi: poolAbi, functionName: "slot0" }),
+        stateClient.readContract({ address: uniPool, abi: poolAbi, functionName: "liquidity" }),
+        stateClient.readContract({ address: uniPool, abi: poolAbi, functionName: "observe", args: [[twapSeconds, 0]] }),
       ]);
       const cumulatives = observed[0];
       const twapTick = meanTick(cumulatives[0]!, cumulatives[1]!, twapSeconds);
@@ -187,21 +186,18 @@ export function createChainSpotPort(config: ChainSpotConfig): SpotChainPort {
         depthUsdg: depthUsdgFor(liquidity, slot[0], stockIsToken0),
       };
     },
-    balance: (token) => stateClient.readContract({ address: token, abi: Erc20Abi, functionName: "balanceOf", args: [hedger] }) as Promise<bigint>,
-    allowance: (token) => stateClient.readContract({ address: token, abi: Erc20Abi, functionName: "allowance", args: [hedger, adapter] }) as Promise<bigint>,
-    async approve(token, amount) {
-      await submit({ label: "hedger:approve", to: token, data: encodeFunctionData({ abi: Erc20Abi, functionName: "approve", args: [adapter, amount] }) });
-    },
-    async swap({ tokenIn, tokenOut, fee, amountIn, minOut }) {
+    async rebalance({ stock, targetUnits, limit }) {
       const result = await submit({
-        label: "hedger:swap", to: adapter,
-        data: encodeFunctionData({ abi: UniswapV3HedgeAdapterAbi, functionName: "swapExactIn", args: [tokenIn, tokenOut, fee, amountIn, minOut, hedger] }),
+        label: "hedger:rebalance", to: pool,
+        data: encodeFunctionData({ abi: PoolAbi, functionName: "rebalance", args: [stock, targetUnits, limit] }),
       });
-      if (result.simulated || !result.hash) throw new Error("swap was only simulated");
-      return { hash: result.hash };
+      if (result.simulated || !result.hash) throw new Error("rebalance was only simulated");
+      const events = parseEventLogs({ abi: PoolAbi, eventName: "Rebalanced", logs: result.receipt?.logs ?? [] });
+      const mine = events.find((e) => e.address.toLowerCase() === pool.toLowerCase() && e.args.stock.toLowerCase() === stock.toLowerCase());
+      return { hash: result.hash, unitsAfter: await hedgeUnits(stock), usdgMoved: mine ? (mine.args.buy ? mine.args.amountIn : mine.args.amountOut) : 0n };
     },
     async healthy() {
-      await clients.stateClient.getBlockNumber();
+      await stateClient.getBlockNumber();
       return true;
     },
   };

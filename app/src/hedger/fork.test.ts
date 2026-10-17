@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createPublicClient, http, type Address } from "viem";
-import { createChainSpotPort, resolveRoutes } from "./index";
+import { createChainPoolPort, resolveRoutes } from "./index";
 
 const FORK_RPC_URL = process.env.FORK_RPC_URL;
 // FORK_STOCK_ADDRESS: the Stock Token to read (for example SPY); its address is not hard coded here.
@@ -18,8 +18,8 @@ suite("Uniswap spot prices on a fork (R3, needs FORK_RPC_URL)", () => {
     const clients = { stateClient } as never;
     const routes = await resolveRoutes(clients, USDG, STOCKS);
     expect(routes.size).toBe(1);
-    const port = createChainSpotPort({
-      clients, hedger: USDG, adapter: USDG, usdg: USDG, routes, twapSeconds: 1800,
+    const port = createChainPoolPort({
+      clients, pool: USDG, usdg: USDG, routes, twapSeconds: 1800,
       submit: async () => { throw new Error("read-only test"); },
     });
     for (const { stock } of STOCKS) {
