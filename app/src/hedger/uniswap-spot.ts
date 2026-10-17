@@ -194,7 +194,10 @@ export function createChainPoolPort(config: ChainPoolConfig): PoolHedgePort {
       if (result.simulated || !result.hash) throw new Error("rebalance was only simulated");
       const events = parseEventLogs({ abi: PoolAbi, eventName: "Rebalanced", logs: result.receipt?.logs ?? [] });
       const mine = events.find((e) => e.address.toLowerCase() === pool.toLowerCase() && e.args.stock.toLowerCase() === stock.toLowerCase());
-      return { hash: result.hash, unitsAfter: await hedgeUnits(stock), usdgMoved: mine ? (mine.args.buy ? mine.args.amountIn : mine.args.amountOut) : 0n };
+      // The pool's own Rebalanced event is authoritative; a state read right after the transaction can still answer
+      // from before it (load-balanced RPC), which made a real trade look like "moved no units".
+      const unitsAfter = mine ? mine.args.unitsAfter : await hedgeUnits(stock);
+      return { hash: result.hash, unitsAfter, usdgMoved: mine ? (mine.args.buy ? mine.args.amountIn : mine.args.amountOut) : 0n };
     },
     async healthy() {
       await stateClient.getBlockNumber();

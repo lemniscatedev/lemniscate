@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createPublicKey, generateKeyPairSync, verify } from "node:crypto";
-import { decodeFunctionData, type Address } from "viem";
+import { decodeFunctionData, encodeAbiParameters, encodeEventTopics, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { createLogger } from "../log";
 import { PoolAbi } from "../abi/Pool";
@@ -651,5 +651,28 @@ describe("lane B hedger bounds (review F03/F17/F27, decision 39): reverts back o
     expect(await postHedgeEquityOnce({ ...input, nowSeconds: 2_000_000 + 1800 })).toMatchObject({ posted: false, reason: "halted" });
     expect(posts).toBe(1);
     await expect(postHedgeEquityOnce({ ...input, nowSeconds: 2_000_000 + 3601, post: async () => { throw new Error("rpc down"); } })).rejects.toThrow("rpc down");
+  });
+});
+
+describe("createChainPoolPort.rebalance reads the units from the receipt", () => {
+  // Fork run 2026-10-17: the state client (a load-balanced RPC read) answered hedgeUnits from before the rebalance,
+  // so a trade that moved 4.18 NVDA was reported as "moved no units", the name was flagged unhedged and its buys paused.
+  test("a lagging state read after the transaction does not hide the units the Rebalanced event reports", async () => {
+    const POOL = "0x00000000000000000000000000000000000000aa" as Address;
+    const before = 8_190_000_000_000_000_000n;
+    const after = 4_013_000_000_000_000_000n;
+    const topics = encodeEventTopics({ abi: PoolAbi, eventName: "Rebalanced", args: { stock: NVDA } }) as Hex[];
+    const data = encodeAbiParameters(
+      [{ type: "bool" }, { type: "uint256" }, { type: "uint256" }, { type: "uint256" }],
+      [false, 4_177_000_000_000_000_000n, 895_000_000n, after],
+    );
+    const stateClient = { readContract: async () => before } as never; // still the pre-trade state
+    const port = createChainPoolPort({
+      clients: { stateClient } as never, pool: POOL, usdg: USDG, routes: new Map(), twapSeconds: 300,
+      submit: (async () => ({ simulated: false, hash: "0x01", receipt: { logs: [{ address: POOL, topics, data, blockNumber: 1n, logIndex: 0, transactionHash: "0x01", transactionIndex: 0, blockHash: "0x02", removed: false }] } })) as never,
+    });
+    const outcome = await port.rebalance({ stock: NVDA, targetUnits: after, limit: 0n });
+    expect(outcome.unitsAfter).toBe(after);
+    expect(outcome.usdgMoved).toBe(895_000_000n);
   });
 });
