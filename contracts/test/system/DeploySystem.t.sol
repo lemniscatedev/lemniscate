@@ -443,6 +443,7 @@ contract DeploySystemTest is Test, SystemChecks {
         // Withdrawal claims work while deposits are paused.
         vm.warp(block.timestamp + 72 hours);
         _openSession(d);
+        { (address owner_,,) = pool.ticketOf(ticket); vm.prank(owner_); }
         assertGt(pool.claim(ticket), 0, "claims work while deposits are paused");
     }
 
@@ -657,6 +658,7 @@ contract DeploySystemTest is Test, SystemChecks {
         uint256 ticket = pool.requestWithdraw(shares);
         vm.warp(block.timestamp + 10 minutes);
         _openSession(d);
+        { (address owner_,,) = pool.ticketOf(ticket); vm.prank(owner_); }
         assertGt(pool.claim(ticket), 0, "claim after 10 minutes on testnet");
     }
 

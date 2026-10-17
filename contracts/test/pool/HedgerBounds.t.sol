@@ -26,6 +26,7 @@ contract HedgerBoundsTest is PoolFixture {
 
         vm.prank(hedger);
         try pool.postHedgeEquity(1_000_000 * USDG, uint64(vm.getBlockTimestamp()), bytes32("x")) {} catch {}
+        { (address owner_,,) = pool.ticketOf(ticket); vm.prank(owner_); }
         uint256 paid = pool.claim(ticket);
         assertLe(paid, fair + 1);
         assertGe(usdg.balanceOf(address(pool)), 89_000 * USDG); // Bob's cash is still there

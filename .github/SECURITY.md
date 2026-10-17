@@ -270,7 +270,7 @@ script's `check(address)` asserts the owner (the Safe), signer, immutables, stak
 | VolOracle | `setSigner(address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | WriterPool | `approve(address,uint256)` | holder | n/a (caller's own balance, role or one-time setup) |
 | WriterPool | `checkpoint()` | anyone | none (permissionless) |
-| WriterPool | `claim(uint256)` | anyone (pays the ticket's owner) | none (permissionless) |
+| WriterPool | `claim(uint256)` | anyone (the ticket's owner only; re-queues a ticket left unclaimed past CLAIM_WINDOW) | none (permissionless) |
 | WriterPool | `creditVaultStock(address,uint256)` | contract:vault-registry | vault-registry only |
 | WriterPool | `deposit(uint256,address)` | anyone | none (permissionless) |
 | WriterPool | `grantRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
@@ -359,6 +359,10 @@ script's `check(address)` asserts the owner (the Safe), signer, immutables, stak
   subtracts the most funding can have taken since the name's last full re-mark (book value x elapsed / tau per speed), so a
   deposit just before an accrual does not capture it; what remains is the NAV guard band being built from the greeks at the
   marks (second order, tens of ppm of NAV per keeper interval) (LOW).
+- Withdrawal tickets (review F12(c)): only the ticket's owner can claim it, so nobody else picks the moment of someone's exit.
+  A matured ticket is claimable for `CLAIM_WINDOW` (7 days) after it matured or after its last pro-rata payment; a later claim
+  re-queues it for a fresh 72-hour delay, pays nothing and moves nothing, so the exit moment is never an open-ended option.
+  Within the window the owner still chooses when to claim, at the exit-side NAV bound (LOW).
 - Dust (review F08/F14/F24): every buy costs at least $1 and a partial sell must move and leave at least $1 (a whole-balance sell is
   always allowed); series worth under $1 in total can be retired from the keeper's live list by anyone and accrue only when touched.
 - The off-chain signer and the issuers in items 5 and 6 are trusted parties. We cannot remove those powers; we limit what they can do to Lemniscate state.

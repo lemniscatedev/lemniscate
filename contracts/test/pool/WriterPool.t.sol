@@ -123,6 +123,7 @@ contract WriterPoolTest is PoolFixture {
         assertEq(at, vm.getBlockTimestamp() + 72 hours);
 
         vm.warp(vm.getBlockTimestamp() + 72 hours - 1);
+        { (address owner_,,) = pool.ticketOf(t); vm.prank(owner_); }
         vm.expectRevert(abi.encodeWithSelector(WriterPool.NotClaimable.selector, at));
         pool.claim(t);
 
@@ -130,12 +131,13 @@ contract WriterPoolTest is PoolFixture {
         engine.setLiability(2_000e18);
         vm.warp(vm.getBlockTimestamp() + 1);
         uint256 expected = pool.previewRedeem(sh);
-        vm.prank(carol); // anyone may claim; USDG goes to the owner
+        { (address owner_,,) = pool.ticketOf(t); vm.prank(owner_); }
         uint256 paid = pool.claim(t);
         assertEq(paid, expected);
         assertEq(usdg.balanceOf(alice), paid);
         assertApproxEqRel(paid, 9_000 * USDG, 0.001e18);
         assertEq(pool.queuedShares(), 0);
+        { (address owner_,,) = pool.ticketOf(t); vm.prank(owner_); }
         vm.expectRevert(abi.encodeWithSelector(WriterPool.UnknownTicket.selector, t));
         pool.claim(t);
     }
@@ -165,6 +167,7 @@ contract WriterPoolTest is PoolFixture {
         uint256 t = _request(alice, sh);
         vm.warp(vm.getBlockTimestamp() + 72 hours);
         uint256 expected = pool.previewRedeem(sh);
+        { (address owner_,,) = pool.ticketOf(t); vm.prank(owner_); }
         uint256 paid = pool.claim(t);
         assertEq(paid, expected); // router fills at S: no execution shortfall
         assertLt(pool.hedgeUnits(address(stock)), 150e18);
@@ -186,6 +189,7 @@ contract WriterPoolTest is PoolFixture {
         deal(address(usdg), address(swapRouter), 0);
         uint256 paidFirst;
         for (uint256 i; i < 3; ++i) {
+            { (address owner_,,) = pool.ticketOf(t[i]); vm.prank(owner_); }
             paidFirst += pool.claim(t[i]);
             (, uint256 left,) = pool.ticketOf(t[i]);
             assertGt(left, 0); // never lost: the rest of each ticket stays claimable
@@ -202,7 +206,10 @@ contract WriterPoolTest is PoolFixture {
             vm.warp(vm.getBlockTimestamp() + 1 days);
             for (uint256 i; i < 3; ++i) {
                 (, uint256 left,) = pool.ticketOf(t[i]);
-                if (left != 0) paidLater += pool.claim(t[i]);
+                if (left != 0) {
+                    { (address owner_,,) = pool.ticketOf(t[i]); vm.prank(owner_); }
+                    paidLater += pool.claim(t[i]);
+                }
             }
         }
         for (uint256 i; i < 3; ++i) {
@@ -345,6 +352,7 @@ contract WriterPoolTest is PoolFixture {
         vm.warp(vm.getBlockTimestamp() + 1 days);
         uint256 t = _request(alice, pool.balanceOf(alice));
         vm.warp(vm.getBlockTimestamp() + 72 hours);
+        { (address owner_,,) = pool.ticketOf(t); vm.prank(owner_); }
         pool.claim(t);
         assertLt(reserve.balance(), r0);
         assertApproxEqAbs(r0 - reserve.balance(), 1_500 * USDG, 2 * USDG);
@@ -473,6 +481,7 @@ contract WriterPoolTest is PoolFixture {
         vm.warp(vm.getBlockTimestamp() + 1 days);
         uint256 t = _request(alice, sh);
         vm.warp(vm.getBlockTimestamp() + 72 hours);
+        { (address owner_,,) = pool.ticketOf(t); vm.prank(owner_); }
         uint256 paid = pool.claim(t);
         assertLe(paid, 10_000 * USDG);
     }
@@ -510,6 +519,7 @@ contract WriterPoolTest is PoolFixture {
         vm.warp(vm.getBlockTimestamp() + 1 days);
         uint256 t = _request(alice, sh);
         vm.warp(vm.getBlockTimestamp() + 72 hours);
+        { (address owner_,,) = pool.ticketOf(t); vm.prank(owner_); }
         assertGt(pool.claim(t), 0);
 
         pool.setDepositsPaused(false);

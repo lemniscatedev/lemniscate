@@ -67,6 +67,7 @@ contract WriterPool is
     error UseWithdrawalQueue();
     error UnknownTicket(uint256 ticket);
     error NotClaimable(uint64 claimableAt);
+    error NotTicketOwner(address owner);
     error NavNotPositive();
     error NothingClaimable();
     error BadAsOf(uint64 asOf);
@@ -95,6 +96,9 @@ contract WriterPool is
     /// @notice Hard bounds of QUEUE_DELAY and of the deposit lock (`lockSeconds`).
     uint256 public constant MIN_QUEUE_DELAY = 5 minutes;
     uint256 public constant MAX_QUEUE_DELAY = 30 days;
+    /// @notice Review F12(c): a matured ticket is claimable for this long after it matured (or after its last pro-rata
+    /// payment); later, a claim re-queues it for a fresh QUEUE_DELAY instead of paying.
+    uint256 public constant CLAIM_WINDOW = 7 days;
     uint256 public constant MIN_LOCK_SECONDS = 1 minutes;
     /// @dev Perp equity goes stale (out of NAV) this long after its asOf; the hourly move bound lives in PoolHedging.
     uint256 private constant HEDGE_STALE_AFTER = 2 hours;
@@ -285,7 +289,9 @@ contract WriterPool is
     }
 
     /// @inheritdoc IPool
-    /// @dev Anyone may claim a matured ticket; USDG always goes to the ticket owner. Paid at the NAV guard's low edge.
+    /// @dev Only the ticket owner may claim (review F12(c): nobody else picks the moment of someone's exit). Paid at the
+    /// NAV guard's low edge. A ticket not claimed within CLAIM_WINDOW of maturing (or of its last pro-rata payment) is
+    /// not an open option on the exit moment: the claim re-queues it for a fresh QUEUE_DELAY, pays 0 and moves nothing.
     /// When liquid assets (cash, reserve share, hedges at their slippage floor) cannot pay every queued share, each
     /// claim gets its part of the day's pro-rata pot and the rest of the ticket stays claimable, at most once per ticket
     /// per UTC day (F16, PoolLayers.settleClaim). A forced hedge sale's execution shortfall is charged to the claim.
@@ -294,6 +300,14 @@ contract WriterPool is
         uint256 shares = t.shares;
         if (shares == 0) revert UnknownTicket(ticket);
         if (block.timestamp < t.claimableAt) revert NotClaimable(t.claimableAt);
+        address owner = t.owner;
+        if (_msgSender() != owner) revert NotTicketOwner(owner);
+        if (block.timestamp > Math.max(t.claimableAt, uint256(t.partialDay) * 1 days) + CLAIM_WINDOW) {
+            uint64 at = uint64(block.timestamp + QUEUE_DELAY);
+            t.claimableAt = at;
+            emit WithdrawalQueued(owner, ticket, shares, at);
+            return 0;
+        }
 
         PoolHedging.Valuation memory v = _val(2, true);
         if (v.navLow <= 0) revert NavNotPositive();
@@ -319,7 +333,6 @@ contract WriterPool is
             })
         );
 
-        address owner = t.owner;
         queuedShares = queued - burnShares;
         _burn(address(this), burnShares);
         usdg.safeTransfer(owner, paid);

@@ -253,6 +253,7 @@ contract SystemGasTest is SystemFixture {
         uint256 ticket = pool.requestWithdraw(shares / 100);
         skip(72 hours);
         _refresh();
+        { (address owner_,,) = pool.ticketOf(ticket); vm.prank(owner_); }
         pool.claim(ticket);
         uint256 claimGas = vm.lastCallGas().gasTotalUsed;
         (uint256 navGas,) = probe.nav(engine, address(pool));

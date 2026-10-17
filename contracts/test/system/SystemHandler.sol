@@ -227,6 +227,7 @@ contract SystemHandler is Test {
 
     function claim(uint256 t) external {
         if (tickets.length == 0) return;
+        { (address owner_,,) = pool.ticketOf(tickets[t % tickets.length]); vm.prank(owner_); }
         try pool.claim(tickets[t % tickets.length]) {
             ++claims;
         } catch (bytes memory err) {

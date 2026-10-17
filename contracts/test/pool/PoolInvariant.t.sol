@@ -99,6 +99,7 @@ contract PoolHandler is Test {
         if (tickets.length == 0) return;
         (,, uint64 at) = pool.ticketOf(tickets[idx % tickets.length]);
         if (at > vm.getBlockTimestamp()) vm.warp(at);
+        { (address owner_,,) = pool.ticketOf(tickets[idx % tickets.length]); vm.prank(owner_); }
         try pool.claim(tickets[idx % tickets.length]) {
             ++ok["claim"];
         } catch {}

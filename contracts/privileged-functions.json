@@ -1035,7 +1035,7 @@
       "function": "claim(uint256)",
       "gate": "anyone",
       "delay": "none (permissionless)",
-      "note": "pays the ticket's owner"
+      "note": "the ticket's owner only; re-queues a ticket left unclaimed past CLAIM_WINDOW"
     },
     "WriterPool.creditVaultStock(address,uint256)": {
       "contract": "WriterPool",

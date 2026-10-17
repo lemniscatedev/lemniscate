@@ -69,7 +69,7 @@ contract LmnsSandwichTest is PoolFixture {
         assertEq(usdg.balanceOf(address(burn)), 10_000 * USDG);
     }
 
-    /// Spot pushed 2.9% below the TWAP, then a stranger triggers a slash through claim(): stakers' LMNS must not be
+    /// Spot pushed 2.9% below the TWAP, then the ticket owner triggers a slash through claim(): stakers' LMNS must not be
     /// sold at that price.
     function test_F37_slashNotSandwichable() public {
         vm.warp(vm.getBlockTimestamp() + 1 days + 1);
@@ -79,7 +79,7 @@ contract LmnsSandwichTest is PoolFixture {
         _setLmnsExec(0.971e18);
         _pushSpot(0.971e18);
         uint256 lmnsBefore = staking.totalAssets() + _locked();
-        vm.prank(attacker);
+        { (address owner_,,) = pool.ticketOf(ticket); vm.prank(owner_); }
         try pool.claim(ticket) {} catch {}
         assertEq(staking.totalAssets() + _locked(), lmnsBefore, "stake sold at a pushed price");
     }
@@ -120,7 +120,7 @@ contract LmnsSandwichTest is PoolFixture {
         engine.setLiability(1_500e18);
         _pushSpot(1e18);
         uint256 lmnsBefore = staking.totalAssets() + _locked();
-        vm.prank(bob);
+        { (address owner_,,) = pool.ticketOf(ticket); vm.prank(owner_); }
         pool.claim(ticket);
         assertLt(staking.totalAssets() + _locked(), lmnsBefore, "slash ran at a normal spot");
     }

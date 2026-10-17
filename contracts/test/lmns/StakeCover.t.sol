@@ -65,12 +65,12 @@ contract StakeCoverTest is PoolFixture {
         engine.setLiability(1_500e18); // reserve 1,000 + 500 from the stake
         swapRouter.setRate(address(lmns), address(usdg), LMNS_FEE, 1); // the slash cannot clear its floor
         uint256 before = _realisablePerShare();
-        vm.prank(bob);
+        { (address owner_,,) = pool.ticketOf(ticket); vm.prank(owner_); }
         pool.claim(ticket);
         assertGe(_realisablePerShare() + 1e9, before, "remaining LPs paid for an unrealised slash");
     }
 
-    /// A stranger cannot force a charged claim on the owner (anyone may claim, but not when the claim is charged).
+    /// A stranger cannot force a charged claim on the owner (only the owner may claim, review F12(c)).
     function test_F18_strangerCannotForceChargedClaim() public {
         vm.warp(vm.getBlockTimestamp() + 1 days + 1);
         uint256 ticket = _request(bob, pool.balanceOf(bob));
@@ -78,12 +78,12 @@ contract StakeCoverTest is PoolFixture {
         engine.setLiability(1_500e18);
         swapRouter.setRate(address(lmns), address(usdg), LMNS_FEE, 1);
         vm.prank(makeAddr("stranger"));
-        vm.expectRevert(abi.encodeWithSelector(PoolLayers.ClaimNeedsOwner.selector, bob));
+        vm.expectRevert(abi.encodeWithSignature("NotTicketOwner(address)", bob));
         pool.claim(ticket);
-        // With the route healthy the slash clears, nothing is charged and anyone may claim.
+        // With the route healthy the slash clears and nothing is charged.
         swapRouter.setRate(address(lmns), address(usdg), LMNS_FEE, 1e6);
         uint256 preview = pool.previewRedeem(pool.balanceOf(address(pool)));
-        vm.prank(makeAddr("stranger"));
+        { (address owner_,,) = pool.ticketOf(ticket); vm.prank(owner_); }
         uint256 paid = pool.claim(ticket);
         assertApproxEqAbs(paid, preview, 1 * USDG);
     }
@@ -130,6 +130,7 @@ contract StakeCoverTest is PoolFixture {
         lmns.approve(address(staking), 1_000e18);
         staking.stake(1_000e18);
         vm.stopPrank();
+        { (address owner_,,) = pool.ticketOf(ticket); vm.prank(owner_); }
         pool.claim(ticket); // realises Bob's slice of the stake's part of the loss (a slash)
         assertApproxEqRel(staking.stakeOf(late), 1_000e18, 1e12, "late staker paid for an older loss");
     }

@@ -98,6 +98,7 @@ contract PoolFuzzTest is PoolFixture {
         for (uint256 i; i < 3; ++i) {
             (, uint256 left,) = pool.ticketOf(t);
             if (left == 0) break;
+            { (address owner_,,) = pool.ticketOf(t); vm.prank(owner_); }
             try pool.claim(t) returns (uint256 p) {
                 paid += p;
             } catch {
