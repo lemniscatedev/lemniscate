@@ -151,6 +151,12 @@ function modeBanner(){
  if(chainMismatch())return `<div class="dash-demo-banner offline" role="status"><strong>Network mismatch.</strong> The service reports chain ${esc(data.config.chainId)}, this site expects ${esc(CFG.chainId)}. Trading is disabled.</div>`;
  return '';
 }
+// Local fork profile (config.fork.js): a visible badge, and a louder one while the dev wallet is connected.
+function forkBadge(){
+ if(DEMO||Number(CFG.chainId)!==31337)return '';
+ const dev=W.wallet().kind==='dev';
+ return `<span class="dash-fork-label${dev?' dev':''}" title="Local anvil fork of Robinhood Chain (chain 31337). Not a real network.">${dev?'Dev wallet · local fork':'Local fork · chain 31337'}</span>`;
+}
 function walletChip(){
  if(DEMO)return `<span class="dash-account demo"><span>DEMO</span><span>Demo account</span></span>`;
  const w=W.wallet();
@@ -348,7 +354,7 @@ function render(){
  if(disposed)return;
  const gated=region.status!=='allowed';
  const page=region.status==='pending'?'<p class="dash-muted" style="padding:60px 0">Loading…</p>':gated?gate():({overview,trade,positions,shield,pool,agents,activity,settings}[tab]||overview)();
- root.innerHTML=`<main class="lm-ui lm-dashboard" data-mode="${MODE}"><div class="dash-wrap"><header class="dash-header">${brand()}<div class="dash-header-right">${gated?'':sessionPill(selected)}${DEMO?'<span class="dash-demo-label">Demo, not real funds</span>':''}<a class="lm-button ghost small" href="/">Explore Lemniscate ${icons.arrow}</a>${gated?'':walletChip()}</div></header>${gated?'':`<nav class="dash-tabs" aria-label="Workspace navigation">${tabs.map(([key,label])=>`<button class="${tab===key?'active':''}" data-action="tab" data-tab="${key}" aria-current="${tab===key?'page':'false'}">${label}</button>`).join('')}</nav>${modeBanner()}`}<div class="dash-page-entrance">${page}</div><footer class="dash-bottom-line"><span>LEMNISCATE · More time. A clearer view.<br>Options can lose their entire purchase amount.</span><span><a href="/learn/everlasting-options">Understand your option ↗</a> &nbsp;·&nbsp; <a href="/product-terms">Product mechanics ↗</a></span></footer></div>${gated?'':mobileNav()}</main>`;
+ root.innerHTML=`<main class="lm-ui lm-dashboard" data-mode="${MODE}"><div class="dash-wrap"><header class="dash-header">${brand()}<div class="dash-header-right">${gated?'':sessionPill(selected)}${DEMO?'<span class="dash-demo-label">Demo, not real funds</span>':''}${forkBadge()}<a class="lm-button ghost small" href="/">Explore Lemniscate ${icons.arrow}</a>${gated?'':walletChip()}</div></header>${gated?'':`<nav class="dash-tabs" aria-label="Workspace navigation">${tabs.map(([key,label])=>`<button class="${tab===key?'active':''}" data-action="tab" data-tab="${key}" aria-current="${tab===key?'page':'false'}">${label}</button>`).join('')}</nav>${modeBanner()}`}<div class="dash-page-entrance">${page}</div><footer class="dash-bottom-line"><span>LEMNISCATE · More time. A clearer view.<br>Options can lose their entire purchase amount.</span><span><a href="/learn/everlasting-options">Understand your option ↗</a> &nbsp;·&nbsp; <a href="/product-terms">Product mechanics ↗</a></span></footer></div>${gated?'':mobileNav()}</main>`;
 }
 
 // ---------------------------------------------------------------- wallet picker
@@ -356,7 +362,7 @@ async function connect(){
  if(DEMO)return;
  const d=modal('Connect a wallet',`<p>Choose a wallet. Lemniscate never asks for a seed phrase or private key.</p><div class="dash-wallet-list" id="wallet-list"><p class="dash-muted">Looking for browser wallets…</p></div>`);
  d.classList.add('dash-wallet-sheet');
- const list=await W.discoverWallets();
+ const list=await W.discoverWallets(250,CFG);
  const wc=!!CFG.walletConnectProjectId;
  const items=list.map((w,i)=>`<button class="dash-wallet-option" data-wallet="${i}">${w.info.icon&&/^data:image\/(svg\+xml|png|webp);/.test(w.info.icon)?`<img src="${esc(w.info.icon)}" alt="" width="28" height="28">`:`<span class="dash-wallet-glyph">${esc(w.info.name[0]||'W')}</span>`}<span><strong>${esc(w.info.name)}</strong><small>Browser wallet</small></span></button>`).join('');
  const wcItem=`<button class="dash-wallet-option" data-wallet="walletconnect" ${wc?'':'disabled'}><span class="dash-wallet-glyph">WC</span><span><strong>WalletConnect</strong><small>${wc?'Mobile and desktop wallets by QR code':'Not set up on this site yet'}</small></span></button>`;

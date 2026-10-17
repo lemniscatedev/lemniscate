@@ -1,5 +1,6 @@
 // Wallet connection: EIP-6963 browser wallets (always listed) and WalletConnect through Reown AppKit (pinned CDN build,
 // loaded only when chosen and only when a project id is configured). The site never sees keys or seed phrases.
+import {devWalletEntry} from '/chain/devwallet.js?v=10';
 const LAST_KEY='lemniscate.wallet.v1';
 const listeners=new Set();
 const discovered=new Map();
@@ -12,8 +13,9 @@ export function wallet(){return state}
 const remember=v=>{try{v?localStorage.setItem(LAST_KEY,JSON.stringify(v)):localStorage.removeItem(LAST_KEY)}catch{}};
 const recall=()=>{try{return JSON.parse(localStorage.getItem(LAST_KEY))}catch{return null}};
 
-/** Browser wallets announced through EIP-6963, plus a legacy window.ethereum entry when nothing announces itself. */
-export function discoverWallets(waitMs=250){
+/** Browser wallets announced through EIP-6963, plus a legacy window.ethereum entry when nothing announces itself. On the
+ * local fork profile (localhost, chain 31337, devWallet on) the dev wallet is listed first. */
+export function discoverWallets(waitMs=250,config=null){
  return new Promise(resolve=>{
   const onAnnounce=event=>{const d=event.detail;if(d?.info?.uuid&&d.provider)discovered.set(d.info.uuid,d)};
   window.addEventListener('eip6963:announceProvider',onAnnounce);
@@ -22,7 +24,8 @@ export function discoverWallets(waitMs=250){
    window.removeEventListener('eip6963:announceProvider',onAnnounce);
    const list=[...discovered.values()];
    if(!list.length&&window.ethereum)list.push({info:{uuid:'legacy-injected',name:window.ethereum.isMetaMask?'MetaMask':'Browser wallet',icon:'',rdns:'legacy.injected'},provider:window.ethereum});
-   resolve(list);
+   const dev=config?devWalletEntry(config):null;
+   resolve(dev?[dev,...list]:list);
   },waitMs);
  });
 }
@@ -50,7 +53,7 @@ export async function connectInjected(detail,config){
  const accounts=await detail.provider.request({method:'eth_requestAccounts'});
  if(!accounts?.length)throw new Error('The wallet did not share an account.');
  const chainId=await ensureChain(detail.provider,config);
- attach(detail.provider,'injected',detail.info.name,accounts[0],chainId);
+ attach(detail.provider,detail.info.dev?'dev':'injected',detail.info.name,accounts[0],chainId);
  remember({kind:'injected',rdns:detail.info.rdns});
  return state;
 }
@@ -92,11 +95,11 @@ export async function connectWalletConnect(config){
 /** Silent reconnect to the last browser wallet (eth_accounts never prompts). */
 export async function reconnect(config){
  const last=recall();if(!last||last.kind!=='injected')return null;
- const list=await discoverWallets();const detail=list.find(w=>w.info.rdns===last.rdns);if(!detail)return null;
+ const list=await discoverWallets(250,config);const detail=list.find(w=>w.info.rdns===last.rdns);if(!detail)return null;
  const accounts=await detail.provider.request({method:'eth_accounts'}).catch(()=>[]);
  if(!accounts?.length)return null;
  const id=await detail.provider.request({method:'eth_chainId'}).catch(()=>null);
- attach(detail.provider,'injected',detail.info.name,accounts[0],id?parseInt(id,16):null);
+ attach(detail.provider,detail.info.dev?'dev':'injected',detail.info.name,accounts[0],id?parseInt(id,16):null);
  return state;
 }
 
