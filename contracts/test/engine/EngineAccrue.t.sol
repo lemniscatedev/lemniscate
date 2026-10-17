@@ -279,6 +279,33 @@ contract EngineAccrueTest is EngineBase {
         assertTrue(stress, "the stress re-check ran even at the cheapest gas that succeeds");
     }
 
+    /// todo 20c (merge of todo 19 into todo 23's fix): the sell's buyback report to the pool (writer-vault settlement)
+    /// sits in try/catch too. With just enough gas for the rest of the sell, the hook ran out of gas, the catch
+    /// swallowed it and the sell succeeded without settling the vaults' covered slice. The cheapest gas at which a sell
+    /// succeeds must still deliver the buyback report.
+    function test_R20_buybackReportCannotBeSkippedWithTightGas() public {
+        (, uint256 tokens) = _buy(alice, callD, 1_000e18);
+        skip(1);
+        pool.setBuybackGas(3_000_000); // a vault registry settling many covered slices
+        uint256 before = pool.buybackCalls();
+        bytes memory call = abi.encodeCall(engine.sell, (callD, uint128(tokens / 2), 0, uint64(block.timestamp), alice));
+        uint256 lo = 50_000;
+        uint256 hi = 10_000_000;
+        while (hi - lo > 1_000) {
+            uint256 mid = (lo + hi) / 2;
+            uint256 snap = vm.snapshotState();
+            vm.prank(alice);
+            (bool ok,) = address(engine).call{gas: mid}(call);
+            vm.revertToState(snap);
+            if (ok) hi = mid;
+            else lo = mid;
+        }
+        vm.prank(alice);
+        (bool ok2,) = address(engine).call{gas: hi}(call);
+        assertTrue(ok2, "succeeds at the cheapest gas");
+        assertEq(pool.buybackCalls(), before + 1, "the buyback report reached the pool even at the cheapest gas that succeeds");
+    }
+
     function test_R20_priceRecoveryClearsOnNextAccrue() public {
         _buy(alice, callD, 16_000e18);
         skip(1);

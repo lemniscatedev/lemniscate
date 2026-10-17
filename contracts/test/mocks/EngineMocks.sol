@@ -294,8 +294,18 @@ contract MockEnginePool is IPool {
     uint256 public buybackCalls;
     uint256 public buybackTokens;
 
+    /// @dev Gas the onBuyback hook burns (the real pool settles vault coverage there).
+    uint256 public buybackGas;
+
+    function setBuybackGas(uint256 g) external {
+        buybackGas = g;
+    }
+
     function onBuyback(bytes32, uint256 tokens, uint256, uint256, uint256) external {
         if (msg.sender != engine) revert NotEngine();
+        uint256 stop = gasleft() > buybackGas ? gasleft() - buybackGas : 0;
+        uint256 x;
+        while (gasleft() > stop) x = uint256(keccak256(abi.encode(x)));
         ++buybackCalls;
         buybackTokens += tokens;
     }
