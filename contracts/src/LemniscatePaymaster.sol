@@ -19,8 +19,11 @@ interface IPaymasterEntryPoint {
 /// @title LemniscatePaymaster
 /// @notice Verifying paymaster for ERC-4337 EntryPoint v0.7. It pays gas only for user operations that
 /// (1) carry a signature from the sponsoring signer, (2) call nothing but the option engine, the agent router,
-/// or a USDG `approve` whose spender is one of those two, with zero value, and (3) stay inside per-operation,
-/// per-account-per-day and global-per-day gas caps.
+/// or a USDG `approve` whose spender is one of those two, with zero value, (3) stay inside per-operation,
+/// per-account-per-day and global-per-day gas caps, and (4) come from a Kernel account (F26): one this paymaster saw
+/// deployed through the Kernel factory (the sponsor signature covers the initCode, so the server's standard Kernel
+/// setup is what got deployed), or one the owner registered. The call policy reads `execute(bytes32,bytes)` calldata,
+/// which only means what it says on a real Kernel account.
 /// @dev Validation obeys the ERC-7562 storage and opcode rules: no `block.timestamp` (the day bucket comes from the
 /// signed `validUntil`), per-account state is one struct in a mapping keyed by the sender, and the engine, USDG and
 /// router addresses are immutable. The global cap lives in plain storage, so the paymaster must be staked in the
@@ -50,6 +53,11 @@ contract LemniscatePaymaster is Ownable2Step {
     uint256 public constant PAYMASTER_DATA_LENGTH = 77; // validUntil 6 + validAfter 6 + signature 65
     uint256 public constant MAX_VALIDITY_WINDOW = 1 hours;
     uint256 public constant MAX_CALLS = 4;
+    /// @notice F39: hard ceilings of the caps (wei of the gas token), so no setting can switch them off. At the 2026-10
+    /// mainnet gas price (~0.021 gwei) one op costs ~0.00004 ETH; these ceilings are far above any sane setting.
+    uint256 public constant MAX_COST_PER_OP_CEILING = 0.05 ether;
+    uint256 public constant ACCOUNT_DAILY_CAP_CEILING = 0.5 ether;
+    uint256 public constant GLOBAL_DAILY_CAP_CEILING = 10 ether;
     /// @dev Kernel / ERC-7579 `execute(bytes32,bytes)`.
     bytes4 private constant EXECUTE = 0xe9ae5c53;
     bytes4 private constant APPROVE = 0x095ea7b3;
@@ -59,6 +67,8 @@ contract LemniscatePaymaster is Ownable2Step {
     address public immutable USDG;
     /// @dev Zero when no router is deployed yet; then only the engine is a valid target.
     address public immutable AGENT_ROUTER;
+    /// @dev The Kernel factory whose deployments count as Kernel accounts (F26).
+    address public immutable KERNEL_FACTORY;
 
     address public signer;
     bool public paused;
@@ -69,12 +79,16 @@ contract LemniscatePaymaster is Ownable2Step {
 
     Usage public globalUsage;
     mapping(address account => Usage) public accountUsage;
+    /// @notice F26: senders known to be Kernel accounts (deployed through KERNEL_FACTORY in a sponsored operation, or
+    /// registered by the owner). No other sender is sponsored.
+    mapping(address account => bool) public kernelAccount;
 
     event SignerChanged(address indexed signer);
     event LimitsChanged(uint256 maxCostPerOp, uint256 accountDailyCap, uint256 globalDailyCap);
     event PausedChanged(bool paused);
     event Sponsored(address indexed account, uint256 indexed day, uint256 reservedCost);
     event Refunded(address indexed account, uint256 indexed day, uint256 amount);
+    event KernelAccountSet(address indexed account, bool known);
 
     error NotEntryPoint();
     error PausedError();
@@ -89,6 +103,8 @@ contract LemniscatePaymaster is Ownable2Step {
     error MaxCostPerOpExceeded(uint256 maxCost, uint256 cap);
     error AccountDailyCapExceeded(address account, uint256 wouldSpend, uint256 cap);
     error GlobalDailyCapExceeded(uint256 wouldSpend, uint256 cap);
+    error UnknownAccount(address sender);
+    error BadLimits();
 
     constructor(
         address entryPoint,
@@ -97,23 +113,25 @@ contract LemniscatePaymaster is Ownable2Step {
         address engine,
         address usdg,
         address agentRouter,
+        address kernelFactory,
         uint256 maxCostPerOp_,
         uint256 accountDailyCap_,
         uint256 globalDailyCap_
     ) Ownable(owner_) {
-        if (entryPoint == address(0) || signer_ == address(0) || engine == address(0) || usdg == address(0)) {
+        if (
+            entryPoint == address(0) || signer_ == address(0) || engine == address(0) || usdg == address(0)
+                || kernelFactory == address(0)
+        ) {
             revert ZeroAddress();
         }
         ENTRY_POINT = IPaymasterEntryPoint(entryPoint);
         ENGINE = engine;
         USDG = usdg;
         AGENT_ROUTER = agentRouter;
+        KERNEL_FACTORY = kernelFactory;
         signer = signer_;
-        maxCostPerOp = maxCostPerOp_;
-        accountDailyCap = accountDailyCap_;
-        globalDailyCap = globalDailyCap_;
         emit SignerChanged(signer_);
-        emit LimitsChanged(maxCostPerOp_, accountDailyCap_, globalDailyCap_);
+        _setLimits(maxCostPerOp_, accountDailyCap_, globalDailyCap_);
     }
 
     // -----------------------------------------------------------------------------------------------------------
@@ -145,6 +163,7 @@ contract LemniscatePaymaster is Ownable2Step {
         }
 
         _checkCalls(userOp.callData);
+        _checkAccount(userOp);
 
         if (maxCost > maxCostPerOp) revert MaxCostPerOpExceeded(maxCost, maxCostPerOp);
         uint64 day = uint64(validUntil / 1 days);
@@ -159,14 +178,24 @@ contract LemniscatePaymaster is Ownable2Step {
         accountUsage[userOp.sender] = Usage(day, uint192(aSpent + maxCost));
         globalUsage = Usage(day, uint192(gSpent + maxCost));
         emit Sponsored(userOp.sender, day, maxCost);
-        context = abi.encode(userOp.sender, day, maxCost);
+        // F38: gas the EntryPoint charges after postOp's actualGasCost: postOp's own gas (at most its limit) and the
+        // 10% penalty on unused call and postOp gas (at most 10% of both limits). Booked in postOp at the op's fee.
+        uint256 postOpGas = uint128(bytes16(pd[36:52]));
+        uint256 extraGas = postOpGas + (uint128(uint256(userOp.accountGasLimits)) + postOpGas) / 10;
+        context = abi.encode(userOp.sender, day, maxCost, extraGas);
     }
 
-    /// @notice Returns the unused part of the reserved cost to the caps once the real cost is known.
-    function postOp(PostOpMode, bytes calldata context, uint256 actualGasCost, uint256) external {
+    /// @notice Returns the unused part of the reserved cost to the caps once the real cost is known. F38: the cost booked
+    /// is `actualGasCost` plus the most the EntryPoint can add after it (postOp gas and the unused-gas penalty) at the
+    /// op's fee, never more than the reservation, so the caps never under-count what the deposit pays.
+    function postOp(PostOpMode, bytes calldata context, uint256 actualGasCost, uint256 actualUserOpFeePerGas)
+        external
+    {
         if (msg.sender != address(ENTRY_POINT)) revert NotEntryPoint();
-        (address account, uint64 day, uint256 reserved) = abi.decode(context, (address, uint64, uint256));
-        uint256 refund = actualGasCost >= reserved ? 0 : reserved - actualGasCost;
+        (address account, uint64 day, uint256 reserved, uint256 extraGas) =
+            abi.decode(context, (address, uint64, uint256, uint256));
+        uint256 cost = actualGasCost + extraGas * actualUserOpFeePerGas;
+        uint256 refund = cost >= reserved ? 0 : reserved - cost;
         if (refund == 0) return;
         Usage memory a = accountUsage[account];
         if (a.day == day) accountUsage[account].spent = uint192(a.spent > refund ? a.spent - refund : 0);
@@ -230,6 +259,18 @@ contract LemniscatePaymaster is Ownable2Step {
         } else {
             revert UnsupportedCallData(); // delegatecall (0xff) and anything unknown
         }
+    }
+
+    /// @dev F26. A known account passes. Otherwise the operation must deploy the sender through KERNEL_FACTORY (the
+    /// EntryPoint has just done so and checked the address); the sender is then remembered. Storage keyed by the
+    /// sender, so ERC-7562 allows it.
+    function _checkAccount(PackedUserOperation calldata userOp) internal {
+        address sender = userOp.sender;
+        if (kernelAccount[sender]) return;
+        bytes calldata initCode = userOp.initCode;
+        if (initCode.length < 20 || address(bytes20(initCode[0:20])) != KERNEL_FACTORY) revert UnknownAccount(sender);
+        kernelAccount[sender] = true;
+        emit KernelAccountSet(sender, true);
     }
 
     function _isProtocol(address target) internal view returns (bool) {
@@ -298,11 +339,30 @@ contract LemniscatePaymaster is Ownable2Step {
         emit SignerChanged(newSigner);
     }
 
+    /// @notice F39: 0 < maxCostPerOp <= accountDailyCap <= globalDailyCap, each under its hard ceiling.
     function setLimits(uint256 maxCostPerOp_, uint256 accountDailyCap_, uint256 globalDailyCap_) external onlyOwner {
+        _setLimits(maxCostPerOp_, accountDailyCap_, globalDailyCap_);
+    }
+
+    function _setLimits(uint256 maxCostPerOp_, uint256 accountDailyCap_, uint256 globalDailyCap_) private {
+        if (
+            maxCostPerOp_ == 0 || maxCostPerOp_ > accountDailyCap_ || accountDailyCap_ > globalDailyCap_
+                || maxCostPerOp_ > MAX_COST_PER_OP_CEILING || accountDailyCap_ > ACCOUNT_DAILY_CAP_CEILING
+                || globalDailyCap_ > GLOBAL_DAILY_CAP_CEILING
+        ) revert BadLimits();
         maxCostPerOp = maxCostPerOp_;
         accountDailyCap = accountDailyCap_;
         globalDailyCap = globalDailyCap_;
         emit LimitsChanged(maxCostPerOp_, accountDailyCap_, globalDailyCap_);
+    }
+
+    /// @notice Registers (or forgets) Kernel accounts deployed without a sponsored operation, after checking off chain
+    /// that each is a Kernel proxy of the expected implementation with the standard validator (F26).
+    function setKernelAccounts(address[] calldata accounts, bool known) external onlyOwner {
+        for (uint256 i; i < accounts.length; ++i) {
+            kernelAccount[accounts[i]] = known;
+            emit KernelAccountSet(accounts[i], known);
+        }
     }
 
     function setPaused(bool paused_) external onlyOwner {

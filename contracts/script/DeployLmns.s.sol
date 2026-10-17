@@ -60,12 +60,47 @@ contract DeployLmns is Script, SystemConfig {
         console2.log("  LmnsBuyBurn ", address(burn));
         console2.log("  unstake delay (s)", staking.UNSTAKE_DELAY());
         console2.log("Admin calls to turn the module on (schedule through the timelock on fork/mainnet):");
-        console2.log("  staking.setSlashRoute(<LMNS/USDG TWAP reference>, <hedge adapter>, <pool fee>, 300)");
+        console2.log("Slippage: the LMNS pool fee plus 50 bps (150 for a 1% pool), at most MAX_LMNS_SLIPPAGE_BPS (F37).");
+        console2.log("  staking.setSlashRoute(<LMNS/USDG TWAP reference>, <hedge adapter>, <pool fee>, <slippage>)");
+        console2.log("  staking.setCoverCap(<USDG one swap raises inside the slippage floor, measured on the LMNS pool>)");
         console2.log("  staking.setTiers([...])");
-        console2.log("  burn.setRoute(<LMNS/USDG TWAP reference>, <hedge adapter>, <pool fee>, 300)");
+        console2.log("  burn.setRoute(<LMNS/USDG TWAP reference>, <hedge adapter>, <pool fee>, <slippage>)");
+        console2.log("  burn.grantRole(KEEPER_ROLE, <keeper>); burn.setMaxUsdgPerCall(<a small share of pool depth>)");
+        console2.log("After the timelock runs them: lmnsFailures(staking, burn) must return nothing (BAT-3 / DEP-2).");
         console2.log("  pool.setStaking(staking)");
         console2.log("  engine.setFeeTiers(staking)");
         console2.log('  feeRouter.setRecipient("stakers", staking); feeRouter.setRecipient("burn", burn)');
+    }
+
+    /// @notice F37 / BAT-3: the most slippage either LMNS swap may allow once routed (pool fee + 50 bps on a 1% pool).
+    uint16 internal constant MAX_LMNS_SLIPPAGE_BPS = 150;
+    uint256 internal constant MAX_BURN_PER_CALL_USDG = 10_000e6;
+
+    /// @notice Post-activation check of the LMNS module (BAT-3 / DEP-2): each misconfiguration by name, empty when sound.
+    function lmnsFailures(LmnsStaking staking, LmnsBuyBurn burn) public view returns (string[] memory out) {
+        string[6] memory f;
+        uint256 n;
+        if (address(staking.swapAdapter()) != address(0)) {
+            if (staking.slippageBps() > MAX_LMNS_SLIPPAGE_BPS) f[n++] = "LMNS_SLASH_SLIPPAGE";
+            if (!_hasSpot(address(staking.priceSource()), address(staking.token()), staking.poolFee())) {
+                f[n++] = "LMNS_SLASH_NO_SPOT";
+            }
+            if (staking.coverCapUsdg() == 0) f[n++] = "LMNS_COVER_CAP_UNSET";
+        }
+        if (address(burn.swapAdapter()) != address(0)) {
+            if (burn.slippageBps() > MAX_LMNS_SLIPPAGE_BPS) f[n++] = "LMNS_BURN_SLIPPAGE";
+            if (!_hasSpot(address(burn.priceSource()), address(burn.token()), burn.poolFee())) f[n++] = "LMNS_BURN_NO_SPOT";
+            if (burn.maxUsdgPerCall() > MAX_BURN_PER_CALL_USDG) f[n++] = "LMNS_BURN_PER_CALL";
+        }
+        out = new string[](n);
+        for (uint256 i; i < n; ++i) {
+            out[i] = f[i];
+        }
+    }
+
+    function _hasSpot(address src, address token, uint24 fee) private view returns (bool) {
+        (bool ok, bytes memory ret) = src.staticcall(abi.encodeWithSignature("spotPrice(address,uint24)", token, fee));
+        return ok && ret.length >= 32 && abi.decode(ret, (uint256)) != 0;
     }
 
     /// @notice The timers a profile deploys: full on fork and mainnet (overrides refused), as given on testnet.

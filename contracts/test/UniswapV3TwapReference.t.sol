@@ -20,6 +20,16 @@ contract MockTwapPool {
         tooYoung = tooYoung_;
     }
 
+    int24 public spotTick;
+
+    function setSpotTick(int24 t) external {
+        spotTick = t;
+    }
+
+    function slot0() external view returns (uint160, int24, uint16, uint16, uint16, uint8, bool) {
+        return (0, spotTick, 0, 1, 1, 0, true);
+    }
+
     function observe(uint32[] calldata) external view returns (int56[] memory ticks, uint160[] memory liq) {
         require(!tooYoung, "OLD");
         ticks = new int56[](2);
@@ -124,4 +134,17 @@ contract UniswapV3TwapReferenceTest is Test {
 
     // Silence unused-import lint for the pool interface used only by the reference.
     function _unused(IUniswapV3PoolLike) internal pure {}
+
+    /// F37: spot price from slot0's tick, same units as the TWAP; zero for a missing pool.
+    function test_F37_spotPriceMatchesTwapUnits() public {
+        MockTwapPool pool = new MockTwapPool(STOCK_LOW);
+        factory.setPool(STOCK_LOW, USDG, 500, address(pool));
+        int24 tick = -100_000;
+        pool.set(int56(tick) * int56(uint56(WINDOW)), false);
+        pool.setSpotTick(tick);
+        assertEq(ref.spotPrice(STOCK_LOW, 500), ref.referencePrice(STOCK_LOW, 500));
+        pool.setSpotTick(tick + 100); // ~1% higher
+        assertGt(ref.spotPrice(STOCK_LOW, 500), ref.referencePrice(STOCK_LOW, 500));
+        assertEq(ref.spotPrice(STOCK_HIGH, 500), 0);
+    }
 }

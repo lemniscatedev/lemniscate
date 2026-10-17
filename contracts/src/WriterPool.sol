@@ -96,29 +96,11 @@ contract WriterPool is
     uint256 public constant MIN_QUEUE_DELAY = 5 minutes;
     uint256 public constant MAX_QUEUE_DELAY = 30 days;
     uint256 public constant MIN_LOCK_SECONDS = 1 minutes;
-    uint256 public constant HEDGE_STALE_AFTER = 2 hours;
-    uint256 public constant HEDGE_MAX_MOVE_BPS_PER_HOUR = 1_000;
+    /// @dev Perp equity goes stale (out of NAV) this long after its asOf; the hourly move bound lives in PoolHedging.
+    uint256 private constant HEDGE_STALE_AFTER = 2 hours;
 
     bytes32 public constant HEDGER_ROLE = keccak256("HEDGER_ROLE");
     bytes32 public constant GUARDIAN_ROLE = Roles.GUARDIAN_ROLE;
-
-    struct Ticket {
-        address owner;
-        uint64 claimableAt;
-        uint256 shares;
-    }
-
-    struct Valuation {
-        uint256 cash; // USDG 6 dp held by the pool
-        uint256 liability; // WAD
-        uint256 supply;
-        int256 raw; // WAD, before the reserve share
-        uint256 reserveShare; // WAD
-        int256 nav; // WAD = raw + reserveShare
-        int256 navLow;
-        int256 navHigh;
-        uint256[] prices; // WAD S per tracked stock (0 when not read)
-    }
 
     IERC20 public usdg;
     IOptionEngine public engine;
@@ -141,12 +123,12 @@ contract WriterPool is
 
     PoolHedging.Book private _book;
 
-    uint256 private _equityUsdg;
-    uint64 private _equityAsOf;
+    /// @dev Perp equity and the hedger's bounds (F03/F17); same two slots as the former `_equityUsdg`/`_equityAsOf`.
+    PoolHedging.Guard private _guard;
 
     uint256 public nextTicket;
     uint256 public queuedShares;
-    mapping(uint256 ticket => Ticket) private _tickets;
+    mapping(uint256 ticket => PoolLayers.Ticket) private _tickets;
 
     /// @notice Protocol fees the pool could not pay for lack of cash; subtracted from NAV, paid on the next inflow.
     uint256 public feeOwed;
@@ -251,7 +233,7 @@ contract WriterPool is
             _ensureCash(usdgOut, true);
             cash = usdg.balanceOf(address(this));
             if (cash < usdgOut && (address(reserve) != address(0) || address(staking) != address(0))) {
-                Valuation memory v = _valuation(_liability(), false);
+                PoolHedging.Valuation memory v = _val(0, false);
                 uint256 share = v.reserveShare / USDG_TO_WAD;
                 uint256 need = usdgOut - cash;
                 _drawReserve(need < share ? need : share);
@@ -277,7 +259,7 @@ contract WriterPool is
         if (caller != receiver) revert InvalidParams();
         if (!_canDeposit(receiver)) revert NotDepositor();
         if (depositsPaused) revert DepositsPaused();
-        Valuation memory v = _valuation(_navLiability(false), true);
+        PoolHedging.Valuation memory v = _val(1, true);
         uint256 maxAssets = _maxDeposit(v);
         if (assets > maxAssets) revert ERC4626ExceededMaxDeposit(receiver, assets, maxAssets);
         if (v.supply == 0 && assets < MIN_FIRST_DEPOSIT) revert InvalidParams();
@@ -297,7 +279,7 @@ contract WriterPool is
         _escrowing = false;
         ticket = ++nextTicket;
         uint64 claimableAt = uint64(block.timestamp + QUEUE_DELAY);
-        _tickets[ticket] = Ticket({owner: owner, claimableAt: claimableAt, shares: shares});
+        _tickets[ticket] = PoolLayers.Ticket({owner: owner, claimableAt: claimableAt, partialDay: 0, shares: shares});
         queuedShares += shares;
         emit WithdrawalQueued(owner, ticket, shares, claimableAt);
     }
@@ -305,45 +287,40 @@ contract WriterPool is
     /// @inheritdoc IPool
     /// @dev Anyone may claim a matured ticket; USDG always goes to the ticket owner. Paid at the NAV guard's low edge.
     /// When liquid assets (cash, reserve share, hedges at their slippage floor) cannot pay every queued share, each
-    /// claim gets its pro-rata part and the rest of the ticket stays claimable. A forced hedge sale's execution
-    /// shortfall is charged to the claim.
+    /// claim gets its part of the day's pro-rata pot and the rest of the ticket stays claimable, at most once per ticket
+    /// per UTC day (F16, PoolLayers.settleClaim). A forced hedge sale's execution shortfall is charged to the claim.
     function claim(uint256 ticket) external override nonReentrant returns (uint256 paid) {
-        Ticket storage t = _tickets[ticket];
+        PoolLayers.Ticket storage t = _tickets[ticket];
         uint256 shares = t.shares;
         if (shares == 0) revert UnknownTicket(ticket);
         if (block.timestamp < t.claimableAt) revert NotClaimable(t.claimableAt);
 
-        Valuation memory v = _valuation(_navLiability(true), true);
+        PoolHedging.Valuation memory v = _val(2, true);
         if (v.navLow <= 0) revert NavNotPositive();
         uint256 value = _assetsFor(shares, v.navLow, v.supply);
         if (value == 0) revert NothingClaimable();
-
-        // Pro rata only when liquid assets cannot pay every queued share at once.
         uint256 queued = queuedShares;
-        uint256 liquid = _liquidAssets(v);
-        uint256 target = liquid >= _assetsFor(queued, v.navLow, v.supply) ? value : Math.mulDiv(liquid, shares, queued);
-        if (target > value) target = value;
-        uint256 burnShares = target == value ? shares : Math.mulDiv(shares, target, value, Math.Rounding.Ceil);
-
-        // Realise this claim's part of the reserve share (NAV-neutral for everyone else).
-        _drawReserve(Math.mulDiv(v.reserveShare / USDG_TO_WAD, burnShares, v.supply));
-
-        uint256 shortfall;
-        if (usdg.balanceOf(address(this)) < target) shortfall = _ensureCash(target, false);
-        uint256 covered = usdg.balanceOf(address(this)) + shortfall;
-        if (covered < target) {
-            // Routes failed (paused stock, drained pool): this ticket's pro-rata part of what exists; the rest of
-            // the ticket stays claimable.
-            target = Math.mulDiv(covered, shares, queued);
-            burnShares = Math.mulDiv(shares, target, value, Math.Rounding.Ceil);
-        }
-        if (burnShares > shares) burnShares = shares;
-        paid = target > shortfall ? target - shortfall : 0;
-        if (burnShares == 0 || paid == 0) revert NothingClaimable();
+        uint256 burnShares;
+        (paid, burnShares) = PoolLayers.settleClaim(
+            t,
+            _pot,
+            _book,
+            _ctx(),
+            reserve,
+            staking,
+            PoolLayers.ClaimIn({
+                value: value,
+                liquid: _liquidAssets(v),
+                queuedValue: _assetsFor(queued, v.navLow, v.supply),
+                queued: queued,
+                reserveShareUsdg: v.reserveShare / USDG_TO_WAD,
+                reserveBalUsdg: _reserveWad() / USDG_TO_WAD,
+                supply: v.supply
+            })
+        );
 
         address owner = t.owner;
-        t.shares = shares - burnShares;
-        queuedShares -= burnShares;
+        queuedShares = queued - burnShares;
         _burn(address(this), burnShares);
         usdg.safeTransfer(owner, paid);
         emit Withdraw(_msgSender(), owner, owner, paid, burnShares);
@@ -371,19 +348,10 @@ contract WriterPool is
     // ---------------------------------------------------------------- hedging
 
     /// @inheritdoc IPool
-    /// @dev Perp venues only (decision 19). Spot hedges are valued on chain and never posted.
+    /// @dev Perp venues only (decision 19). Spot hedges are valued on chain and never posted. `ref` is only logged: no
+    /// value of it lifts the bounds (F03/F17, see PoolHedging.postEquity). Perps are off at launch (cap 0).
     function postHedgeEquity(uint256 equityUsdg, uint64 asOf, bytes32 ref) external override onlyRole(HEDGER_ROLE) {
-        uint64 prevAsOf = _equityAsOf;
-        if (asOf > block.timestamp || asOf <= prevAsOf) revert BadAsOf(asOf);
-        uint256 prev = _equityUsdg;
-        if (ref == bytes32(0) && equityUsdg != prev) {
-            uint256 allowed = Math.mulDiv(prev, HEDGE_MAX_MOVE_BPS_PER_HOUR * (asOf - prevAsOf), BPS * 1 hours);
-            uint256 diff = equityUsdg > prev ? equityUsdg - prev : prev - equityUsdg;
-            if (prevAsOf == 0 || diff > allowed) revert HedgeJump(prev, equityUsdg);
-        }
-        _equityUsdg = equityUsdg;
-        _equityAsOf = asOf;
-        emit HedgeEquityPosted(equityUsdg, asOf, ref);
+        PoolHedging.postEquity(_guard, equityUsdg, asOf, ref, lastNavUsdg);
     }
 
     /// @inheritdoc IPool
@@ -397,7 +365,7 @@ contract WriterPool is
         uint256 cash = usdg.balanceOf(address(this));
         uint256 buffer = Math.mulDiv(lastNavUsdg, cashBufferBps, BPS);
         unitsDelta = PoolHedging.rebalance(
-            _book, _ctx(), stock, targetUnits, minOutOrMaxIn, cash > buffer ? cash - buffer : 0
+            _book, _guard, _ctx(), stock, targetUnits, minOutOrMaxIn, cash > buffer ? cash - buffer : 0
         );
     }
 
@@ -445,11 +413,15 @@ contract WriterPool is
 
     /// @notice Guardian may pause deposits (only that); unpausing is admin only.
     function setDepositsPaused(bool paused) external {
-        if (!hasRole(DEFAULT_ADMIN_ROLE, msg.sender) && !(paused && hasRole(GUARDIAN_ROLE, msg.sender))) {
-            revert AccessControlUnauthorizedAccount(msg.sender, GUARDIAN_ROLE);
-        }
+        _onlyPauser(paused);
         depositsPaused = paused;
         emit DepositsPausedSet(paused);
+    }
+
+    function _onlyPauser(bool pausing) private view {
+        if (!hasRole(DEFAULT_ADMIN_ROLE, msg.sender) && !(pausing && hasRole(GUARDIAN_ROLE, msg.sender))) {
+            revert AccessControlUnauthorizedAccount(msg.sender, GUARDIAN_ROLE);
+        }
     }
 
     function setParams(uint32 lockSeconds_, uint16 cashBufferBps_, uint16 maxHedgeSlippageBps_, uint128 maxTotalDeposits_)
@@ -486,6 +458,15 @@ contract WriterPool is
         emit HedgeRouteUpdated(stock, address(adapter), poolFee);
     }
 
+    /// @notice Hedger bounds (F03/F17/F27). Admin (timelock): the most perp equity NAV may count, in bps of the last NAV
+    /// (0 = perps off, the launch value; at most 20%), the hedger's daily realised rebalance-loss budget in bps of NAV
+    /// (1..200; 50 by default), and `frozen`. Guardian: may only freeze (`frozen` = true; the bps arguments are ignored),
+    /// which stops `rebalance` and `postHedgeEquity` at once; only the admin unfreezes.
+    function setHedgerLimits(uint16 maxPerpEquityBps_, uint16 maxHedgeLossBps, bool frozen) external {
+        _onlyPauser(frozen);
+        PoolHedging.setLimits(_guard, maxPerpEquityBps_, maxHedgeLossBps, frozen, hasRole(DEFAULT_ADMIN_ROLE, msg.sender));
+    }
+
     /// @notice Resets a stock's tracked hedge to the pool's actual balance (after an issuer action, for example).
     function syncHedgeUnits(address stock) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (address(_book.routes[stock].adapter) == address(0)) revert InvalidRoute();
@@ -498,7 +479,7 @@ contract WriterPool is
 
     /// @inheritdoc IPool
     function nav() external view override returns (int256) {
-        return _valuation(_liability(), false).nav;
+        return _val(0, false).nav;
     }
 
     /// @inheritdoc IPool
@@ -508,26 +489,26 @@ contract WriterPool is
 
     /// @notice Mid NAV and the guard band's low (exit) and high (entry) edges, WAD.
     function navBand() external view returns (int256 navWad, int256 lowWad, int256 highWad) {
-        Valuation memory v = _valuation(_liability(), true);
+        PoolHedging.Valuation memory v = _val(0, true);
         return (v.nav, v.navLow, v.navHigh);
     }
 
     /// @inheritdoc IPool
     /// @dev WAD USDG per whole (1e12) share. 1e18 while empty.
     function navPerShare() external view override returns (uint256) {
-        Valuation memory v = _valuation(_liability(), false);
+        PoolHedging.Valuation memory v = _val(0, false);
         if (v.supply == 0) return 1e18;
         return v.nav > 0 ? Math.mulDiv(uint256(v.nav), SHARE_UNIT, v.supply) : 0;
     }
 
     /// @notice NAV before the reserve share and the reserve share itself, WAD.
     function navParts() external view returns (int256 rawWad, uint256 reserveShareWad) {
-        Valuation memory v = _valuation(_liability(), false);
+        PoolHedging.Valuation memory v = _val(0, false);
         return (v.raw, v.reserveShare);
     }
 
     function totalAssets() public view override(ERC4626Upgradeable) returns (uint256) {
-        return _assetsOf(_valuation(_liability(), false).nav);
+        return _assetsOf(_val(0, false).nav);
     }
 
     /// @inheritdoc IPool
@@ -551,12 +532,19 @@ contract WriterPool is
 
     /// @inheritdoc IPool
     function hedgeEquity() external view override returns (uint256, uint64) {
-        return (_equityUsdg, _equityAsOf);
+        return (_guard.equityUsdg, _guard.equityAsOf);
+    }
+
+    /// @notice (maxPerpEquityBps (0 = perps off), daily rebalance-loss budget in bps of NAV, hedger frozen, realised
+    /// rebalance loss booked today in USDG).
+    function hedgerLimits() external view returns (uint16, uint16, bool, uint256) {
+        return PoolHedging.limits(_guard);
     }
 
     /// @inheritdoc IPool
     function hedgeStale() public view override returns (bool) {
-        return _equityAsOf != 0 && block.timestamp > uint256(_equityAsOf) + HEDGE_STALE_AFTER;
+        uint64 asOf = _guard.equityAsOf;
+        return asOf != 0 && block.timestamp > uint256(asOf) + HEDGE_STALE_AFTER;
     }
 
     /// @inheritdoc IPool
@@ -574,7 +562,7 @@ contract WriterPool is
     }
 
     function ticketOf(uint256 ticket) external view returns (address owner, uint256 shares, uint64 claimableAt) {
-        Ticket memory t = _tickets[ticket];
+        PoolLayers.Ticket memory t = _tickets[ticket];
         return (t.owner, t.shares, t.claimableAt);
     }
 
@@ -585,7 +573,7 @@ contract WriterPool is
 
     function maxDeposit(address receiver) public view override(ERC4626Upgradeable) returns (uint256) {
         if (!_canDeposit(receiver) || depositsPaused) return 0;
-        return _maxDeposit(_valuation(_navLiability(false), false));
+        return _maxDeposit(_val(1, false));
     }
 
     function maxMint(address) public pure override(ERC4626Upgradeable) returns (uint256) {
@@ -602,12 +590,12 @@ contract WriterPool is
 
     /// @notice Shares a deposit of `assets` would mint now (guard high edge plus 10 bps).
     function previewDeposit(uint256 assets) public view override(ERC4626Upgradeable) returns (uint256) {
-        return _depositShares(assets, _valuation(_navLiability(false), true));
+        return _depositShares(assets, _val(1, true));
     }
 
     /// @notice Indicative USDG for `shares` at today's guard low edge (a ticket is paid at claim-time NAV).
     function previewRedeem(uint256 shares) public view override(ERC4626Upgradeable) returns (uint256) {
-        Valuation memory v = _valuation(_navLiability(true), true);
+        PoolHedging.Valuation memory v = _val(2, true);
         return v.navLow > 0 ? _assetsFor(shares, v.navLow, v.supply) : 0;
     }
 
@@ -635,40 +623,33 @@ contract WriterPool is
         return e.capBps();
     }
 
-    /// @dev One pass over the tracked stocks. With `guard`, also the NAV change for an adverse feed move of
-    /// navGuardOpenBps (live session) or navGuardClosedBps (otherwise) per stock, from the hedge and the engine's net
-    /// greeks of the outstanding options (liability change = delta dS + gamma dS^2 / 2).
-    function _valuation(uint256 liability, bool guard) private view returns (Valuation memory v) {
-        v.liability = liability;
-        v.supply = totalSupply();
-        v.cash = usdg.balanceOf(address(this));
-        int256 gross = _toInt(v.cash * USDG_TO_WAD) - _toInt(feeOwed * USDG_TO_WAD);
-        if (!hedgeStale()) gross += _toInt(_equityUsdg * USDG_TO_WAD);
-
-        (uint256 hedgeWad, int256 up, int256 down, uint256[] memory prices) = PoolHedging.value(
-            _book, priceGuard, engine, guard, navGuardOpenBps, navGuardClosedBps
-        );
-        v.prices = prices;
-        gross += _toInt(hedgeWad);
-        v.raw = gross - _toInt(liability);
-        v.reserveShare = _reserveShare(v.raw, v.supply);
-        v.nav = v.raw + _toInt(v.reserveShare);
-        v.navLow = v.nav + down;
-        v.navHigh = v.nav + up;
+    /// @dev One valuation entry point: mode 0 = book value (trading paths and views), 1 = LP entry bound
+    /// (deposit, maxDeposit, previewDeposit), 2 = LP exit bound (claim, previewRedeem); review F12/F15.
+    function _val(uint8 mode, bool guard) private view returns (PoolHedging.Valuation memory) {
+        return _valuation(mode == 0 ? _liability() : _navLiability(mode == 2), guard);
     }
 
-    /// @dev The part of the first-loss layers needed to lift NAV per share back to the high-water mark: the reserve
-    /// first, then the staked $LMNS cover (read only when the reserve alone falls short).
-    function _reserveShare(int256 raw, uint256 supply) private view returns (uint256) {
-        uint256 hwm = highWaterNavPerShare;
-        if (supply == 0 || hwm == 0) return 0;
-        int256 defended = _toInt(Math.mulDiv(hwm, supply, SHARE_UNIT));
-        if (raw >= defended) return 0;
-        uint256 deficit = uint256(defended - raw);
-        uint256 bal = _reserveWad();
-        if (deficit <= bal) return deficit;
-        bal += _stakeCoverWad();
-        return deficit < bal ? deficit : bal;
+    /// @dev NAV at `liability`, computed in PoolHedging.valuation (one copy of the valuation code).
+    function _valuation(uint256 liability, bool guard) private view returns (PoolHedging.Valuation memory) {
+        return PoolHedging.valuation(
+            _book,
+            _guard,
+            PoolHedging.ValIn({
+                usdg: usdg,
+                priceGuard: priceGuard,
+                engine: engine,
+                reserve: reserve,
+                staking: staking,
+                liability: liability,
+                supply: totalSupply(),
+                feeOwed: feeOwed,
+                highWaterNavPerShare: highWaterNavPerShare,
+                lastNavUsdg: lastNavUsdg,
+                openBps: navGuardOpenBps,
+                closedBps: navGuardClosedBps,
+                guard: guard
+            })
+        );
     }
 
     function _reserveWad() private view returns (uint256) {
@@ -680,7 +661,7 @@ contract WriterPool is
     }
 
     function _checkpoint(uint256 liability) private {
-        Valuation memory v = _valuation(liability, false);
+        PoolHedging.Valuation memory v = _valuation(liability, false);
         lastNavUsdg = _assetsOf(v.nav);
         if (v.supply == 0) {
             highWaterNavPerShare = 0;
@@ -699,19 +680,19 @@ contract WriterPool is
     }
 
     /// @dev USDG the pool can reach without a fresh deposit: cash, the reserve share and hedges at their slippage floor.
-    function _liquidAssets(Valuation memory v) private view returns (uint256 liquid) {
+    function _liquidAssets(PoolHedging.Valuation memory v) private view returns (uint256 liquid) {
         liquid = v.cash + v.reserveShare / USDG_TO_WAD
             + PoolHedging.liquidHedges(_book, v.prices, maxHedgeSlippageBps);
     }
 
-    function _maxDeposit(Valuation memory v) private view returns (uint256) {
+    function _maxDeposit(PoolHedging.Valuation memory v) private view returns (uint256) {
         if (v.nav <= 0 && !(v.supply == 0 && v.liability == 0)) return 0;
         uint256 assets = _assetsOf(v.nav);
         return assets >= maxTotalDeposits ? 0 : uint256(maxTotalDeposits) - assets;
     }
 
     /// @dev shares = assets x (supply + virtual) / (NAV_high + 1) / 1.001, rounded down.
-    function _depositShares(uint256 assets, Valuation memory v) private pure returns (uint256) {
+    function _depositShares(uint256 assets, PoolHedging.Valuation memory v) private pure returns (uint256) {
         int256 high = v.navHigh;
         uint256 navAssets = high > 0 ? Math.ceilDiv(uint256(high), USDG_TO_WAD) : 0;
         uint256 gross = assets.mulDiv(v.supply + 10 ** _decimalsOffset(), navAssets + 1);
@@ -752,17 +733,13 @@ contract WriterPool is
             usdg: usdg,
             priceGuard: priceGuard,
             priceReference: priceReference,
-            maxSlippageBps: maxHedgeSlippageBps
+            maxSlippageBps: maxHedgeSlippageBps,
+            navUsdg: lastNavUsdg
         });
     }
 
     function _canDeposit(address receiver) private view returns (bool) {
         return receiver != address(0) && receiver != address(this) && (publicDeposits || isDepositor[receiver]);
-    }
-
-    function _toInt(uint256 value) private pure returns (int256) {
-        if (value > uint256(type(int256).max)) revert InvalidParams();
-        return int256(value);
     }
 
     // ---------------------------------------------------------------- ERC20 / ERC4626 plumbing
@@ -783,6 +760,9 @@ contract WriterPool is
 
     function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
-    /// @dev Two slots taken from the gap in phase 2: vaultHook (todo 19) and staking (todo 20).
-    uint256[28] private __gap;
+    /// @notice F16: the day's pro-rata claim pot (one slot, taken from the gap).
+    PoolLayers.Pot private _pot;
+
+    /// @dev Three slots taken from the gap: vaultHook (todo 19), staking (todo 20) and the claim pot (F16).
+    uint256[27] private __gap;
 }

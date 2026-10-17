@@ -171,6 +171,9 @@ abstract contract SystemChecks is SystemDeployer {
             "KEEPER_ROLE_MISSING"
         );
         _failIf(!IAccessControl(d.pool).hasRole(HEDGER, r.hedger), "HEDGER_ROLE_MISSING");
+        // F03/F17: no perp venue at launch, so the hedger can post no equity at all (cap 0 = perps off).
+        (uint16 perpBps,,,) = WriterPool(d.pool).hedgerLimits();
+        _failIf(perpBps != 0, "PERP_EQUITY_ON");
         _failIf(!IAccessControl(d.engine).hasRole(GUARDIAN, r.keeper), "KEEPER_GUARDIAN_MISSING");
         _failIf(
             !IAccessControl(d.engine).hasRole(GUARDIAN, r.guardian) || !IAccessControl(d.pool).hasRole(GUARDIAN, r.guardian)

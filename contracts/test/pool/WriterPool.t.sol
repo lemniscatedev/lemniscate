@@ -195,9 +195,11 @@ contract WriterPoolTest is PoolFixture {
 
         // Route restored: every ticket is paid out over the next claims. With every share queued, each round pays
         // the realisable value (hedges counted at their 1% slippage floor) pro rata, so the tail shrinks ~200x a round.
+        // A ticket takes at most one partial payment per UTC day (F16), so a round is a day.
         deal(address(usdg), address(swapRouter), routerCash);
         uint256 paidLater;
         for (uint256 round; round < 10; ++round) {
+            vm.warp(vm.getBlockTimestamp() + 1 days);
             for (uint256 i; i < 3; ++i) {
                 (, uint256 left,) = pool.ticketOf(t[i]);
                 if (left != 0) paidLater += pool.claim(t[i]);
@@ -221,10 +223,11 @@ contract WriterPoolTest is PoolFixture {
         _deposit(alice, 20_000 * USDG);
         _hedgeTo(50e18);
         engine.setLiability(3_000e18);
+        pool.setHedgerLimits(2_000, 50, false);
         vm.prank(hedger);
-        pool.postHedgeEquity(1_000 * USDG, uint64(vm.getBlockTimestamp()), bytes32("deposit"));
+        pool.postHedgeEquity(400 * USDG, uint64(vm.getBlockTimestamp()), bytes32("deposit"));
         int256 expected = int256(usdg.balanceOf(address(pool)) * 1e12) + int256(50e18 * S0 / 1e18)
-            + int256(1_000 * USDG * 1e12) - 3_000e18;
+            + int256(400 * USDG * 1e12) - 3_000e18;
         (int256 raw, uint256 rs) = pool.navParts();
         assertEq(rs, 0);
         assertEq(raw, expected);
@@ -279,23 +282,32 @@ contract WriterPoolTest is PoolFixture {
         vm.prank(alice);
         pool.postHedgeEquity(1, uint64(vm.getBlockTimestamp()), bytes32(0));
 
+        // Perps off (launch): only zero can be posted, whatever the ref.
+        vm.prank(hedger);
+        vm.expectRevert(abi.encodeWithSelector(PoolHedging.PerpEquityCap.selector, 1, 0));
+        pool.postHedgeEquity(1, uint64(vm.getBlockTimestamp()), bytes32("fill"));
+        pool.setHedgerLimits(2_000, 50, false); // admin (timelock): up to 20% of NAV = 4,000; 10% of that per hour = 400
+
         vm.startPrank(hedger);
         vm.expectRevert(abi.encodeWithSelector(WriterPool.BadAsOf.selector, uint64(vm.getBlockTimestamp() + 1)));
-        pool.postHedgeEquity(1_000 * USDG, uint64(vm.getBlockTimestamp() + 1), bytes32("fill"));
-        // From zero every change is a jump: the first post needs a fill reference.
+        pool.postHedgeEquity(400 * USDG, uint64(vm.getBlockTimestamp() + 1), bytes32("fill"));
+        // A ref no longer lifts the hourly bound (F03/F17).
         vm.expectRevert(abi.encodeWithSelector(IPool.HedgeJump.selector, 0, 1_000 * USDG));
-        pool.postHedgeEquity(1_000 * USDG, uint64(vm.getBlockTimestamp()), bytes32(0));
         pool.postHedgeEquity(1_000 * USDG, uint64(vm.getBlockTimestamp()), bytes32("fill"));
+        pool.postHedgeEquity(400 * USDG, uint64(vm.getBlockTimestamp()), bytes32("fill"));
 
         vm.warp(vm.getBlockTimestamp() + 1 hours);
-        pool.postHedgeEquity(1_100 * USDG, uint64(vm.getBlockTimestamp()), bytes32(0)); // +10% in 1h: allowed
+        pool.postHedgeEquity(800 * USDG, uint64(vm.getBlockTimestamp()), bytes32(0)); // +400 in 1h: allowed
         vm.warp(vm.getBlockTimestamp() + 30 minutes);
-        vm.expectRevert(abi.encodeWithSelector(IPool.HedgeJump.selector, 1_100 * USDG, 1_200 * USDG));
-        pool.postHedgeEquity(1_200 * USDG, uint64(vm.getBlockTimestamp()), bytes32(0)); // +9% in 30 min: too fast
-        pool.postHedgeEquity(1_200 * USDG, uint64(vm.getBlockTimestamp()), bytes32("fill"));
+        vm.expectRevert(abi.encodeWithSelector(IPool.HedgeJump.selector, 800 * USDG, 1_100 * USDG));
+        pool.postHedgeEquity(1_100 * USDG, uint64(vm.getBlockTimestamp()), bytes32("fill")); // +300 in 30 min: too fast
+        pool.postHedgeEquity(1_000 * USDG, uint64(vm.getBlockTimestamp()), bytes32(0));
         vm.expectRevert(abi.encodeWithSelector(WriterPool.BadAsOf.selector, uint64(vm.getBlockTimestamp())));
-        pool.postHedgeEquity(1_200 * USDG, uint64(vm.getBlockTimestamp()), bytes32("fill")); // asOf must advance
+        pool.postHedgeEquity(1_000 * USDG, uint64(vm.getBlockTimestamp()), bytes32("fill")); // asOf must advance
         vm.stopPrank();
+        vm.warp(vm.getBlockTimestamp() + 1 hours);
+        vm.prank(hedger);
+        pool.postHedgeEquity(1_200 * USDG, uint64(vm.getBlockTimestamp()), bytes32("fill"));
 
         (uint256 eq, uint64 asOf) = pool.hedgeEquity();
         assertEq(eq, 1_200 * USDG);

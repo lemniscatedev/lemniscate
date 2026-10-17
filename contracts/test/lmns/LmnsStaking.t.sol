@@ -55,8 +55,10 @@ abstract contract LmnsBase is Test {
     }
 
     function _route(LmnsStaking s) internal {
-        vm.prank(admin);
+        vm.startPrank(admin);
         s.setSlashRoute(IPriceReference(address(twap)), IHedgeAdapter(address(adapter)), FEE, 300);
+        s.setCoverCap(type(uint256).max); // F18: depth cap tested in StakeCover.t.sol
+        vm.stopPrank();
     }
 
     /// @dev Router executes LMNS <-> USDG at `p` (WAD USD per LMNS).
@@ -460,6 +462,8 @@ contract LmnsStakingTest is LmnsBase {
     function test_R5_R6_feeRouterBucketsReachStakingAndBurn() public {
         FeeRouter fees = new FeeRouter(admin, IERC20(address(usdg)), poolAddr, makeAddr("treasury"), 7 days);
         LmnsBuyBurn burn = new LmnsBuyBurn(admin, IERC20(address(lmns)), IERC20(address(usdg)));
+        vm.prank(admin);
+        burn.grantRole(keccak256("KEEPER_ROLE"), address(this)); // F37: keeper-only
         _stake(staking, alice, 1_000e18);
 
         // Before phase 2 the buckets are held in the router.
@@ -496,6 +500,8 @@ contract LmnsStakingTest is LmnsBase {
 
     function test_R6_burnOnlyWithTwapElseAccumulates() public {
         LmnsBuyBurn burn = new LmnsBuyBurn(admin, IERC20(address(lmns)), IERC20(address(usdg)));
+        vm.prank(admin);
+        burn.grantRole(keccak256("KEEPER_ROLE"), address(this)); // F37: keeper-only
         usdg.mint(address(burn), 100e6);
         assertEq(burn.buyAndBurn(100e6), 0);
         vm.prank(admin);

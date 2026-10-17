@@ -8,6 +8,8 @@ import {IHedgeAdapter} from "../interfaces/IHedgeAdapter.sol";
 import {IOptionEngine} from "../interfaces/IOptionEngine.sol";
 import {IPriceGuard} from "../interfaces/IPriceGuard.sol";
 import {IPriceReference} from "../interfaces/IPriceReference.sol";
+import {IReserve} from "../interfaces/IReserve.sol";
+import {ILmnsStaking} from "../interfaces/ILmnsStaking.sol";
 import {PriceReading, SessionKind} from "./OptionTypes.sol";
 
 /// @title PoolHedging
@@ -32,34 +34,199 @@ library PoolHedging {
         mapping(address stock => uint256 units) units;
     }
 
+    /// @dev The pool's NAV at one moment (WAD unless noted). Built by `valuation`.
+    struct Valuation {
+        uint256 cash; // USDG 6 dp held by the pool
+        uint256 liability; // WAD
+        uint256 supply;
+        int256 raw; // WAD, before the reserve share
+        uint256 reserveShare; // WAD
+        int256 nav; // WAD = raw + reserveShare
+        int256 navLow;
+        int256 navHigh;
+        uint256[] prices; // WAD S per tracked stock (0 when not read)
+    }
+
+    /// @dev Pool state `valuation` reads (passed in so the pool keeps one small call site).
+    struct ValIn {
+        IERC20 usdg;
+        IPriceGuard priceGuard;
+        IOptionEngine engine;
+        IReserve reserve;
+        ILmnsStaking staking;
+        uint256 liability;
+        uint256 supply;
+        uint256 feeOwed; // USDG 6 dp
+        uint256 highWaterNavPerShare;
+        uint256 lastNavUsdg;
+        uint16 openBps;
+        uint16 closedBps;
+        bool guard;
+    }
+
     /// @dev Pool parameters the library reads.
     struct Ctx {
         IERC20 usdg;
         IPriceGuard priceGuard;
         IPriceReference priceReference;
         uint16 maxSlippageBps;
+        uint256 navUsdg; // the pool's last checkpointed NAV, USDG 6 dp
     }
 
+    /// @dev Perp-venue equity (decision 19) and the hedger's on-chain bounds (security review 2026-10-17, F03/F17).
+    /// Two slots, laid out where the pool kept `_equityUsdg` and `_equityAsOf`.
+    struct Guard {
+        uint256 equityUsdg;
+        uint64 equityAsOf;
+        uint16 maxPerpEquityBps; // of the pool's last NAV; 0 = perps off (launch): no positive equity is ever counted
+        uint16 maxHedgeLossBps; // F27: realised rebalance loss allowed per UTC day, bps of the last NAV (0 = default)
+        bool frozen; // F27: guardian stop for every hedger action; only the admin clears it
+        uint32 lossDay;
+        uint96 lossUsdg; // realised rebalance loss booked on `lossDay`, USDG 6 dp
+    }
+
+    uint256 private constant EQUITY_STALE_AFTER = 2 hours;
+    uint256 private constant EQUITY_MAX_MOVE_BPS_PER_HOUR = 1_000;
+    /// @notice Ceiling of `maxPerpEquityBps`: perp equity can never be more than 20% of NAV.
+    uint16 internal constant MAX_PERP_EQUITY_BPS = 2_000;
+    /// @notice Daily realised rebalance-loss budget: 0.5% of NAV unless the admin sets another value (at most 2%).
+    uint16 internal constant DEFAULT_HEDGE_LOSS_BPS = 50;
+    uint16 internal constant MAX_HEDGE_LOSS_BPS = 200;
+
     /// @dev Same signatures as IPool's events, so logs read the same whichever contract emits them.
+    event HedgeEquityPosted(uint256 equityUsdg, uint64 asOf, bytes32 ref);
+    event HedgerLimitsSet(uint16 maxPerpEquityBps, uint16 maxHedgeLossBps);
+    event HedgerFrozenSet(bool frozen);
     event Rebalanced(address indexed stock, bool buy, uint256 amountIn, uint256 amountOut, uint256 unitsAfter);
     event CashRaised(address indexed stock, uint256 stockSold, uint256 usdgOut);
 
     error InvalidRoute();
     error StalePrice(address stock);
     error NoCash();
+    error HedgeJump(uint256 previous, uint256 posted);
+    error BadAsOf(uint64 asOf);
+    error PerpEquityCap(uint256 posted, uint256 cap);
+    error InvalidParams();
+    error HedgerFrozen();
+    error HedgeLossBudget(uint256 lossUsdg, uint256 budgetUsdg);
+
+    // ---------------------------------------------------------------- perp equity (F03/F17)
+
+    /// @dev Records a perp-venue equity snapshot. Whatever `ref` says (it is only logged), every post obeys the same two
+    /// bounds: it may not rise above `maxPerpEquityBps` of the pool's last NAV, and it may not move by more than 10% of
+    /// max(previous, cap) per hour of `asOf` progress (at most one hour counts per post). With the cap at 0 (launch,
+    /// perps off) only zero can ever be posted.
+    function postEquity(Guard storage g, uint256 equityUsdg, uint64 asOf, bytes32 ref, uint256 navUsdg) external {
+        if (g.frozen) revert HedgerFrozen();
+        uint64 prevAsOf = g.equityAsOf;
+        if (asOf > block.timestamp || asOf <= prevAsOf) revert BadAsOf(asOf);
+        uint256 prev = g.equityUsdg;
+        uint256 cap = Math.mulDiv(navUsdg, g.maxPerpEquityBps, BPS);
+        if (equityUsdg > cap && equityUsdg > prev) revert PerpEquityCap(equityUsdg, cap);
+        uint256 dt = prevAsOf == 0 || asOf - prevAsOf > 1 hours ? 1 hours : asOf - prevAsOf;
+        uint256 allowed = Math.mulDiv(prev > cap ? prev : cap, EQUITY_MAX_MOVE_BPS_PER_HOUR * dt, BPS * 1 hours);
+        if ((equityUsdg > prev ? equityUsdg - prev : prev - equityUsdg) > allowed) revert HedgeJump(prev, equityUsdg);
+        g.equityUsdg = equityUsdg;
+        g.equityAsOf = asOf;
+        emit HedgeEquityPosted(equityUsdg, asOf, ref);
+    }
+
+    /// @dev Setter body (kept here so the pool stays under the size limit). The pool has checked the caller: the admin
+    /// sets everything; a guardian (`isAdmin` false) may only freeze.
+    function setLimits(Guard storage g, uint16 maxPerpEquityBps, uint16 maxHedgeLossBps, bool frozen, bool isAdmin)
+        external
+    {
+        if (isAdmin) {
+            if (maxPerpEquityBps > MAX_PERP_EQUITY_BPS || maxHedgeLossBps == 0 || maxHedgeLossBps > MAX_HEDGE_LOSS_BPS) {
+                revert InvalidParams();
+            }
+            g.maxPerpEquityBps = maxPerpEquityBps;
+            g.maxHedgeLossBps = maxHedgeLossBps;
+            emit HedgerLimitsSet(maxPerpEquityBps, maxHedgeLossBps);
+        }
+        if (g.frozen != frozen) {
+            g.frozen = frozen;
+            emit HedgerFrozenSet(frozen);
+        }
+    }
+
+    /// @dev (maxPerpEquityBps, maxHedgeLossBps in force, frozen, realised rebalance loss booked today in USDG).
+    function limits(Guard storage g) external view returns (uint16, uint16, bool, uint256) {
+        uint16 lossBps = g.maxHedgeLossBps;
+        return (
+            g.maxPerpEquityBps,
+            lossBps == 0 ? DEFAULT_HEDGE_LOSS_BPS : lossBps,
+            g.frozen,
+            g.lossDay == uint32(block.timestamp / 1 days) ? g.lossUsdg : 0
+        );
+    }
+
+    /// @dev Equity counted in NAV: zero once stale (2h), and never above the current cap (so it can neither inflate NAV
+    /// past the cap nor overflow the valuation).
+    function _perpEquity(Guard storage g, uint256 navUsdg) private view returns (uint256 e) {
+        uint64 asOf = g.equityAsOf;
+        if (asOf == 0 || block.timestamp > uint256(asOf) + EQUITY_STALE_AFTER) return 0;
+        e = g.equityUsdg;
+        uint256 cap = Math.mulDiv(navUsdg, g.maxPerpEquityBps, BPS);
+        if (e > cap) e = cap;
+    }
 
     // ---------------------------------------------------------------- valuation
 
+    uint256 private constant USDG_TO_WAD = 1e12;
+    uint256 private constant SHARE_UNIT = 1e12;
+
+    /// @dev The pool's NAV (kept here, one copy, so the pool stays under the size limit): cash - fees owed + fresh perp
+    /// equity (clamped to its cap) + spot hedges at the PriceGuard price - liability, plus the reserve share. With
+    /// `guard`, also the NAV change for an adverse feed move of openBps (live session) or closedBps (otherwise) per
+    /// stock, from the hedge and the engine's net greeks of the outstanding options (liability change = delta dS +
+    /// gamma dS^2 / 2).
+    function valuation(Book storage b, Guard storage g, ValIn memory x) external view returns (Valuation memory v) {
+        v.liability = x.liability;
+        v.supply = x.supply;
+        v.cash = x.usdg.balanceOf(address(this));
+        int256 gross = _toInt(v.cash * USDG_TO_WAD) - _toInt(x.feeOwed * USDG_TO_WAD);
+        gross += _toInt(_perpEquity(g, x.lastNavUsdg) * USDG_TO_WAD);
+        (uint256 hedgeWad, int256 up, int256 down, uint256[] memory prices) =
+            _value(b, x.priceGuard, x.engine, x.guard, x.openBps, x.closedBps);
+        v.prices = prices;
+        gross += _toInt(hedgeWad);
+        v.raw = gross - _toInt(x.liability);
+        v.reserveShare = _reserveShare(x, v.raw);
+        v.nav = v.raw + _toInt(v.reserveShare);
+        v.navLow = v.nav + down;
+        v.navHigh = v.nav + up;
+    }
+
+    /// @dev The part of the first-loss layers needed to lift NAV per share back to the high-water mark: the reserve
+    /// first, then the staked $LMNS cover (read only when the reserve alone falls short).
+    function _reserveShare(ValIn memory x, int256 raw) private view returns (uint256) {
+        uint256 hwm = x.highWaterNavPerShare;
+        if (x.supply == 0 || hwm == 0) return 0;
+        int256 defended = _toInt(Math.mulDiv(hwm, x.supply, SHARE_UNIT));
+        if (raw >= defended) return 0;
+        uint256 deficit = uint256(defended - raw);
+        uint256 bal = address(x.reserve) == address(0) ? 0 : x.usdg.balanceOf(address(x.reserve)) * USDG_TO_WAD;
+        if (deficit <= bal) return deficit;
+        if (address(x.staking) != address(0)) bal += x.staking.coverValueUsdg() * USDG_TO_WAD;
+        return deficit < bal ? deficit : bal;
+    }
+
+    function _toInt(uint256 value) private pure returns (int256) {
+        if (value > uint256(type(int256).max)) revert InvalidParams();
+        return int256(value);
+    }
+
     /// @dev Returns hedgeWad (sum of units x S over tracked stocks, WAD USDG), up (sum of positive best-case guard
     /// moves), down (sum of negative worst-case guard moves) and prices (S per tracked stock, 0 when not read).
-    function value(
+    function _value(
         Book storage b,
         IPriceGuard pg,
         IOptionEngine engine,
         bool guard,
         uint16 openBps,
         uint16 closedBps
-    ) external view returns (uint256 hedgeWad, int256 up, int256 down, uint256[] memory prices) {
+    ) private view returns (uint256 hedgeWad, int256 up, int256 down, uint256[] memory prices) {
         uint256 count = b.stocks.length;
         prices = new uint256[](count);
         for (uint256 i; i < count; ++i) {
@@ -124,15 +291,20 @@ library PoolHedging {
 
     /// @dev Moves the hedge in `stock` toward `targetUnits`. Buys spend at most min(maxIn, spendable) USDG and expect
     /// at least amountIn / min(S, TWAP) units less slippage; sells expect at least units x max(S, TWAP) less slippage
-    /// (and at least the caller's `minOutOrMaxIn`). Requires a fresh live price.
+    /// (and at least the caller's `minOutOrMaxIn`). Requires a fresh live price. F27: refused while the guardian has frozen
+    /// the hedger, and each trade's realised loss against the feed price S is booked against a daily budget (bps of the
+    /// last NAV); the trade that would exceed it reverts. That bounds what a compromised hedger can lose to a pool it
+    /// sandwiches, however many times it trades.
     function rebalance(
         Book storage b,
+        Guard storage g,
         Ctx memory c,
         address stock,
         uint256 targetUnits,
         uint256 minOutOrMaxIn,
         uint256 spendable
     ) external returns (int256 unitsDelta) {
+        if (g.frozen) revert HedgerFrozen();
         Route memory r = b.routes[stock];
         if (address(r.adapter) == address(0)) revert InvalidRoute();
         (uint256 s, bool fresh) = price(c.priceGuard, stock);
@@ -150,6 +322,8 @@ library PoolHedging {
             uint256 minOut =
                 Math.mulDiv(Math.mulDiv(amountIn, STOCK_VALUE_DENOMINATOR, ref), BPS - c.maxSlippageBps, BPS);
             (uint256 spent, uint256 received) = _swap(r, address(c.usdg), stock, amountIn, minOut);
+            uint256 fair = Math.mulDiv(received, s, STOCK_VALUE_DENOMINATOR);
+            _bookLoss(g, spent > fair ? spent - fair : 0, c.navUsdg);
             b.units[stock] = current + received;
             unitsDelta = int256(received);
             emit Rebalanced(stock, true, spent, received, current + received);
@@ -158,6 +332,8 @@ library PoolHedging {
             uint256 minOut = _minUsdgOut(sellUnits, twap > s ? twap : s, c.maxSlippageBps);
             if (minOutOrMaxIn > minOut) minOut = minOutOrMaxIn;
             (uint256 sold, uint256 received) = _swap(r, stock, address(c.usdg), sellUnits, minOut);
+            uint256 fair = Math.mulDiv(sold, s, STOCK_VALUE_DENOMINATOR, Math.Rounding.Ceil);
+            _bookLoss(g, fair > received ? fair - received : 0, c.navUsdg);
             b.units[stock] = current - sold;
             unitsDelta = -int256(sold);
             emit Rebalanced(stock, false, sold, received, current - sold);
@@ -197,6 +373,16 @@ library PoolHedging {
             if (v > received) shortfall += v - received;
             emit CashRaised(stock, sold, received);
         }
+    }
+
+    function _bookLoss(Guard storage g, uint256 loss, uint256 navUsdg) private {
+        uint32 day = uint32(block.timestamp / 1 days);
+        uint256 used = (g.lossDay == day ? g.lossUsdg : 0) + loss;
+        uint16 bps = g.maxHedgeLossBps;
+        uint256 budget = Math.mulDiv(navUsdg, bps == 0 ? DEFAULT_HEDGE_LOSS_BPS : bps, BPS);
+        if (used > budget) revert HedgeLossBudget(used, budget);
+        g.lossDay = day;
+        g.lossUsdg = uint96(used);
     }
 
     function _twap(IPriceReference ref, address stock, uint24 fee) private view returns (uint256) {

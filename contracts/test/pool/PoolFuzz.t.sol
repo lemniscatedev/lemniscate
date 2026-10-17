@@ -25,6 +25,7 @@ contract PoolFuzzTest is PoolFixture {
         price = bound(price, 1e16, 10_000e18);
         liabilityUsdg = bound(liabilityUsdg, 0, 3_000_000 * USDG);
         equityUsdg = bound(equityUsdg, 0, 1_000_000 * USDG);
+        pool.setHedgerLimits(2_000, 50, false);
         reserveUsdg = bound(reserveUsdg, 0, 100_000 * USDG);
 
         _deposit(alice, deposit);
@@ -32,6 +33,8 @@ contract PoolFuzzTest is PoolFixture {
         stock.mint(address(pool), units);
         pool.syncHedgeUnits(address(stock));
         guard.set(address(stock), price, SessionKind.REGULAR, true);
+        // First post: at most 10% of the cap (20% of the last NAV), whatever the ref (F03/F17).
+        equityUsdg = bound(equityUsdg, 0, pool.lastNavUsdg() * 200 / 10_000);
         vm.prank(hedger);
         pool.postHedgeEquity(equityUsdg, uint64(vm.getBlockTimestamp()), bytes32("snapshot"));
         if (stale) vm.warp(vm.getBlockTimestamp() + 2 hours + 1);

@@ -56,6 +56,11 @@ contract LmnsStaking is AccessControl, ReentrancyGuardTransient, ILmnsStaking {
     uint256 public constant MAX_SHARES_PER_ASSET = 1e12;
     /// @notice Smallest new USDG amount that (re)starts the reward stream (stops dust from stretching it).
     uint256 public constant MIN_REWARD_SYNC = 1e6;
+    /// @notice F37: a slash runs only while the LMNS pool's spot price is within this band of its TWAP.
+    uint256 public constant SPOT_BAND_BPS = 50;
+
+    event CoverCapSet(uint256 capUsdg);
+    event LossSynced(uint256 stakeLossUsdg, uint256 lockedLmns);
 
     IERC20 public immutable token;
     IERC20 public immutable usdg;
@@ -71,6 +76,13 @@ contract LmnsStaking is AccessControl, ReentrancyGuardTransient, ILmnsStaking {
     IHedgeAdapter public swapAdapter;
     uint24 public poolFee;
     uint16 public slippageBps = 300;
+    /// @notice F18: the most cover (USDG 6 dp) the pool may count, set by the admin from the measured depth of the
+    /// LMNS/USDG pool (what one slash can sell inside the slippage floor). 0 = no cover counted (the default).
+    uint256 public coverCapUsdg;
+    /// @notice F19: LMNS set aside for a loss the pool already counts against the stake (its reserve share beyond the
+    /// Reserve). Out of `totalAssets`, so stakers who leave, and stakers who join, do so at the post-loss share price;
+    /// slashes sell it first; it returns to the stakers when the loss recovers.
+    uint256 public lockedForPool;
 
     uint256 public totalShares;
     /// @notice LMNS backing all shares (active and requested).
@@ -166,10 +178,12 @@ contract LmnsStaking is AccessControl, ReentrancyGuardTransient, ILmnsStaking {
     }
 
     /// @notice Pays out a matured request at the current (post-slash) share value.
+    /// F19: the pool's current loss is set aside first, so a staker cannot leave with the stake's part of it.
     function completeUnstake() external nonReentrant returns (uint256 assets) {
         Request memory q = requests[msg.sender];
         if (q.shares == 0) revert NothingToUnstake();
         if (block.timestamp < q.readyAt) revert NotReady(q.readyAt);
+        _syncLoss();
         assets = assetsOf(q.shares);
         delete requests[msg.sender];
         totalShares -= q.shares;
@@ -190,6 +204,12 @@ contract LmnsStaking is AccessControl, ReentrancyGuardTransient, ILmnsStaking {
         emit RewardsClaimed(msg.sender, paid);
     }
 
+    /// @notice F19: sets aside (or releases) the LMNS that covers the loss the pool currently counts against the stake.
+    /// Anyone may call it (the keeper does, hourly); `stake` and `completeUnstake` call it first.
+    function syncLoss() external nonReentrant {
+        _syncLoss();
+    }
+
     /// @notice Starts streaming USDG that arrived since the last sync (the keeper calls it after a distribution).
     function syncRewards() external nonReentrant {
         _accrue();
@@ -203,13 +223,19 @@ contract LmnsStaking is AccessControl, ReentrancyGuardTransient, ILmnsStaking {
         if (msg.sender != pool) revert NotPool();
         uint256 price = _price();
         IHedgeAdapter adapter = swapAdapter;
-        uint256 slashable = _slashable();
+        uint256 locked = lockedForPool;
+        uint256 slashable = _slashable() + locked;
         if (usdgNeeded == 0 || slashable == 0 || price == 0 || address(adapter) == address(0)) return 0;
         uint256 floorBps = BPS - slippageBps;
         uint256 amount = Math.mulDiv(usdgNeeded, PRICE_TO_USDG * BPS, price * floorBps, Math.Rounding.Ceil);
         if (amount > slashable) amount = slashable;
         uint256 minOut = Math.mulDiv(amount, price * floorBps, PRICE_TO_USDG * BPS);
         if (minOut == 0) return 0;
+        // F37: anyone can trigger a slash (any claim); refuse to sell while spot has been pushed off the TWAP.
+        if (!_spotNearTwap(priceSource, price)) {
+            emit SlashFailed(usdgNeeded, amount);
+            return 0;
+        }
 
         uint256 lmnsBefore = token.balanceOf(address(this));
         uint256 poolBefore = usdg.balanceOf(pool);
@@ -217,7 +243,10 @@ contract LmnsStaking is AccessControl, ReentrancyGuardTransient, ILmnsStaking {
         try adapter.swapExactIn(address(token), address(usdg), poolFee, amount, minOut, pool) {
             uint256 sold = lmnsBefore - token.balanceOf(address(this));
             if (sold > slashable) sold = slashable;
-            totalAssets -= sold;
+            // The set-aside loss goes first (F19); only the rest lowers the share price.
+            uint256 fromLocked = sold < locked ? sold : locked;
+            lockedForPool = locked - fromLocked;
+            totalAssets -= sold - fromLocked;
             usdgSent = usdg.balanceOf(pool) - poolBefore;
             emit Slashed(usdgNeeded, sold, usdgSent);
         } catch {
@@ -227,11 +256,14 @@ contract LmnsStaking is AccessControl, ReentrancyGuardTransient, ILmnsStaking {
     }
 
     /// @inheritdoc ILmnsStaking
-    function coverValueUsdg() external view override returns (uint256) {
+    /// @dev F18: never above `coverCapUsdg`, the depth-measured amount one slash can actually sell; 0 until the admin
+    /// sets it.
+    function coverValueUsdg() external view override returns (uint256 cover) {
         if (address(swapAdapter) == address(0)) return 0;
         uint256 price = _price();
         if (price == 0) return 0;
-        return Math.mulDiv(_slashable(), price * (BPS - slippageBps), PRICE_TO_USDG * BPS);
+        cover = Math.mulDiv(_slashable() + lockedForPool, price * (BPS - slippageBps), PRICE_TO_USDG * BPS);
+        if (cover > coverCapUsdg) cover = coverCapUsdg;
     }
 
     // ------------------------------------------------------------------------------------------------ tiers
@@ -296,6 +328,13 @@ contract LmnsStaking is AccessControl, ReentrancyGuardTransient, ILmnsStaking {
         emit SlashRouteSet(address(source), address(adapter), fee, slippage);
     }
 
+    /// @notice Admin (timelock), F18: the cover cap in USDG (6 dp). Set it from the measured depth of the LMNS/USDG pool
+    /// (the USDG one swap can raise inside `slippageBps`) and re-measure before raising it. 0 = no cover counted.
+    function setCoverCap(uint256 capUsdg) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        coverCapUsdg = capUsdg;
+        emit CoverCapSet(capUsdg);
+    }
+
     /// @notice Admin (timelock): fee tiers, ascending `minStake`, at most MAX_TIERS, discounts bounded. Empty = none.
     function setTiers(Tier[] calldata t) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (t.length > MAX_TIERS) revert InvalidParams();
@@ -314,6 +353,7 @@ contract LmnsStaking is AccessControl, ReentrancyGuardTransient, ILmnsStaking {
 
     function _stake(uint256 assets) private returns (uint256 shares) {
         if (assets == 0) revert InvalidParams();
+        _syncLoss();
         _touch(msg.sender);
         uint256 before = token.balanceOf(address(this));
         token.safeTransferFrom(msg.sender, address(this), assets);
@@ -369,6 +409,53 @@ contract LmnsStaking is AccessControl, ReentrancyGuardTransient, ILmnsStaking {
     function _slashable() private view returns (uint256) {
         uint256 keep = Math.ceilDiv(totalShares, MAX_SHARES_PER_ASSET);
         return totalAssets > keep ? totalAssets - keep : 0;
+    }
+
+    /// @dev The stake's part of the pool's loss: its reserve share beyond the Reserve's USDG, read from the pool. A pool
+    /// that cannot answer (no code, or its valuation reverts) or a missing price leaves the set-aside as it is.
+    function _syncLoss() private {
+        address p = pool;
+        uint256 price = _price();
+        // No price (TWAP unavailable): the pool counts no cover then, so its loss figure says nothing about the stake;
+        // keep the set-aside as it is rather than release it.
+        if (p.code.length == 0 || price == 0) return;
+        (bool ok, bytes memory ret) = p.staticcall(abi.encodeWithSignature("navParts()"));
+        if (!ok || ret.length < 64) return;
+        (, uint256 shareWad) = abi.decode(ret, (int256, uint256));
+        (ok, ret) = p.staticcall(abi.encodeWithSignature("reserve()"));
+        if (!ok || ret.length < 32) return;
+        address r = abi.decode(ret, (address));
+        uint256 reserveUsdg = r == address(0) ? 0 : usdg.balanceOf(r);
+        uint256 lossUsdg = shareWad / 1e12 > reserveUsdg ? shareWad / 1e12 - reserveUsdg : 0;
+        uint256 target;
+        if (lossUsdg != 0) {
+            target = Math.mulDiv(lossUsdg, PRICE_TO_USDG * BPS, price * (BPS - slippageBps), Math.Rounding.Ceil);
+        }
+        uint256 cur = lockedForPool;
+        if (target > cur) {
+            uint256 add = target - cur;
+            uint256 room = _slashable();
+            if (add > room) add = room;
+            totalAssets -= add;
+            lockedForPool = cur + add;
+        } else if (target < cur && totalShares != 0) {
+            // With no shares left, released LMNS would make the next stake round to zero shares; keep it set aside.
+            totalAssets += cur - target;
+            lockedForPool = target;
+        }
+        if (target != cur) emit LossSynced(lossUsdg, lockedForPool);
+    }
+
+    /// @dev F37: true when the price source's spot price is within SPOT_BAND_BPS of `twap`. A source without
+    /// `spotPrice`, or no answer, counts as off: the swap is skipped rather than made blind.
+    function _spotNearTwap(IPriceReference src, uint256 twap) private view returns (bool) {
+        (bool ok, bytes memory ret) =
+            address(src).staticcall(abi.encodeWithSignature("spotPrice(address,uint24)", address(token), poolFee));
+        if (!ok || ret.length < 32) return false;
+        uint256 spot = abi.decode(ret, (uint256));
+        if (spot == 0) return false;
+        uint256 diff = spot > twap ? spot - twap : twap - spot;
+        return diff * BPS <= twap * SPOT_BAND_BPS;
     }
 
     function _price() private view returns (uint256) {

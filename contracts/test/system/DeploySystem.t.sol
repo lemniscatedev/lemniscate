@@ -477,6 +477,14 @@ contract DeploySystemTest is Test, SystemChecks {
         _expectFail(c, d, "VOL_SIGNER_MISMATCH");
     }
 
+    /// F03/F17: perps are off at launch; a deploy that switches perp equity on fails the post-deploy check.
+    function test_R3_fails_perpEquityOn() public {
+        (Config memory c, Deployed memory d) = _fresh();
+        vm.prank(d.timelock);
+        WriterPool(d.pool).setHedgerLimits(100, 50, false);
+        _expectFail(c, d, "PERP_EQUITY_ON");
+    }
+
     function test_R3_fails_feedStale() public {
         (Config memory c, Deployed memory d) = _fresh();
         _openSession(d);

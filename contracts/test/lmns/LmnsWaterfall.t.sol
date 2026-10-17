@@ -30,6 +30,7 @@ contract LmnsWaterfallTest is PoolFixture {
         twap.setPrice(1e18);
         swapRouter.setRate(address(lmns), address(usdg), LMNS_FEE, 1e6);
         staking.setSlashRoute(IPriceReference(address(twap)), IHedgeAdapter(address(adapter)), LMNS_FEE, 300);
+        staking.setCoverCap(1_000_000 * USDG); // F18: the depth cap is tested in StakeCover.t.sol
         pool.setStaking(ILmnsStaking(address(staking)));
 
         _deposit(alice, 10_000 * USDG);

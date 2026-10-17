@@ -68,6 +68,22 @@ contract UniswapV3TwapReference is IPriceReference {
         return Math.mulDiv(RAW_TO_WAD, Q128, priceX128);
     }
 
+    /// @notice The pool's current (spot) price in the same units as `referencePrice`, from slot0's tick; zero when the
+    /// pool is missing or cannot answer. Callers compare it with the TWAP to refuse swaps while spot has been pushed
+    /// away from it inside the current transaction (security review F37).
+    function spotPrice(address stock, uint24 fee) external view returns (uint256) {
+        address pool = factory.getPool(stock, usdg, fee);
+        if (pool == address(0)) return 0;
+        (bool ok, bytes memory ret) = pool.staticcall(abi.encodeWithSignature("slot0()"));
+        if (!ok || ret.length < 64) return 0;
+        (, int256 tick) = abi.decode(ret, (uint256, int256));
+        if (tick > MAX_TICK || tick < -MAX_TICK) return 0;
+        uint256 priceX128 = priceX128AtTick(int24(tick));
+        if (priceX128 == 0) return 0;
+        if (IUniswapV3PoolLike(pool).token0() == stock) return Math.mulDiv(priceX128, RAW_TO_WAD, Q128);
+        return Math.mulDiv(RAW_TO_WAD, Q128, priceX128);
+    }
+
     /// @notice 1.0001^tick as a Q128.128 number, by binary exponentiation over constant powers of 1/1.0001.
     /// @dev Constant i is floor(2^128 / 1.0001^(2^i)). Accurate to well under one part in 1e12 for |tick| < 2^20.
     function priceX128AtTick(int24 tick) public pure returns (uint256 ratio) {

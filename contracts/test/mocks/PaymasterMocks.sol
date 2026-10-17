@@ -32,6 +32,14 @@ contract MockPaymasterEntryPoint {
         balanceOf[account] += msg.value;
     }
 
+    function getDepositInfo(address account)
+        external
+        view
+        returns (uint256 deposit, bool staked, uint112 stake, uint32 delay, uint48 withdrawTime)
+    {
+        return (balanceOf[account], stakeOf[account] != 0 && !unlocked, uint112(stakeOf[account]), unstakeDelay, 0);
+    }
+
     function withdrawTo(address payable to, uint256 amount) external {
         balanceOf[msg.sender] -= amount;
         to.transfer(amount);
@@ -137,5 +145,22 @@ contract MockPaymasterOther {
 
     function poke() external {
         ++hits;
+    }
+}
+
+/// @dev F26: an attacker's account that names its function execute(bytes32,bytes) but ignores the calldata the
+/// paymaster checked and runs its own calls instead.
+contract EvilExecuteAccount {
+    address public immutable target;
+    uint256 public runs;
+
+    constructor(address target_) {
+        target = target_;
+    }
+
+    function execute(bytes32, bytes calldata) external payable {
+        ++runs;
+        (bool ok,) = target.call(abi.encodeWithSignature("poke()"));
+        ok;
     }
 }

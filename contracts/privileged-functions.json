@@ -461,6 +461,12 @@
       "gate": "owner",
       "delay": "owner (a Safe, 2-step ownership, no timelock)"
     },
+    "LemniscatePaymaster.setKernelAccounts(address[],bool)": {
+      "contract": "LemniscatePaymaster",
+      "function": "setKernelAccounts(address[],bool)",
+      "gate": "owner",
+      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+    },
     "LemniscatePaymaster.setLimits(uint256,uint256,uint256)": {
       "contract": "LemniscatePaymaster",
       "function": "setLimits(uint256,uint256,uint256)",
@@ -513,8 +519,8 @@
     "LmnsBuyBurn.buyAndBurn(uint256)": {
       "contract": "LmnsBuyBurn",
       "function": "buyAndBurn(uint256)",
-      "gate": "anyone",
-      "delay": "none (permissionless)",
+      "gate": "role:KEEPER_ROLE",
+      "delay": "keeper instant",
       "note": "swaps only at the TWAP floor, burns what it buys"
     },
     "LmnsBuyBurn.grantRole(bytes32,address)": {
@@ -532,6 +538,12 @@
     "LmnsBuyBurn.revokeRole(bytes32,address)": {
       "contract": "LmnsBuyBurn",
       "function": "revokeRole(bytes32,address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
+    "LmnsBuyBurn.setMaxUsdgPerCall(uint256)": {
+      "contract": "LmnsBuyBurn",
+      "function": "setMaxUsdgPerCall(uint256)",
       "gate": "role:DEFAULT_ADMIN_ROLE",
       "delay": "default_admin 48h timelock"
     },
@@ -587,6 +599,12 @@
       "gate": "role:DEFAULT_ADMIN_ROLE",
       "delay": "default_admin 48h timelock"
     },
+    "LmnsStaking.setCoverCap(uint256)": {
+      "contract": "LmnsStaking",
+      "function": "setCoverCap(uint256)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
+    },
     "LmnsStaking.setSlashRoute(address,address,uint24,uint16)": {
       "contract": "LmnsStaking",
       "function": "setSlashRoute(address,address,uint24,uint16)",
@@ -618,6 +636,12 @@
       "gate": "anyone",
       "delay": "none (permissionless)",
       "note": "the caller's own stake"
+    },
+    "LmnsStaking.syncLoss()": {
+      "contract": "LmnsStaking",
+      "function": "syncLoss()",
+      "gate": "anyone",
+      "delay": "none (permissionless)"
     },
     "LmnsStaking.syncRewards()": {
       "contract": "LmnsStaking",
@@ -1109,6 +1133,12 @@
       "function": "setHedgeRoute(address,address,uint24)",
       "gate": "role:DEFAULT_ADMIN_ROLE",
       "delay": "default_admin 48h timelock"
+    },
+    "WriterPool.setHedgerLimits(uint16,uint16,bool)": {
+      "contract": "WriterPool",
+      "function": "setHedgerLimits(uint16,uint16,bool)",
+      "gate": "role:DEFAULT_ADMIN_ROLE|role:GUARDIAN_ROLE",
+      "delay": "default_admin 48h timelock / guardian instant"
     },
     "WriterPool.setModules(address,address,address,address)": {
       "contract": "WriterPool",

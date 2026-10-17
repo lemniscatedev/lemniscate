@@ -10,7 +10,8 @@ import {
     MockPaymasterEntryPoint,
     MockKernelAccount,
     MockPaymasterEngine,
-    MockPaymasterOther
+    MockPaymasterOther,
+    EvilExecuteAccount
 } from "./mocks/PaymasterMocks.sol";
 
 interface IRealEntryPoint {
@@ -33,6 +34,7 @@ contract PaymasterTest is Test {
     address internal owner = makeAddr("owner");
     address internal stranger = makeAddr("stranger");
     address internal router = makeAddr("agentRouter");
+    address internal kernelFactory = makeAddr("kernelFactory");
     uint256 internal signerKey = 0xA11CE; // test-key
     address internal signer;
 
@@ -54,15 +56,27 @@ contract PaymasterTest is Test {
         acct = new MockKernelAccount();
         acct2 = new MockKernelAccount();
         pm = new LemniscatePaymaster(
-            address(ep), owner, signer, address(engine), address(usdg), router, PER_OP, ACCOUNT_CAP, GLOBAL_CAP
+            address(ep), owner, signer, address(engine), address(usdg), router, kernelFactory, PER_OP, ACCOUNT_CAP, GLOBAL_CAP
         );
         vm.deal(address(this), 100 ether);
         pm.deposit{value: 1 ether}();
+        address[] memory known = new address[](2);
+        known[0] = address(acct);
+        known[1] = address(acct2);
+        vm.prank(owner);
+        pm.setKernelAccounts(known, true); // F26: the stubs stand in for factory-built Kernel accounts
         usdg.mint(address(acct), 1_000_000e6);
         usdg.mint(address(acct2), 1_000_000e6);
     }
 
     // ------------------------------------------------------------------------------------------------ helpers
+
+    function _known(address a) internal {
+        address[] memory l = new address[](1);
+        l[0] = a;
+        vm.prank(owner);
+        pm.setKernelAccounts(l, true);
+    }
 
     function _single(address target, uint256 value, bytes memory data) internal pure returns (bytes memory) {
         return abi.encodeWithSelector(
@@ -227,7 +241,7 @@ contract PaymasterTest is Test {
 
     function test_paymasterWithoutRouterOnlyAllowsEngine() public {
         LemniscatePaymaster p2 = new LemniscatePaymaster(
-            address(ep), owner, signer, address(engine), address(usdg), address(0), PER_OP, ACCOUNT_CAP, GLOBAL_CAP
+            address(ep), owner, signer, address(engine), address(usdg), address(0), kernelFactory, PER_OP, ACCOUNT_CAP, GLOBAL_CAP
         );
         PackedUserOperation memory op = _op(address(acct), 0, _single(address(0), 0, hex"11223344"));
         op.paymasterAndData = abi.encodePacked(address(p2), uint128(150_000), uint128(60_000), new bytes(77));
@@ -305,7 +319,7 @@ contract PaymasterTest is Test {
         assertTrue(h1 != h2, "chain id not in hash");
         vm.chainId(31337);
         LemniscatePaymaster p2 = new LemniscatePaymaster(
-            address(ep), owner, signer, address(engine), address(usdg), router, PER_OP, ACCOUNT_CAP, GLOBAL_CAP
+            address(ep), owner, signer, address(engine), address(usdg), router, kernelFactory, PER_OP, ACCOUNT_CAP, GLOBAL_CAP
         );
         assertTrue(p2.getHash(op, uint48(T0 + 300), uint48(T0)) != pm.getHash(op, uint48(T0 + 300), uint48(T0)), "paymaster not in hash");
     }
@@ -357,7 +371,7 @@ contract PaymasterTest is Test {
         vm.expectRevert(LemniscatePaymaster.NotEntryPoint.selector);
         pm.validatePaymasterUserOp(op, bytes32(0), MAX_COST);
         vm.expectRevert(LemniscatePaymaster.NotEntryPoint.selector);
-        pm.postOp(LemniscatePaymaster.PostOpMode.opSucceeded, abi.encode(address(acct), uint64(1), uint256(1)), 0, 0);
+        pm.postOp(LemniscatePaymaster.PostOpMode.opSucceeded, abi.encode(address(acct), uint64(1), uint256(1), uint256(0)), 0, 0);
     }
 
     // ------------------------------------------------------------------------------------------------ caps
@@ -398,6 +412,7 @@ contract PaymasterTest is Test {
         uint256 n;
         for (uint256 a; a < 3; ++a) {
             MockKernelAccount x = new MockKernelAccount();
+            _known(address(x));
             for (uint256 i; i < 5; ++i) {
                 ep.handleOp(address(pm), _signed(address(x), i, _single(address(engine), 0, hex"11223344")), MAX_COST, MAX_COST);
                 ++n;
@@ -405,6 +420,7 @@ contract PaymasterTest is Test {
         }
         assertEq(n, 15);
         MockKernelAccount y = new MockKernelAccount();
+        _known(address(y));
         PackedUserOperation memory op = _signed(address(y), 0, _single(address(engine), 0, hex"11223344"));
         vm.expectRevert(abi.encodeWithSelector(LemniscatePaymaster.GlobalDailyCapExceeded.selector, 16 * MAX_COST, GLOBAL_CAP));
         ep.validateOnly(address(pm), op, MAX_COST);
@@ -521,13 +537,13 @@ contract PaymasterTest is Test {
 
     function test_paymasterConstructorRejectsZero() public {
         vm.expectRevert(LemniscatePaymaster.ZeroAddress.selector);
-        new LemniscatePaymaster(address(0), owner, signer, address(engine), address(usdg), router, 1, 1, 1);
+        new LemniscatePaymaster(address(0), owner, signer, address(engine), address(usdg), router, kernelFactory, 1, 1, 1);
         vm.expectRevert(LemniscatePaymaster.ZeroAddress.selector);
-        new LemniscatePaymaster(address(ep), owner, address(0), address(engine), address(usdg), router, 1, 1, 1);
+        new LemniscatePaymaster(address(ep), owner, address(0), address(engine), address(usdg), router, kernelFactory, 1, 1, 1);
         vm.expectRevert(LemniscatePaymaster.ZeroAddress.selector);
-        new LemniscatePaymaster(address(ep), owner, signer, address(0), address(usdg), router, 1, 1, 1);
+        new LemniscatePaymaster(address(ep), owner, signer, address(0), address(usdg), router, kernelFactory, 1, 1, 1);
         vm.expectRevert(LemniscatePaymaster.ZeroAddress.selector);
-        new LemniscatePaymaster(address(ep), owner, signer, address(engine), address(0), router, 1, 1, 1);
+        new LemniscatePaymaster(address(ep), owner, signer, address(engine), address(0), router, kernelFactory, 1, 1, 1);
     }
 
     // ------------------------------------------------------------------------------------------------ cross-language vector
@@ -539,7 +555,7 @@ contract PaymasterTest is Test {
         deployCodeTo(
             "LemniscatePaymaster.sol:LemniscatePaymaster",
             abi.encode(
-                address(ep), owner, signer, address(engine), address(usdg), address(0), PER_OP, ACCOUNT_CAP, GLOBAL_CAP
+                address(ep), owner, signer, address(engine), address(usdg), address(0), kernelFactory, PER_OP, ACCOUNT_CAP, GLOBAL_CAP
             ),
             pmAddr
         );
@@ -556,12 +572,108 @@ contract PaymasterTest is Test {
     }
 
     bytes32 internal constant VECTOR_HASH = 0x4382ba3bdadbf1cf33cc5db4dbf465b897fb8311ae09f899c24ea3f7381e598e; // not-a-key
+    // ------------------------------------------------------------------------------------------------ F26
+
+    /// A deployed contract that is not a Kernel account built by the Kernel factory must not be sponsored, even with a
+    /// sponsor signature over policy-clean calldata: its own execute() decides what really runs.
+    function test_F26_nonKernelSenderNotSponsored() public {
+        EvilExecuteAccount evil = new EvilExecuteAccount(address(other));
+        PackedUserOperation memory op =
+            _signed(address(evil), 0, _single(address(engine), 0, abi.encodeCall(engine.shield, (5e6))));
+        bool sponsored;
+        try ep.handleOp(address(pm), op, MAX_COST, 0.0004 ether) returns (bool) {
+            sponsored = true;
+        } catch {}
+        assertFalse(sponsored, "arbitrary execution sponsored");
+        assertEq(other.hits(), 0);
+    }
+
+    /// An unknown sender is accepted only when the operation deploys it through the Kernel factory; it is then
+    /// remembered. Another factory, or none, is refused; the owner can register or forget accounts.
+    function test_F26_kernelFactoryDeploymentRegisters() public {
+        MockKernelAccount fresh = new MockKernelAccount();
+        PackedUserOperation memory op = _op(address(fresh), 0, _single(address(engine), 0, abi.encodeCall(engine.shield, (0))));
+        op.initCode = abi.encodePacked(stranger, hex"5fbfb9cf");
+        op = _sign(op, uint48(block.timestamp + 300), uint48(block.timestamp - 10), signerKey);
+        vm.expectRevert(abi.encodeWithSelector(LemniscatePaymaster.UnknownAccount.selector, address(fresh)));
+        ep.validateOnly(address(pm), op, MAX_COST);
+        op = _op(address(fresh), 0, _single(address(engine), 0, abi.encodeCall(engine.shield, (0))));
+        op.initCode = abi.encodePacked(kernelFactory, hex"5fbfb9cf");
+        op = _sign(op, uint48(block.timestamp + 300), uint48(block.timestamp - 10), signerKey);
+        ep.validateOnly(address(pm), op, MAX_COST);
+        assertTrue(pm.kernelAccount(address(fresh)));
+        // Known from now on, without initCode.
+        PackedUserOperation memory next = _signed(address(fresh), 1, _single(address(engine), 0, abi.encodeCall(engine.shield, (0))));
+        ep.validateOnly(address(pm), next, MAX_COST);
+        // Owner-only registry.
+        address[] memory list = new address[](1);
+        list[0] = address(fresh);
+        vm.prank(stranger);
+        vm.expectRevert();
+        pm.setKernelAccounts(list, false);
+        vm.prank(owner);
+        pm.setKernelAccounts(list, false);
+        vm.expectRevert(abi.encodeWithSelector(LemniscatePaymaster.UnknownAccount.selector, address(fresh)));
+        ep.validateOnly(address(pm), next, MAX_COST);
+    }
+
+    /// A bad sponsor signature never registers anything (no state written before the signature verifies).
+    function test_F26_badSignatureRegistersNothing() public {
+        MockKernelAccount fresh = new MockKernelAccount();
+        PackedUserOperation memory op = _op(address(fresh), 0, _single(address(engine), 0, abi.encodeCall(engine.shield, (0))));
+        op.initCode = abi.encodePacked(kernelFactory, hex"5fbfb9cf");
+        op = _sign(op, uint48(block.timestamp + 300), uint48(block.timestamp - 10), 0xB0B);
+        (, uint256 vd) = ep.validateOnly(address(pm), op, MAX_COST);
+        assertEq(vd & 1, 1);
+        assertFalse(pm.kernelAccount(address(fresh)));
+    }
+
+    // ------------------------------------------------------------------------------------------------ F38
+
+    /// EntryPoint v0.7 passes postOp the cost before postOp's own gas and the 10% penalty on unused call and postOp gas;
+    /// the caps must book at least the deposit's real loss (op limits: call 800k, postOp 60k).
+    function test_F38_capsBookPostOpGasAndPenalty() public {
+        PackedUserOperation memory op = _signed(address(acct), 0, _approveBuy(1e6));
+        (bytes memory ctx,) = ep.validateOnly(address(pm), op, MAX_COST);
+        uint256 fee = 2 gwei;
+        uint256 actual = 100_000 * fee; // a short (or reverting) call
+        vm.prank(address(ep));
+        pm.postOp(LemniscatePaymaster.PostOpMode.opReverted, ctx, actual, fee);
+        (, uint192 spent) = pm.accountUsage(address(acct));
+        (, uint192 gspent) = pm.globalUsage();
+        uint256 realLoss = actual + (60_000 + (800_000 + 60_000) / 10) * fee;
+        assertGe(spent, realLoss);
+        assertGe(gspent, realLoss);
+        assertLe(spent, MAX_COST); // never above the reservation
+    }
+
+    // ------------------------------------------------------------------------------------------------ F39
+
+    /// Caps can never be switched off (huge values) or zero, and must nest: per op <= per account per day <= global.
+    function test_F39_limitsHaveHardCeilings() public {
+        vm.startPrank(owner);
+        vm.expectRevert(LemniscatePaymaster.BadLimits.selector);
+        pm.setLimits(type(uint256).max, type(uint256).max, type(uint256).max);
+        vm.expectRevert(LemniscatePaymaster.BadLimits.selector);
+        pm.setLimits(0, 0.01 ether, 0.1 ether);
+        vm.expectRevert(LemniscatePaymaster.BadLimits.selector);
+        pm.setLimits(0.02 ether, 0.01 ether, 0.1 ether);
+        vm.expectRevert(LemniscatePaymaster.BadLimits.selector);
+        pm.setLimits(0.002 ether, 0.2 ether, 0.1 ether);
+        pm.setLimits(0.002 ether, 0.01 ether, 0.25 ether);
+        vm.stopPrank();
+        vm.expectRevert(LemniscatePaymaster.BadLimits.selector);
+        new LemniscatePaymaster(
+            address(ep), owner, signer, address(engine), address(usdg), router, kernelFactory, 1, 1, 100 ether
+        );
+    }
 }
 
 /// @notice Optional: runs against the REAL EntryPoint v0.7 on a fork (read-only RPC; nothing is broadcast).
 /// Skipped when FORK_RPC_URL is unset. Example: FORK_RPC_URL=https://rpc.mainnet.chain.robinhood.com forge test --match-contract PaymasterForkTest
 contract PaymasterForkTest is Test {
     address internal constant ENTRY_POINT = 0x0000000071727De22E5E9d8BAf0edAc6f37da032;
+    address internal constant KERNEL_FACTORY = 0x2577507b78c2008Ff367261CB6285d44ba5eF2E9; // v3.3, chain-facts.md
 
     function test_forkPaymasterAgainstRealEntryPoint() public {
         string memory url = vm.envOr("FORK_RPC_URL", string(""));
@@ -577,7 +689,8 @@ contract PaymasterForkTest is Test {
         address engine = makeAddr("engine");
         address usdg = makeAddr("usdg");
         LemniscatePaymaster pm = new LemniscatePaymaster(
-            ENTRY_POINT, owner, vm.addr(signerKey), engine, usdg, address(0), 0.01 ether, 0.01 ether, 0.05 ether
+            ENTRY_POINT, owner, vm.addr(signerKey), engine, usdg, address(0), KERNEL_FACTORY, 0.01 ether, 0.01 ether,
+            0.05 ether
         );
 
         // Funding and staking go through the real EntryPoint's accounting.
@@ -613,6 +726,10 @@ contract PaymasterForkTest is Test {
             abi.encodePacked(address(pm), uint128(150_000), uint128(60_000), validUntil, validAfter, r, s, v);
         // The real EntryPoint's userOpHash is computable for our packed operation (smoke check of struct layout).
         assertTrue(IRealEntryPoint(ENTRY_POINT).getUserOpHash(op) != bytes32(0));
+        address[] memory known = new address[](1);
+        known[0] = op.sender;
+        vm.prank(owner);
+        pm.setKernelAccounts(known, true);
         vm.prank(ENTRY_POINT);
         (, uint256 vd) = pm.validatePaymasterUserOp(op, bytes32(0), 0.002 ether);
         assertEq(vd & 1, 0, "sponsor signature must verify");

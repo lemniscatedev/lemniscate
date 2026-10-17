@@ -53,32 +53,6 @@ export const PoolAbi = [
   },
   {
     "type": "function",
-    "name": "HEDGE_MAX_MOVE_BPS_PER_HOUR",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "HEDGE_STALE_AFTER",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "MAX_QUEUE_DELAY",
     "inputs": [],
     "outputs": [
@@ -546,6 +520,34 @@ export const PoolAbi = [
       }
     ],
     "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "hedgerLimits",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      },
       {
         "name": "",
         "type": "uint256",
@@ -1409,6 +1411,29 @@ export const PoolAbi = [
         "name": "poolFee",
         "type": "uint24",
         "internalType": "uint24"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setHedgerLimits",
+    "inputs": [
+      {
+        "name": "maxPerpEquityBps_",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "maxHedgeLossBps",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "frozen",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
     "outputs": [],

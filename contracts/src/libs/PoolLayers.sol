@@ -8,6 +8,7 @@ import {IFeeRouter} from "../interfaces/IFeeRouter.sol";
 import {IReserve} from "../interfaces/IReserve.sol";
 import {IVaultRegistry} from "../interfaces/IWriterVault.sol";
 import {ILmnsStaking} from "../interfaces/ILmnsStaking.sol";
+import {PoolHedging} from "./PoolHedging.sol";
 
 /// @title PoolLayers
 /// @notice The Writer Pool's income split and loss layers: protocol fee and reserve funding on income, the writer
@@ -18,6 +19,39 @@ library PoolLayers {
     using SafeERC20 for IERC20;
 
     uint256 private constant BPS = 10_000;
+
+    /// @dev A withdrawal ticket (pool storage). `partialDay` = UTC day of its last partial (pro-rata) payment (F16).
+    struct Ticket {
+        address owner;
+        uint64 claimableAt;
+        uint32 partialDay;
+        uint256 shares;
+    }
+
+    /// @dev F16: the day's pro-rata pot. The first partial claim of a UTC day records what can be paid and the queue
+    /// then; every partial claim that day takes its part of that same pot, so claim order and repeated calls do not
+    /// change what a ticket gets.
+    struct Pot {
+        uint32 day;
+        uint112 usdg;
+        uint112 queued;
+    }
+
+    /// @dev Pool inputs of a claim, from one valuation at the NAV guard's low edge.
+    struct ClaimIn {
+        uint256 value; // the ticket's value, USDG
+        uint256 liquid; // cash + reserve share + hedges at their slippage floor, USDG
+        uint256 queuedValue; // value of every queued share, USDG
+        uint256 queued; // queued shares
+        uint256 reserveShareUsdg;
+        uint256 reserveBalUsdg; // USDG the Reserve holds
+        uint256 supply;
+    }
+
+    error NotClaimable(uint64 claimableAt);
+    error NothingClaimable();
+    /// @dev F18: only the ticket owner may take a claim that is charged for an unrealised reserve or stake draw.
+    error ClaimNeedsOwner(address owner);
 
     /// @dev Same signatures as the pool's events, so logs read the same whichever contract emits them.
     event IncomeSplit(uint256 incomeUsdg, uint256 protocolFeeUsdg, uint256 reserveUsdg, uint256 feeOwedUsdg);
@@ -100,16 +134,96 @@ library PoolLayers {
     }
 
     /// @dev Realises `amount` of the reserve share: the Reserve first, then a slash of the staked $LMNS for the rest.
-    function drawReserve(IReserve reserve, ILmnsStaking staking, uint256 amount) external {
-        if (amount == 0) return;
-        uint256 sent;
-        if (address(reserve) != address(0)) {
-            sent = reserve.cover(amount);
-            if (sent != 0) emit ReserveDrawn(sent);
+    /// Returns the USDG actually received.
+    function drawReserve(IReserve reserve, ILmnsStaking staking, uint256 amount) external returns (uint256 sent) {
+        if (amount == 0) return 0;
+        sent = _cover(reserve, amount);
+        if (sent < amount) sent += _slash(staking, amount - sent);
+    }
+
+    function _cover(IReserve reserve, uint256 amount) private returns (uint256 sent) {
+        if (amount == 0 || address(reserve) == address(0)) return 0;
+        sent = reserve.cover(amount);
+        if (sent != 0) emit ReserveDrawn(sent);
+    }
+
+    function _slash(ILmnsStaking staking, uint256 amount) private returns (uint256 got) {
+        if (amount == 0 || address(staking) == address(0)) return 0;
+        got = staking.slash(amount);
+        if (got != 0) emit StakeSlashed(amount, got);
+    }
+
+    /// @dev The money part of `WriterPool.claim` (kept here so the pool stays under the size limit). Returns the USDG to
+    /// pay the ticket owner and the shares to burn, and lowers the ticket's shares; the pool burns, pays and updates
+    /// `queuedShares`.
+    /// Full path: liquid assets cover every queued share and the hedge sales this claim needs clear; the whole ticket is
+    /// paid and a forced sale's execution shortfall is charged to it.
+    /// Pro-rata path (F16), when liquid assets cannot cover the queue or a needed sale fails: the first such claim of a
+    /// UTC day raises cash for the whole queue once and records the day's pot (cash that then exists plus the queue's
+    /// part of the reserve share) and the queued shares; every ticket that day is paid its part of that same pot, at
+    /// most once a day. A loop of claim() calls, the claim order or split tickets therefore change nothing, and
+    /// execution shortfall is shared by the queue.
+    function settleClaim(
+        Ticket storage t,
+        Pot storage pot,
+        PoolHedging.Book storage b,
+        PoolHedging.Ctx memory c,
+        IReserve reserve,
+        ILmnsStaking staking,
+        ClaimIn memory x
+    ) external returns (uint256 paid, uint256 burnShares) {
+        uint256 shares = t.shares;
+        uint256 target = x.value;
+        uint256 shortfall;
+        bool proRata = x.liquid < x.queuedValue;
+        if (!proRata) {
+            uint256 need = target - _reserveSlice(x, shares);
+            if (c.usdg.balanceOf(address(this)) < need) shortfall = PoolHedging.ensureCash(b, c, need, false);
+            proRata = c.usdg.balanceOf(address(this)) + shortfall < need;
         }
-        if (sent < amount && address(staking) != address(0)) {
-            uint256 got = staking.slash(amount - sent);
-            if (got != 0) emit StakeSlashed(amount - sent, got);
+        if (proRata) {
+            uint32 day = uint32(block.timestamp / 1 days);
+            Pot memory p = pot;
+            if (p.day != day) {
+                uint256 reserveQueue = _reserveSlice(x, x.queued);
+                uint256 want = x.queuedValue > reserveQueue ? x.queuedValue - reserveQueue : 0;
+                if (c.usdg.balanceOf(address(this)) < want) PoolHedging.ensureCash(b, c, want, true);
+                p = Pot(day, uint112(c.usdg.balanceOf(address(this)) + reserveQueue), uint112(x.queued));
+                pot.day = p.day;
+                pot.usdg = p.usdg;
+                pot.queued = p.queued;
+            }
+            if (t.partialDay == day) revert NotClaimable(uint64((uint256(day) + 1) * 1 days));
+            t.partialDay = day;
+            target = Math.mulDiv(p.usdg, shares, p.queued);
+            if (target > x.value) target = x.value;
+            shortfall = 0; // shared by the queue: the pot is cash that exists
         }
+        burnShares = target == x.value ? shares : Math.mulDiv(shares, target, x.value, Math.Rounding.Ceil);
+        if (burnShares > shares) burnShares = shares;
+        // Realise this claim's part of the reserve share (NAV-neutral for everyone else). F18: what the Reserve and the
+        // stake slash do not deliver (a slash that cannot clear its floor returns 0) is charged to this claim, not to
+        // the LPs who stay; only the owner may accept such a charged claim, so a stranger cannot force it on them.
+        // The slice comes from each layer pro rata to what it covers (Reserve part, then stake part), so an exiting LP
+        // never takes the staying LPs' part of the Reserve and leaves them only the stake.
+        uint256 want = _reserveSlice(x, burnShares);
+        uint256 fromReserve = Math.mulDiv(
+            x.reserveShareUsdg < x.reserveBalUsdg ? x.reserveShareUsdg : x.reserveBalUsdg, burnShares, x.supply
+        );
+        uint256 got = _cover(reserve, fromReserve);
+        got += _slash(staking, want - got);
+        if (got < want) {
+            if (msg.sender != t.owner) revert ClaimNeedsOwner(t.owner);
+            shortfall += want - got;
+        }
+        uint256 cash = c.usdg.balanceOf(address(this));
+        if (proRata && cash + shortfall < target) target = cash + shortfall; // never more than is there
+        paid = target > shortfall ? target - shortfall : 0;
+        if (burnShares == 0 || paid == 0) revert NothingClaimable();
+        t.shares = shares - burnShares;
+    }
+
+    function _reserveSlice(ClaimIn memory x, uint256 shares) private pure returns (uint256) {
+        return Math.mulDiv(x.reserveShareUsdg, shares, x.supply);
     }
 }
