@@ -8,6 +8,7 @@ on a local anvil). Without `--broadcast`, Forge only simulates against the RPC a
 | --- | --- | --- |
 | `DeploySystem.s.sol` | yes (with `--broadcast`) | Deploys and wires every contract, lists the launch names, hands admin to the timelock (or the testnet owner), runs the post-deploy check, writes `deployments/<profile>.json` |
 | `PostDeployCheck.s.sol` | no | Checks a live deployment against its config; one named reason per failure |
+| `DeployLmns.s.sol` | yes (with `--broadcast`) | Phase 2: deploys `LmnsStaking` and `LmnsBuyBurn` for the launchpad's `$LMNS` (14-day unstake on fork and mainnet) and prints the admin calls that turn them on |
 | `TimelockHandoff.s.sol` | yes (with `--broadcast`) | Separate-step handoff for a deployment made with `"handoff": false` |
 
 ## Profiles

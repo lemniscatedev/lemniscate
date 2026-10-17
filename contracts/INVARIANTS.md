@@ -139,6 +139,18 @@ admin unpauses, vol posts that move sigma, and hedge-equity posts. Deep run: `FO
 | R9 | Profiles: mainnet refuses any chain but 4663 and any Safe below 3-of-5; testnet only on 46630; fork/mainnet configs cannot shorten timers | `DeploySystem.t.sol::test_R9_*` |
 | R5 | With `FORK_RPC_URL`: PriceGuard reads every launch name's real feed and Stock Token, S within 2% of the Uniswap v3 TWAP | `test/fork/Fork.t.sol::test_R5_forkFeedsReadable` (skipped without the variable) |
 
+## $LMNS staking, fee tiers and burn (todo 20, phase 2; module off until the admin turns it on)
+
+| Rule | Property | Test (`test/lmns/`) |
+|------|----------|------|
+| R1 | No token contract: the launchpad's $LMNS address is a deploy parameter, nothing mints it; unset or route-less = module off and no read reverts | `LmnsStaking.t.sol::test_R1_*`, `LmnsDeploy.t.sol::test_R1_noTokenNoDeploy`, `LmnsWaterfall.t.sol::test_R1_stakingUnsetOrRouteOffIsReserveOnly` |
+| R2 | Unstake = request, deploy-time delay (14 days on fork and mainnet, hard minimum 5 minutes), complete or cancel; requested stakes are slashed pro rata too | `LmnsStaking.t.sol::test_R2_*`, `LmnsDeploy.t.sol::test_R2_*` |
+| R3 | Loss order: Reserve, then staked $LMNS (TWAP value less slippage, capped by the stake), then LP NAV; only the pool can slash; a failing route returns 0 | `LmnsWaterfall.t.sol::test_R3_*`, `LmnsStaking.t.sol::test_R3_*` |
+| R4 | Fee tiers lower the 3 bps fee (at most 50%) and the spread (at most 20%); the engine's read is gas-capped, clamped and defaults to no discount | `LmnsEngineTiers.t.sol::test_R4_*`, `::testFuzz_R4_discountNeverRaisesCost`, `LmnsStaking.t.sol::test_R4_*` |
+| R5 | The stakers bucket streams per second to active stakes (same-block stake earns nothing, minimum stake age to claim, dust never overpays) | `LmnsStaking.t.sol::test_R5_*`, `::testFuzz_R5_owedNeverExceedsInflow` |
+| R6 | The burn bucket buys and burns only with a TWAP source and route; otherwise it accumulates | `LmnsStaking.t.sol::test_R6_burnOnlyWithTwapElseAccumulates`, `::test_R5_R6_feeRouterBucketsReachStakingAndBurn` |
+| R7 | Staked balances equal contract holdings (plus donations); shares add up; owed USDG never exceeds the balance or the inflow; no panics | `LmnsInvariant.t.sol::invariant_R7_*` |
+
 Notes:
 - `bookValue` staleness bound: each series is valued at its last touch; the keeper accrues every live series
   (`engine.liveSeries(stock)`) at least hourly, so NAV lags the exact liability by at most about one hour of price and

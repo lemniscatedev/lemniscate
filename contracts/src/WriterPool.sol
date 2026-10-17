@@ -20,7 +20,9 @@ import {IHedgeAdapter} from "./interfaces/IHedgeAdapter.sol";
 import {IReserve} from "./interfaces/IReserve.sol";
 import {IFeeRouter} from "./interfaces/IFeeRouter.sol";
 import {IVaultRegistry} from "./interfaces/IWriterVault.sol";
+import {ILmnsStaking} from "./interfaces/ILmnsStaking.sol";
 import {PoolHedging} from "./libs/PoolHedging.sol";
+import {PoolLayers} from "./libs/PoolLayers.sol";
 import {Roles} from "./libs/Roles.sol";
 
 /// @title WriterPool
@@ -40,6 +42,9 @@ import {Roles} from "./libs/Roles.sol";
 /// cash raising from those routes, and exact approvals cleared after every swap.
 /// Reserve share: the Reserve tops NAV per share back up to its high-water mark, so a loss reaches LP NAV only once
 /// the reserve is used up (spec 2.6). The share is virtual until cash is needed (claims and payouts draw it).
+/// Loss order (todo 20 R3): the Reserve first, then staked $LMNS (`staking`, phase 2: its TWAP cover value, capped by
+/// the stake, counts in the reserve share once the Reserve is used up, and draws slash it), then LP NAV. Unset staking
+/// = no second layer.
 contract WriterPool is
     Initializable,
     ERC4626Upgradeable,
@@ -71,6 +76,8 @@ contract WriterPool is
     event HedgeRouteUpdated(address indexed stock, address indexed adapter, uint24 poolFee);
     event HedgeUnitsSynced(address indexed stock, uint256 units);
     event ModulesSet(address engine, address reserve, address feeRouter, address priceReference);
+    event StakingSet(address staking);
+    event StakeSlashed(uint256 requested, uint256 received);
 
     uint256 private constant BPS = 10_000;
     uint256 private constant USDG_TO_WAD = 1e12;
@@ -150,6 +157,8 @@ contract WriterPool is
     /// @inheritdoc IPool
     /// @dev Writer-vault registry (todo 19, phase 2). Unset at launch: every vault path is then a no-op.
     address public override vaultHook;
+    /// @notice Second loss layer (phase 2, todo 20); zero = off.
+    ILmnsStaking public staking;
 
     /// @param queueDelay_ withdrawal queue delay in seconds, inside [MIN_QUEUE_DELAY, MAX_QUEUE_DELAY]. Immutable in
     /// the implementation: an upgrade must construct the new implementation with the same value.
@@ -214,13 +223,7 @@ contract WriterPool is
         onlyEngine
         nonReentrant
     {
-        address h = vaultHook;
-        if (h == address(0)) return;
-        _payVaults(seriesId, spreadUsdg, supplyBefore);
-        try IVaultRegistry(h).onBuyback(seriesId, tokens, supplyBefore, sWad) {}
-        catch {
-            emit VaultHookFailed(seriesId);
-        }
+        PoolLayers.buyback(usdg, vaultHook, feeRouter, seriesId, tokens, supplyBefore, sWad, spreadUsdg);
     }
 
     /// @inheritdoc IPool
@@ -244,7 +247,7 @@ contract WriterPool is
         if (cash < usdgOut) {
             _ensureCash(usdgOut, true);
             cash = usdg.balanceOf(address(this));
-            if (cash < usdgOut && address(reserve) != address(0)) {
+            if (cash < usdgOut && (address(reserve) != address(0) || address(staking) != address(0))) {
                 Valuation memory v = _valuation(_liability(), false);
                 uint256 share = v.reserveShare / USDG_TO_WAD;
                 uint256 need = usdgOut - cash;
@@ -417,6 +420,13 @@ contract WriterPool is
         if (hook != address(0) && IVaultRegistry(hook).pool() != address(this)) revert InvalidParams();
         vaultHook = hook;
         emit VaultHookSet(hook);
+    }
+
+    /// @notice Admin (timelock): the $LMNS staking loss layer, or zero to turn it off.
+    function setStaking(ILmnsStaking staking_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (address(staking_) != address(0) && staking_.pool() != address(this)) revert InvalidParams();
+        staking = staking_;
+        emit StakingSet(address(staking_));
     }
 
     function setDepositor(address account, bool allowed) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -634,16 +644,26 @@ contract WriterPool is
         v.navHigh = v.nav + up;
     }
 
-    /// @dev The part of the reserve needed to lift NAV per share back to the high-water mark.
+    /// @dev The part of the first-loss layers needed to lift NAV per share back to the high-water mark: the reserve
+    /// first, then the staked $LMNS cover (read only when the reserve alone falls short).
     function _reserveShare(int256 raw, uint256 supply) private view returns (uint256) {
-        IReserve r = reserve;
         uint256 hwm = highWaterNavPerShare;
-        if (address(r) == address(0) || supply == 0 || hwm == 0) return 0;
+        if (supply == 0 || hwm == 0) return 0;
         int256 defended = _toInt(Math.mulDiv(hwm, supply, SHARE_UNIT));
         if (raw >= defended) return 0;
         uint256 deficit = uint256(defended - raw);
-        uint256 bal = usdg.balanceOf(address(r)) * USDG_TO_WAD;
+        uint256 bal = _reserveWad();
+        if (deficit <= bal) return deficit;
+        bal += _stakeCoverWad();
         return deficit < bal ? deficit : bal;
+    }
+
+    function _reserveWad() private view returns (uint256) {
+        return address(reserve) == address(0) ? 0 : usdg.balanceOf(address(reserve)) * USDG_TO_WAD;
+    }
+
+    function _stakeCoverWad() private view returns (uint256) {
+        return address(staking) == address(0) ? 0 : staking.coverValueUsdg() * USDG_TO_WAD;
     }
 
     function _checkpoint(uint256 liability) private {
@@ -656,8 +676,11 @@ contract WriterPool is
         uint256 rawPerShare = v.raw > 0 ? Math.mulDiv(uint256(v.raw), SHARE_UNIT, v.supply) : 0;
         if (rawPerShare >= highWaterNavPerShare) {
             highWaterNavPerShare = rawPerShare;
-        } else if (address(reserve) != address(0) && v.reserveShare >= usdg.balanceOf(address(reserve)) * USDG_TO_WAD) {
-            // Reserve exhausted: the loss beyond it is LP loss; defend the new level from here on.
+        } else if (
+            (address(reserve) != address(0) || address(staking) != address(0))
+                && v.reserveShare >= _reserveWad() + _stakeCoverWad()
+        ) {
+            // Reserve and stake exhausted: the loss beyond them is LP loss; defend the new level from here on.
             highWaterNavPerShare = v.nav > 0 ? Math.mulDiv(uint256(v.nav), SHARE_UNIT, v.supply) : 0;
         }
     }
@@ -694,57 +717,17 @@ contract WriterPool is
 
     // ---------------------------------------------------------------- internals: cash, income, swaps
 
-    /// @dev Pays the protocol fee (plus any fee owed) to the router and, for spread income, the reserve's share until
-    /// it holds its target of NAV. Never sells hedges for fees: what cash cannot cover is owed.
     function _takeIncome(uint256 income, bool isSpread) private {
-        IFeeRouter router = feeRouter;
-        uint256 fee = address(router) == address(0) ? 0 : Math.mulDiv(income, router.protocolFeeBps(), BPS);
-        uint256 owed = feeOwed + fee;
-        uint256 cash = usdg.balanceOf(address(this));
-        uint256 sent = owed < cash ? owed : cash;
-        if (sent != 0) usdg.safeTransfer(address(router), sent);
-        feeOwed = owed - sent;
-        cash -= sent;
-
-        uint256 toReserve;
-        IReserve r = reserve;
-        if (isSpread && address(r) != address(0) && income != 0) {
-            uint256 target = Math.mulDiv(lastNavUsdg, r.targetBps(), BPS);
-            uint256 held = usdg.balanceOf(address(r));
-            toReserve = Math.mulDiv(income, r.incomeShareBps(), BPS);
-            uint256 room = target > held ? target - held : 0;
-            if (toReserve > room) toReserve = room;
-            if (toReserve > cash) toReserve = cash;
-            if (toReserve != 0) usdg.safeTransfer(address(r), toReserve);
-        }
-        if (income != 0 || sent != 0) emit IncomeSplit(income, sent, toReserve, feeOwed);
+        feeOwed = PoolLayers.takeIncome(usdg, feeRouter, reserve, feeOwed, lastNavUsdg, income, isSpread);
     }
 
-    /// @dev Sends the vaults' net share of `income` on `id` (gross share less the protocol fee, which `_takeIncome`
-    /// already charged on the whole income) to the hook, as far as cash allows. A failing hook never blocks the caller.
     function _payVaults(bytes32 id, uint256 income, uint256 supply) private {
-        address h = vaultHook;
-        if (h == address(0) || income == 0) return;
-        try IVaultRegistry(h).shareOf(id, income, supply) returns (uint256 gross) {
-            IFeeRouter router = feeRouter;
-            uint256 net = address(router) == address(0) ? gross : gross - Math.mulDiv(gross, router.protocolFeeBps(), BPS);
-            uint256 cash = usdg.balanceOf(address(this));
-            if (net > cash) net = cash;
-            if (net == 0 || !usdg.trySafeTransfer(h, net)) return;
-            try IVaultRegistry(h).routeFunding(id, net) {
-                emit VaultFundingPaid(id, net);
-            } catch {
-                emit VaultHookFailed(id);
-            }
-        } catch {
-            emit VaultHookFailed(id);
-        }
+        PoolLayers.payVaults(usdg, vaultHook, feeRouter, id, income, supply);
     }
 
+    /// @dev Realises `amount` of the reserve share: the Reserve first, then a slash of the staked $LMNS for the rest.
     function _drawReserve(uint256 amount) private {
-        if (amount == 0 || address(reserve) == address(0)) return;
-        uint256 sent = reserve.cover(amount);
-        if (sent != 0) emit ReserveDrawn(sent);
+        PoolLayers.drawReserve(reserve, staking, amount);
     }
 
     function _ensureCash(uint256 amount, bool fullCash) private returns (uint256) {
@@ -787,5 +770,6 @@ contract WriterPool is
 
     function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
-    uint256[29] private __gap;
+    /// @dev Two slots taken from the gap in phase 2: vaultHook (todo 19) and staking (todo 20).
+    uint256[28] private __gap;
 }

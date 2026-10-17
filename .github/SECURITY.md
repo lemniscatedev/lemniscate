@@ -253,6 +253,10 @@ engine and agent router, and the factory is owned by the series registry that cr
 - The off-chain signer and the issuers in items 5 and 6 are trusted parties. We cannot remove those powers; we limit what they can do to Lemniscate state.
 - Rounding always goes to the protocol side; a round trip in one block never returns more than was paid. Sub-wei differences are not a vulnerability.
 - Pricing uses fixed-point approximations of a closed-form model; accuracy is tested against a high-precision reference (see the invariants file), not proven.
+- Phase 2 `$LMNS` staking (off until the admin turns it on): the stake's cover counts toward NAV at an `$LMNS`/USDG TWAP less a
+  slippage allowance, and only up to the high-water mark. A manipulated TWAP can at most make an uncovered loss look covered until
+  the next payout or claim; the slash itself is floored at the same TWAP, so a bad price makes it sell nothing rather than sell cheap.
+  The admin (timelock) chooses the TWAP source and swap route; only the pool can slash.
 
 ## Audit history
 

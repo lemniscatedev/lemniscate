@@ -93,6 +93,8 @@ library EngineStorage {
         address[] stocks;
         /// @dev Series with a non-zero token supply, per stock (todo 07b R2): the only series any loop visits.
         mapping(address stock => bytes32[]) live;
+        /// @dev $LMNS staking read for fee tiers (todo 20 R4); zero = no discounts. Appended (namespaced layout).
+        address feeTiers;
     }
 
     /// @dev keccak256(abi.encode(uint256(keccak256("lemniscate.storage.Engine")) - 1)) & ~bytes32(uint256(0xff))

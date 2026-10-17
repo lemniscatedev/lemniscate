@@ -19,6 +19,8 @@ import {EngineHelper} from "./EngineHelper.sol";
 import {EngineStorage} from "./engine/EngineStorage.sol";
 import {EngineTradeLib} from "./engine/EngineTradeLib.sol";
 import {EngineOpsLib} from "./engine/EngineOpsLib.sol";
+import {EngineViewLib} from "./engine/EngineViewLib.sol";
+import {EngineCore} from "./engine/EngineCore.sol";
 
 /// @title LemniscateEngine
 /// @notice Buys and sells everlasting options (Up = call, Down = put) on Stock Tokens at a model price plus a spread,
@@ -57,6 +59,7 @@ contract LemniscateEngine is
     event ParamsSet(EngineHelper.Params params);
     event HedgeDepthCapSet(address indexed stock, uint256 capWad);
     event UpgradesFrozen();
+    event FeeTiersSet(address feeTiers);
 
     error ZeroAddress();
     error UpgradesAreFrozen();
@@ -128,6 +131,23 @@ contract LemniscateEngine is
         _checkPauser(paused);
         EngineStorage.layout().seriesBuysPaused[id] = paused;
         emit BuysPaused(false, id, paused);
+    }
+
+    /// @notice Admin (timelock): the $LMNS staking contract whose tiers discount fee and spread (todo 20 R4). Zero =
+    /// no discounts. Reads are gas-capped and clamped, so a broken contract only removes discounts, never blocks trades.
+    function setFeeTiers(address feeTiers_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (feeTiers_ != address(0) && feeTiers_.code.length == 0) revert ZeroAddress();
+        EngineStorage.layout().feeTiers = feeTiers_;
+        emit FeeTiersSet(feeTiers_);
+    }
+
+    function feeTiers() external view returns (address) {
+        return EngineStorage.layout().feeTiers;
+    }
+
+    /// @notice The fee and spread discounts (bps of each) a trade by `account` gets now; (0, 0) when tiers are off.
+    function feeDiscountOf(address account) external view returns (uint16 feeDiscBps, uint16 spreadDiscBps) {
+        return EngineCore.discountOf(account);
     }
 
     /// @notice One way: after this no upgrade is possible.
@@ -241,7 +261,12 @@ contract LemniscateEngine is
 
     /// @inheritdoc IOptionEngine
     function quote(bytes32 id, uint256 units, bool isBuy) external view returns (Quote memory) {
-        return EngineOpsLib.quote(HELPER, id, units, isBuy);
+        return EngineOpsLib.quote(HELPER, id, units, isBuy, address(0));
+    }
+
+    /// @notice `quote` with `account`'s $LMNS fee tier applied (what that account's buy or sell would get).
+    function quoteFor(bytes32 id, uint256 units, bool isBuy, address account) external view returns (Quote memory) {
+        return EngineOpsLib.quote(HELPER, id, units, isBuy, account);
     }
 
     /// @inheritdoc IOptionEngine
@@ -255,7 +280,7 @@ contract LemniscateEngine is
 
     /// @inheritdoc IOptionEngine
     function totalLiability() external view returns (uint256 liabilityWad) {
-        return EngineOpsLib.totalLiability(HELPER);
+        return EngineViewLib.totalLiability(HELPER);
     }
 
     /// @inheritdoc IOptionEngine
@@ -270,7 +295,7 @@ contract LemniscateEngine is
 
     /// @notice Worst stress-scenario loss of the current book (WAD USDG) and the NAV it is measured against.
     function stressLoss() external view returns (uint256 lossWad, int256 navWad) {
-        return EngineOpsLib.stressLoss(HELPER);
+        return EngineViewLib.stressLoss(HELPER);
     }
 
     function params() external view returns (EngineHelper.Params memory) {

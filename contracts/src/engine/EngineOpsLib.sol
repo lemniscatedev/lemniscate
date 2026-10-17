@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IOptionToken} from "../interfaces/IOptionToken.sol";
 import {IOptionEngine} from "../interfaces/IOptionEngine.sol";
-import {PriceReading, SessionKind, Speed, VolReading} from "../libs/OptionTypes.sol";
+import {SessionKind} from "../libs/OptionTypes.sol";
 import {EngineHelper} from "../EngineHelper.sol";
 import {EngineStorage} from "./EngineStorage.sol";
 import {EngineCore} from "./EngineCore.sol";
 
 /// @title EngineOpsLib
-/// @notice Accrual, the queued-sell fill and cancel, risk pokes and the valuation views of LemniscateEngine (external library, delegatecalled).
+/// @notice Accrual, the queued-sell fill and cancel, risk pokes, quote and vMark of LemniscateEngine (external library, delegatecalled).
 library EngineOpsLib {
     uint256 private constant WAD = 1e18;
 
@@ -48,7 +47,7 @@ library EngineOpsLib {
         uint256 units = Math.mulDiv(tokens, c.norm, WAD);
         EngineHelper.Book memory b = EngineCore.bookFor(h, c, tokens, false, false);
         (IOptionEngine.Quote memory q, uint256 spread) =
-            EngineCore.priceTrade(h, c, b, $.pool.navFor(b.tNow), units, false);
+            EngineCore.priceTrade(h, c, b, $.pool.navFor(b.tNow), units, false, t.seller);
         usdgOut = q.usdg;
         t.open = false;
         $.pool.pay(t.recipient, usdgOut, spread); // a blocked payout reverts: the ticket stays open
@@ -96,7 +95,8 @@ library EngineOpsLib {
     }
 
     /// @dev Exactly what a trade of `units` would get now (the trade's own accrual is simulated).
-    function quote(EngineHelper h, bytes32 id, uint256 units, bool isBuy)
+    /// `account` gets its $LMNS fee tier (zero = no discount).
+    function quote(EngineHelper h, bytes32 id, uint256 units, bool isBuy, address account)
         external
         view
         returns (IOptionEngine.Quote memory q)
@@ -110,7 +110,7 @@ library EngineOpsLib {
         if (due) c.norm = EngineCore.nextNorm(c);
         uint256 tokens = isBuy ? units * WAD / c.norm : Math.mulDiv(units, WAD, c.norm, Math.Rounding.Ceil);
         EngineHelper.Book memory b = EngineCore.bookFor(h, c, tokens, isBuy, due);
-        (q,) = EngineCore.priceTrade(h, c, b, EngineStorage.layout().pool.navFor(b.tNow), units, isBuy);
+        (q,) = EngineCore.priceTrade(h, c, b, EngineStorage.layout().pool.navFor(b.tNow), units, isBuy, account);
         q.buyable = EngineCore.buyBlock(c) == 0;
     }
 
@@ -121,37 +121,5 @@ library EngineOpsLib {
     {
         EngineCore.Ctx memory c = EngineCore.contextView(h, id, false);
         return (c.pu.v, c.pu.payoff, c.sigma, c.session);
-    }
-
-    /// @dev Exact recomputation at current prices (monitoring and tests; user paths use `bookValue`): one readLite
-    /// and two vol reads per stock, live series only. A series whose stock has no usable price or vol right now is
-    /// carried at its last-touch value.
-    function totalLiability(EngineHelper h) external view returns (uint256 liabilityWad) {
-        EngineStorage.Layout storage $ = EngineStorage.layout();
-        for (uint256 i; i < $.stocks.length; ++i) {
-            address stock = $.stocks[i];
-            bytes32[] storage ids = $.live[stock];
-            if (ids.length == 0) continue;
-            PriceReading memory r = $.priceGuard.readLite(stock);
-            VolReading memory vd = $.volOracle.read(stock, Speed.DAILY);
-            VolReading memory vw = $.volOracle.read(stock, Speed.WEEKLY);
-            for (uint256 j; j < ids.length; ++j) {
-                EngineStorage.SeriesInfo memory si = $.info[ids[j]];
-                uint256 supply = IERC20(si.token).totalSupply();
-                VolReading memory vr = si.tau == EngineCore.TAU_DAILY ? vd : vw;
-                if (EngineCore.inDomain(r.s) && vr.sigmaBps != 0) {
-                    (uint256 v,) = h.valueAt(si.isCall, r.s, si.strike, vr.sigmaBps, vr.skewK, 0, si.tau);
-                    liabilityWad += EngineCore.liab(supply, si.norm, v);
-                } else {
-                    liabilityWad += $.risk[ids[j]].value;
-                }
-            }
-        }
-    }
-
-    function stressLoss(EngineHelper h) external view returns (uint256 lossWad, int256 navWad) {
-        EngineStorage.Layout storage $ = EngineStorage.layout();
-        EngineHelper.Risk memory none;
-        return (EngineCore.stress(h, address(0), none, 0), $.pool.navFor($.bookValue));
     }
 }

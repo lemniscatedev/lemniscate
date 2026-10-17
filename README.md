@@ -34,12 +34,13 @@ web/          Website (static build, subtree of the frontend repository; extra d
 | `MarketHours` | Market session calendar, pushed by the keeper, with an NYSE calendar fallback | built |
 | `WriterPool` | ERC-4626-style USDG pool. Counterparty for all trades, holds the spot hedges (linked library `PoolHedging`), withdrawal queue paid at NAV (72h on mainnet) | built |
 | `Reserve`, `FeeRouter` | First-loss reserve funded from a share of the spread; protocol fee split to the pool, keepers, hedger and treasury on a fixed period (7 days on mainnet) | built |
+| `LmnsStaking`, `LmnsBuyBurn` | Phase 2, off at launch. Staked `$LMNS` (token issued by the launchpad, never by these contracts) is the second loss layer after the reserve, sets fee tiers, and receives the stakers' 5% of protocol fees; the burn 5% buys and burns `$LMNS` only when a TWAP is configured. Deployed by `script/DeployLmns.s.sol` | built |
 | `AgentRouter` | Lets an owner give an agent key a budget, an expiry and a list of names; trades only through the engine, always to the owner | built |
 | `UniswapV3HedgeAdapter`, `UniswapV3TwapReference` | Swap route for the pool's hedges and the TWAP that floors forced sales | built |
 | `LemniscatePaymaster` | Verifying paymaster for ERC-4337 one-tap transactions | built |
 | `libs/` | `FixedMath`, `EverlastingMath`, `EverlastingGreeks`, `Funding`, `NyseCalendar`, `Roles`, `TickPrice` | built |
 
-Phase 2 (writer vaults, the `$LMNS` token and staking) is designed but not written, and ships closed.
+Phase 2 writer vaults are designed but not written. `$LMNS` staking is written and stays off until the token exists and the admin turns it on.
 
 The engine, pool and market hours sit behind UUPS proxies that only the admin can upgrade; the engine's upgrades can be frozen for good. OpenZeppelin v5.4.0 and forge-std v1.9.7 are vendored in `contracts/lib`. Roles, trust assumptions and accepted risks are in [SECURITY.md](.github/SECURITY.md), what to do in an emergency in [INCIDENT.md](.github/INCIDENT.md); each invariant and the test that checks it is in [contracts/INVARIANTS.md](contracts/INVARIANTS.md).
 

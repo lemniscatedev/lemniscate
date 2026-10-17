@@ -38,6 +38,10 @@ library EngineCore {
     /// @dev Buys stop on a series whose norm fell below 1e-4: close to Funding's floor the norm cannot shrink much
     /// further, so a new holder would pay too little funding.
     uint256 internal constant BUY_MIN_NORM = 1e14;
+    /// @dev Bounds the engine applies to whatever the $LMNS fee-tier contract returns (todo 20 R4).
+    uint16 internal constant MAX_FEE_DISC_BPS = 5_000;
+    uint16 internal constant MAX_SPREAD_DISC_BPS = 2_000;
+    uint256 private constant TIER_READ_GAS = 60_000;
     uint256 internal constant DRAWDOWN_DAYS = 30;
     uint256 internal constant RING = 31;
 
@@ -476,9 +480,11 @@ library EngineCore {
         EngineHelper.Book memory b,
         int256 navNow,
         uint256 units,
-        bool isBuy
+        bool isBuy,
+        address account
     ) internal view returns (IOptionEngine.Quote memory, uint256) {
         EngineStorage.Layout storage $ = EngineStorage.layout();
+        (uint16 feeDisc, uint16 spreadDisc) = discountOf(account);
         uint256 vPrice = c.pu.v;
         uint64 sigma = c.sigma;
         if (!isBuy && c.volStale) {
@@ -497,10 +503,25 @@ library EngineCore {
                 vPrice: vPrice,
                 payoff: c.pu.payoff,
                 vVal: c.pu.v,
-                invWad: inventory(b.nAfter.vega, navNow)
+                invWad: inventory(b.nAfter.vega, navNow),
+                feeDiscBps: feeDisc,
+                spreadDiscBps: spreadDisc
             }),
             $.p
         );
+    }
+
+    /// @dev $LMNS fee-tier discounts of `account` (bps of the fee, bps of the spread). Never reverts: no tier contract,
+    /// a failing or gas-hungry one, or a short answer all mean no discount; answers are clamped to the engine's bounds.
+    function discountOf(address account) internal view returns (uint16 feeDisc, uint16 spreadDisc) {
+        address tiers = EngineStorage.layout().feeTiers;
+        if (tiers == address(0) || account == address(0)) return (0, 0);
+        (bool ok, bytes memory ret) =
+            tiers.staticcall{gas: TIER_READ_GAS}(abi.encodeWithSignature("feeDiscountOf(address)", account));
+        if (!ok || ret.length < 64) return (0, 0);
+        (uint256 f, uint256 s) = abi.decode(ret, (uint256, uint256));
+        feeDisc = uint16(Math.min(f, MAX_FEE_DISC_BPS));
+        spreadDisc = uint16(Math.min(s, MAX_SPREAD_DISC_BPS));
     }
 
     /// @dev n = post-trade name vega / vega cap, clamped to [0, 1] (1 when NAV <= 0).

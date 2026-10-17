@@ -77,6 +77,8 @@ contract EngineHelper {
         uint256 payoff;
         uint256 vVal; // per-unit valuation (the liability mark), for the spread income split
         uint256 invWad; // n in [0, 1e18]
+        uint16 feeDiscBps; // $LMNS fee tier: share of the fee waived (bps of the fee), bounded by the engine
+        uint16 spreadDiscBps; // $LMNS fee tier: share of the spread waived (bps of the spread), bounded by the engine
     }
 
     /// @notice A series' (or a name's) risk: units x the per-unit fields, long side.
@@ -237,9 +239,14 @@ contract EngineHelper {
         uint256 vMark = a.vPrice + Math.mulDiv(a.vPrice, uint256(p.inventoryBps) * a.invWad, BPS * WAD);
         uint256 spu = Math.mulDiv(vMark, spreadBpsWad, BPS * WAD);
         if (spu < p.minSpreadWad) spu = p.minSpreadWad;
+        if (a.spreadDiscBps != 0) {
+            spu = Math.mulDiv(spu, BPS - a.spreadDiscBps, BPS, Math.Rounding.Ceil);
+            q.spreadBps = Math.mulDiv(q.spreadBps, BPS - a.spreadDiscBps, BPS, Math.Rounding.Ceil);
+        }
         uint256 ask = vMark + spu;
         uint256 feeWad =
             Math.mulDiv(Math.mulDiv(a.s, a.units, WAD, Math.Rounding.Ceil), p.feeBps, BPS, Math.Rounding.Ceil);
+        if (a.feeDiscBps != 0) feeWad = Math.mulDiv(feeWad, BPS - a.feeDiscBps, BPS, Math.Rounding.Ceil);
         q.feeUsdg = Math.ceilDiv(feeWad, USDG_SCALE);
         if (a.isBuy) {
             q.usdg = Math.ceilDiv(Math.mulDiv(ask, a.units, WAD, Math.Rounding.Ceil) + feeWad, USDG_SCALE);
@@ -257,7 +264,7 @@ contract EngineHelper {
         q.dailyCostUsdg = Math.ceilDiv(
             Math.mulDiv(tv * DAY, a.units, uint256(a.tau) * WAD, Math.Rounding.Ceil), USDG_SCALE
         );
-        uint256 allIn = ask + Math.mulDiv(a.s, p.feeBps, BPS);
+        uint256 allIn = ask + Math.mulDiv(Math.mulDiv(a.s, p.feeBps, BPS), BPS - a.feeDiscBps, BPS);
         q.breakevenWad = a.isCall ? a.k + allIn : (a.k > allIn ? a.k - allIn : 0);
         q.sigmaBps = a.sigmaBps;
         q.session = a.session;

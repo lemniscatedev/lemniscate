@@ -41,7 +41,7 @@ library EngineTradeLib {
         EngineHelper.Book memory b = EngineCore.bookFor(h, c, tokens, true, false);
         int256 navNow = $.pool.navFor(b.tNow);
         EngineCore.checkCaps(h, c, b, navNow, recipient, tokens);
-        (IOptionEngine.Quote memory q, uint256 spread) = EngineCore.priceTrade(h, c, b, navNow, units, true);
+        (IOptionEngine.Quote memory q, uint256 spread) = EngineCore.priceTrade(h, c, b, navNow, units, true, msg.sender);
         cost = q.usdg;
         if (cost > maxCost) revert IOptionEngine.Slippage(cost, maxCost);
         $.usdg.safeTransferFrom(msg.sender, address($.pool), cost);
@@ -70,7 +70,7 @@ library EngineTradeLib {
         uint256 units = Math.mulDiv(tokens, c.norm, WAD);
         EngineHelper.Book memory b = EngineCore.bookFor(h, c, tokens, false, false);
         (IOptionEngine.Quote memory q, uint256 spread) =
-            EngineCore.priceTrade(h, c, b, $.pool.navFor(b.tNow), units, false);
+            EngineCore.priceTrade(h, c, b, $.pool.navFor(b.tNow), units, false, msg.sender);
         proceeds = q.usdg;
         if (proceeds < minProceeds) revert IOptionEngine.Slippage(proceeds, minProceeds);
         uint256 gasBefore = gasleft();
