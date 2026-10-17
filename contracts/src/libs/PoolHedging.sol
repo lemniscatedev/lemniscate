@@ -62,6 +62,7 @@ library PoolHedging {
         uint16 openBps;
         uint16 closedBps;
         bool guard;
+        uint8 side; // hedge leg S: 0 the PriceGuard S; 1 (LP entry) max(S, trade TWAP); 2 (LP exit) min(S, trade TWAP)
     }
 
     /// @dev Pool parameters the library reads.
@@ -188,7 +189,7 @@ library PoolHedging {
         int256 gross = _toInt(v.cash * USDG_TO_WAD) - _toInt(x.feeOwed * USDG_TO_WAD);
         gross += _toInt(_perpEquity(g, x.lastNavUsdg) * USDG_TO_WAD);
         (uint256 hedgeWad, int256 up, int256 down, uint256[] memory prices) =
-            _value(b, x.priceGuard, x.engine, x.guard, x.openBps, x.closedBps);
+            _value(b, x.priceGuard, x.engine, x.guard, x.openBps, x.closedBps, x.side);
         v.prices = prices;
         gross += _toInt(hedgeWad);
         v.raw = gross - _toInt(x.liability);
@@ -225,7 +226,8 @@ library PoolHedging {
         IOptionEngine engine,
         bool guard,
         uint16 openBps,
-        uint16 closedBps
+        uint16 closedBps,
+        uint8 side
     ) private view returns (uint256 hedgeWad, int256 up, int256 down, uint256[] memory prices) {
         uint256 count = b.stocks.length;
         prices = new uint256[](count);
@@ -235,13 +237,28 @@ library PoolHedging {
             if (units == 0 && !guard) continue;
             (uint256 s, bool live) = price(pg, stock);
             prices[i] = s;
-            uint256 hv = Math.mulDiv(units, s, 1e18);
+            uint256 hv = Math.mulDiv(units, side == 0 || units == 0 ? s : _sideS(pg, stock, s, side), 1e18);
             hedgeWad += hv;
             if (!guard || address(engine) == address(0)) continue;
             (int256 best, int256 worst) = _guardMove(engine, stock, s, hv, live ? openBps : closedBps);
             if (best > 0) up += best;
             if (worst < 0) down += worst;
         }
+    }
+
+    /// @dev Follow-up to review F12/F15 (B2): LP entries and exits value the hedge leg at the worse for the LP of the
+    /// PriceGuard S and the short-window trade TWAP (the engine's F01 price), so a feed print the market has not
+    /// confirmed (or a lagging one an LP can see coming) cannot move value between LPs through the hedge. No TWAP
+    /// (0, unsupported) leaves S. A read that failed for lack of gas reverts: a claimer must not pick the gas that
+    /// drops the TWAP.
+    function _sideS(IPriceGuard pg, address stock, uint256 s, uint8 side) private view returns (uint256) {
+        uint256 gasBefore = gasleft();
+        (bool ok, bytes memory ret) = address(pg).staticcall(abi.encodeWithSignature("tradeTwap(address)", stock));
+        if (!ok && gasleft() <= gasBefore / 64) revert InvalidParams();
+        if (!ok || ret.length < 32) return s;
+        uint256 twap = abi.decode(ret, (uint256));
+        if (twap == 0) return s;
+        return side == 1 ? Math.max(s, twap) : Math.min(s, twap);
     }
 
     /// @dev Hedges at their slippage floor, USDG 6 dp, from the prices `value` returned.

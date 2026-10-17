@@ -354,7 +354,8 @@ script's `check(address)` asserts the owner (the Safe), signer, immutables, stak
 - LP entry and exit pricing (review F12/F15): until the keeper re-marks every live series of a name, deposits use a lower bound and
   claims an upper bound of the liability at today's price (O(names)), so an LP who exits right after a move the keeper has not
   re-marked yet may get slightly less than the exact NAV (and an entrant slightly fewer shares); after the keeper's re-mark the two
-  bounds are the exact book value. The vol part of the bound is first order (x1.5 on the conservative side), and funding not yet
+  bounds are the exact book value. The hedge leg of an entry or exit is valued at the worse for that LP of the feed S and the
+  5-minute trade TWAP, and the high-water checkpoint always uses the exit side. The vol part of the bound is first order (x1.5 on the conservative side), and funding not yet
   accrued since the last mark is not in it (LOW).
 - Dust (review F08/F14/F24): every buy costs at least $1 and a partial sell must move and leave at least $1 (a whole-balance sell is
   always allowed); series worth under $1 in total can be retired from the keeper's live list by anyone and accrue only when touched.

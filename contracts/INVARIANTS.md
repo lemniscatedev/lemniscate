@@ -190,6 +190,7 @@ itself (market closed, sybils, permanent hold, one bad user, dust).
 | F09/F13 | A stale vol post prices sells at sigma x 0.8; a buy-before / sell-after round trip across the lapse loses. | `security/F09StaleVol.t.sol` |
 | F11/F34 | A gap is charged at max(rate stored at the last accrual, rate now); holder-picked accruals pay within 3% of dense sampling. | `security/F11AccrueTiming.t.sol` |
 | F12/F15 | Deposits at a lower bound, claims and the checkpoint at an upper bound of the liability at today's S, from O(1) per-name sums; a keeper re-mark collapses both to the book value; the bounds bracket the exact liability (fuzz). | `security/F12NavMark.t.sol` |
+| F12/F15 (B2) | LP entries value the hedge leg at max(S, trade TWAP), exits and the checkpoint at min(S, trade TWAP); the mid NAV keeps S; a deposit never ratchets the high-water mark above the exit side. | `security/F12NavMark.t.sol::test_B2_*` |
 | F20 | skewK coefficients capped (3.0 / 1.0) and stepped (0.2 per post); guardian `revokeSigner`. | `security/F20SkewBound.t.sol` |
 | F35 | `TickPrice.priceX128` saturates instead of overflowing at ticks 880341..887272; the TWAP read stays "unavailable", never a revert. | `security/F35TickPrice.t.sol` |
 

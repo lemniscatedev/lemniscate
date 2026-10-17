@@ -101,4 +101,65 @@ contract F12NavMarkTest is SystemFixture {
         assertGe(engine.navLiability(true) + 1e6, exact, "upper bound");
         assertLe(engine.navLiability(false), exact + 1e6, "lower bound");
     }
+
+    // ------------------------------------------------------------ follow-up B2 (todo 27-merge-fixes)
+
+    function _mockTradeTwap(uint256 twap) internal {
+        vm.mockCall(
+            address(guard), abi.encodeWithSignature("tradeTwap(address)", address(stocks[0])), abi.encode(twap)
+        );
+    }
+
+    /// @dev B2-1: a feed print the trade TWAP has not confirmed (the feed lags or leads the market) must not raise an
+    /// exit through the hedge leg. With the liability already re-marked at the print, a claim values the pool's hedge
+    /// at the lower of the feed S and the trade TWAP; the mid NAV (views, trading paths) keeps the feed S.
+    function test_B2_claimValuesTheHedgeAtTheLowerOfFeedAndTwap() public {
+        _hedgedCallBook();
+        uint256 shares = pool.balanceOf(bob);
+        skip(60);
+        _setPrice(0, 103e18);
+        _accrueAll(); // liability marked at the print: only the hedge leg differs below
+        uint256 units = pool.hedgeUnits(address(stocks[0]));
+        assertGt(units, 0, "hedged");
+        uint256 atFeed = pool.previewRedeem(shares);
+        int256 midAtFeed = pool.nav();
+        _mockTradeTwap(100e18);
+        uint256 atTwap = pool.previewRedeem(shares);
+        // bob's part of the hedge's 3 USDG per unit gap
+        uint256 gap = units * 3 / 1e12 * shares / pool.totalSupply();
+        emit log_named_uint("claim value, hedge at the feed", atFeed);
+        emit log_named_uint("claim value, hedge at the TWAP", atTwap);
+        assertApproxEqRel(atFeed - atTwap, gap, 0.01e18, "exit values the hedge at the lower TWAP");
+        assertEq(pool.nav(), midAtFeed, "mid NAV unchanged");
+        _mockTradeTwap(106e18); // a higher TWAP never raises an exit
+        assertEq(pool.previewRedeem(shares), atFeed, "exit at the lower feed S");
+    }
+
+    /// @dev B2-1, entry side: a deposit values the hedge at the higher of the feed S and the trade TWAP.
+    function test_B2_depositValuesTheHedgeAtTheHigherOfFeedAndTwap() public {
+        _hedgedCallBook();
+        skip(60);
+        _setPrice(0, 97e18);
+        _accrueAll();
+        uint256 atFeed = pool.previewDeposit(100_000e6);
+        _mockTradeTwap(100e18); // the TWAP has not followed the down print yet
+        uint256 atTwap = pool.previewDeposit(100_000e6);
+        assertLt(atTwap, atFeed, "fewer shares while the TWAP says the hedge is worth more");
+        _mockTradeTwap(94e18);
+        assertEq(pool.previewDeposit(100_000e6), atFeed, "a lower TWAP never cheapens an entry");
+    }
+
+    /// @dev B2-1: the high-water mark a deposit records is the exit-side NAV (the checkpoint's), never the entry
+    /// side's: a deposit while the marks are stale must not ratchet the mark above what `checkpoint()` records.
+    function test_B2_depositCheckpointsAtTheExitSide() public {
+        _hedgedCallBook();
+        skip(60);
+        _setPrice(0, 103e18); // stale marks: entry and exit bounds differ
+        uint256 snap = vm.snapshotState();
+        pool.checkpoint();
+        uint256 byCheckpoint = pool.highWaterNavPerShare();
+        vm.revertToState(snap);
+        _deposit(makeAddr("carol"), 1e6);
+        assertLe(pool.highWaterNavPerShare(), byCheckpoint + 1e12, "a deposit records the exit-side mark");
+    }
 }

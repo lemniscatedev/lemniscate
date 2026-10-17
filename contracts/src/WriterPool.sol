@@ -267,7 +267,7 @@ contract WriterPool is
         if (shares == 0) revert InvalidParams();
         _deposit(caller, receiver, assets, shares);
         lastDeposit[receiver] = block.timestamp;
-        _checkpoint(v.liability);
+        _checkpoint();
     }
 
     /// @inheritdoc IPool
@@ -325,12 +325,12 @@ contract WriterPool is
         usdg.safeTransfer(owner, paid);
         emit Withdraw(_msgSender(), owner, owner, paid, burnShares);
         emit WithdrawalClaimed(owner, ticket, paid);
-        _checkpoint(v.liability);
+        _checkpoint();
     }
 
     /// @notice Records the current NAV per share for the reserve's high-water mark and the reserve funding cap.
     function checkpoint() external nonReentrant {
-        _checkpoint(_navLiability(true));
+        _checkpoint();
     }
 
     function mint(uint256, address) public pure override(ERC4626Upgradeable) returns (uint256) {
@@ -484,7 +484,7 @@ contract WriterPool is
 
     /// @inheritdoc IPool
     function navFor(uint256 liabilityWad) public view override returns (int256) {
-        return _valuation(liabilityWad, false).nav;
+        return _valuation(liabilityWad, false, 0).nav;
     }
 
     /// @notice Mid NAV and the guard band's low (exit) and high (entry) edges, WAD.
@@ -626,11 +626,11 @@ contract WriterPool is
     /// @dev One valuation entry point: mode 0 = book value (trading paths and views), 1 = LP entry bound
     /// (deposit, maxDeposit, previewDeposit), 2 = LP exit bound (claim, previewRedeem); review F12/F15.
     function _val(uint8 mode, bool guard) private view returns (PoolHedging.Valuation memory) {
-        return _valuation(mode == 0 ? _liability() : _navLiability(mode == 2), guard);
+        return _valuation(mode == 0 ? _liability() : _navLiability(mode == 2), guard, mode);
     }
 
     /// @dev NAV at `liability`, computed in PoolHedging.valuation (one copy of the valuation code).
-    function _valuation(uint256 liability, bool guard) private view returns (PoolHedging.Valuation memory) {
+    function _valuation(uint256 liability, bool guard, uint8 side) private view returns (PoolHedging.Valuation memory) {
         return PoolHedging.valuation(
             _book,
             _guard,
@@ -647,7 +647,8 @@ contract WriterPool is
                 lastNavUsdg: lastNavUsdg,
                 openBps: navGuardOpenBps,
                 closedBps: navGuardClosedBps,
-                guard: guard
+                guard: guard,
+                side: side
             })
         );
     }
@@ -660,8 +661,10 @@ contract WriterPool is
         return address(staking) == address(0) ? 0 : staking.coverValueUsdg() * USDG_TO_WAD;
     }
 
-    function _checkpoint(uint256 liability) private {
-        PoolHedging.Valuation memory v = _valuation(liability, false);
+    /// @dev Always at the LP-exit side (upper liability bound, hedge at the lower of S and the trade TWAP), so neither
+    /// the high-water mark nor the reserve's cap ratchets up on a mark the keeper has not confirmed.
+    function _checkpoint() private {
+        PoolHedging.Valuation memory v = _val(2, false);
         lastNavUsdg = _assetsOf(v.nav);
         if (v.supply == 0) {
             highWaterNavPerShare = 0;
