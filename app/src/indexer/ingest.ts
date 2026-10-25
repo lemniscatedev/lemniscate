@@ -14,7 +14,8 @@ import { asNumber } from "./units";
 
 const INITIAL_RANGE = 50_000n;
 const MAX_RANGE = 200_000n;
-/** pool_nav is snapshotted at least this often, and on every trade. */
+/** pool_nav is snapshotted at least this often, and on every trade. Production margin: the vol-engine signs only from
+ * ticks younger than 25 minutes (MAX_TICK_AGE_S), i.e. two missed heartbeats plus 5 minutes. */
 export const SNAPSHOT_HEARTBEAT_MS = 10 * 60_000;
 const SNAPSHOT_DEBOUNCE_MS = 2_000;
 const ACTIVE_EVENT_MS = 2 * 60_000;
@@ -31,6 +32,9 @@ export interface IndexerSettings {
   readonly pollActiveMs: number;
   readonly pollBaseMs: number;
   readonly pollIdleMs: number;
+  /** Longest gap between pool_nav/tick snapshots (default SNAPSHOT_HEARTBEAT_MS). The vol-engine refuses ticks older than
+   * 25 minutes, so production keeps the 10-minute default; the fork profile uses a shorter one (config.ts). */
+  readonly snapshotHeartbeatMs?: number;
 }
 
 export class ReorgTooDeepError extends Error {
@@ -419,7 +423,7 @@ async function ingestRange(state: IndexerState, fromBlock: bigint, toBlock: bigi
 // ---------------------------------------------------------------------------------------------------------------
 
 function snapshotDue(state: IndexerState): boolean {
-  return state.pendingSnapshot || state.now() - state.lastSnapshotAt >= SNAPSHOT_HEARTBEAT_MS;
+  return state.pendingSnapshot || state.now() - state.lastSnapshotAt >= (state.settings.snapshotHeartbeatMs ?? SNAPSHOT_HEARTBEAT_MS);
 }
 
 async function takePendingSnapshot(state: IndexerState, block: bigint, head: bigint): Promise<void> {

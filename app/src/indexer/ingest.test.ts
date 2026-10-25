@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { applyMigrations, createTestDatabase, testDatabaseUrl, type TestDatabase } from "../testing/db";
 import { HASH_WINDOW, ReorgTooDeepError, repairReorg, runIndexerTick, MAX_REORG_DEPTH } from "./ingest";
 import {
-  ADDR, BASE_TIME, DEPLOY_BLOCK, FakeChain, FakeReader, SERIES_CALL, SERIES_PUT, b32, dumpTables, ev, makeIndexer, syncToHead, type LogSpec,
+  ADDR, BASE_TIME, DEPLOY_BLOCK, FakeChain, FakeReader, SERIES_CALL, SERIES_PUT, b32, dumpTables, ev, makeIndexer, syncToHead, testSettings, type LogSpec,
 } from "./test-support";
 
 const enabled = Boolean(testDatabaseUrl());
@@ -295,6 +295,23 @@ suite("poolNavSnapshots", () => {
     await runIndexerTick(state);
     expect(reader.poolCalls).toBe(calls + 1);
     expect(Number((await db.sql`SELECT count(*)::int AS n FROM pool_nav`)[0]?.n)).toBe(2);
+  }));
+
+  test("27d: a shorter snapshotHeartbeatMs (fork profile) snapshots sooner than the 10-minute production default", () => withDb("snap_heartbeat_short", async (db) => {
+    const chain = new FakeChain();
+    let clock = 1_000_000;
+    const reader = new FakeReader();
+    const { state } = await makeIndexer(db.sql, chain, { reader, now: () => clock, settings: { ...testSettings, snapshotHeartbeatMs: 60_000 } });
+    await syncToHead(state);
+    const calls = reader.poolCalls;
+    chain.mine();
+    clock += 30_000;
+    await runIndexerTick(state);
+    expect(reader.poolCalls).toBe(calls);
+    chain.mine();
+    clock += 31_000;
+    await runIndexerTick(state);
+    expect(reader.poolCalls).toBe(calls + 1);
   }));
 
   test("a failing snapshot keeps the work pending and reports the error without losing events", () => withDb("snap_fail", async (db) => {

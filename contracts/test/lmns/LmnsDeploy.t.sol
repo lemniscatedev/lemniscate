@@ -92,4 +92,20 @@ contract LmnsDeployTest is Test {
         vm.stopPrank();
         assertEq(h.lmnsFailures(s, b).length, 0);
     }
+
+    /// @notice 27d: DeployLmns records both addresses in the deployment JSON, keeping everything else in it.
+    function test_27d_recordsStakingAndBuyBurnInDeploymentJson() public {
+        string memory file = "out/deploy-lmns-record-test.json";
+        vm.writeFile(file, '{"chainId":31337,"contracts":{"engine":"0x00000000000000000000000000000000000000e1"}}');
+        (LmnsStaking s, LmnsBuyBurn b) = h.deploy(_p(0, 0, 0, 0));
+        h.recordInDeployment(file, address(s), address(b));
+        string memory json = vm.readFile(file);
+        assertEq(vm.parseJsonAddress(json, ".contracts.staking"), address(s));
+        assertEq(vm.parseJsonAddress(json, ".contracts.buyBurn"), address(b));
+        assertEq(vm.parseJsonAddress(json, ".contracts.engine"), address(0xe1));
+        assertEq(vm.parseJsonUint(json, ".chainId"), 31_337);
+        // idempotent: a second run replaces the values
+        h.recordInDeployment(file, address(b), address(s));
+        assertEq(vm.parseJsonAddress(vm.readFile(file), ".contracts.staking"), address(b));
+    }
 }

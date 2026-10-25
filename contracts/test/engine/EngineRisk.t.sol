@@ -19,13 +19,16 @@ contract EngineRiskTest is EngineBase {
         engine.setParams(p);
     }
 
-    /// @dev The 20 cases computed by the API's quote model (app/src/api/quote/model.ts) and recorded in
+    /// @dev The cases (20 base, then 10 with the worse-of trade TWAP and the sell hold, 27d) computed by the API's quote model (app/src/api/quote/model.ts) and recorded in
     /// test/vectors/quote-vectors.json. The model uses floating point, so money fields may differ by one micro-USDG and
     /// WAD fields by its 1e-12 rounding; spreadBps, sigma, session and buyable are exact.
     function test_R2_spreadScheduleMatchesApiModel() public {
         _noInventory();
+        _lowMinTrade(); // the hold cases buy deep out of the money; their cost is under the 1 USDG default minimum
         string memory json = vm.readFile("test/vectors/quote-vectors.json");
-        for (uint256 i; i < 20; ++i) {
+        assertFalse(vm.keyExistsJson(json, ".cases[30]"), "the test reads every vector (30)");
+        assertTrue(vm.keyExistsJson(json, ".cases[29]"), "30 vectors");
+        for (uint256 i; i < 30; ++i) {
             string memory b = string.concat(".cases[", vm.toString(i), "]");
             bool isCall = vm.parseJsonBool(json, string.concat(b, ".isCall"));
             uint32 tau = uint32(vm.parseJsonUint(json, string.concat(b, ".tau")));
@@ -42,7 +45,7 @@ contract EngineRiskTest is EngineBase {
             vol.set(address(nvda), sp, sigma, 0, stale ? uint64(vm.getBlockTimestamp() - 1) : uint64(vm.getBlockTimestamp() + 1 hours));
             bytes32 id = registry.idOf(address(nvda), isCall, uint128(k), tau);
             if (registry.seriesOf(id).token == address(0)) id = _list(address(nvda), isCall, uint128(k), tau);
-            IOptionEngine.Quote memory q = engine.quote(id, units, isBuy);
+            IOptionEngine.Quote memory q = _vectorQuote(json, b, id, s, session, units, isBuy);
 
             string memory tag = string.concat("case ", vm.toString(i));
             assertApproxEqAbs(q.usdg, vm.parseJsonUint(json, string.concat(b, ".usdg")), 1, string.concat(tag, " usdg"));
@@ -61,6 +64,32 @@ contract EngineRiskTest is EngineBase {
             assertEq(uint8(q.session), uint8(session), string.concat(tag, " session"));
             assertEq(q.buyable, vm.parseJsonBool(json, string.concat(b, ".buyable")), string.concat(tag, " buyable"));
         }
+    }
+
+    /// @dev Quotes one vector. A case with `holdS` first has a fresh holder buy at that S (no TWAP) so the holder has a hold, the feed
+    /// then moves to `s`, `tradeTwap` (if any) is set, and the sell is quoted for the holder (`quoteFor`). Each case has its own holder, since
+    /// a hold on a series carries over to later cases in the same block.
+    function _vectorQuote(string memory json, string memory b, bytes32 id, uint256 s, SessionKind session, uint256 units, bool isBuy)
+        internal
+        returns (IOptionEngine.Quote memory)
+    {
+        uint256 holdS = _optUint(json, string.concat(b, ".holdS"));
+        uint256 twap = _optUint(json, string.concat(b, ".tradeTwap"));
+        guard.set(address(nvda), holdS != 0 ? holdS : s, session, true);
+        guard.setTradeTwap(address(nvda), 0);
+        address holder = address(uint160(uint256(keccak256(abi.encode("vector holder", b)))));
+        if (holdS != 0) {
+            _fund(holder);
+            vm.prank(holder);
+            engine.buy(id, uint128(units), type(uint128).max, uint64(block.timestamp + 1 hours), holder);
+            guard.set(address(nvda), s, session, true);
+        }
+        guard.setTradeTwap(address(nvda), twap);
+        return holdS != 0 ? engine.quoteFor(id, units, isBuy, holder) : engine.quote(id, units, isBuy);
+    }
+
+    function _optUint(string memory json, string memory key) internal view returns (uint256) {
+        return vm.keyExistsJson(json, key) ? vm.parseJsonUint(json, key) : 0;
     }
 
     /// @dev The schedule itself: 150 bps at the money, linear to 400 bps at |K/S - 1| = 30%, flat beyond; x1 / x1.5 / x3.

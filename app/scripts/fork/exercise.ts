@@ -590,7 +590,7 @@ async function main() {
     const before = await engineRead<readonly [bigint, bigint, bigint, number]>("vMark", [id]);
     await warp(3 * 3600);
     await waitVolFresh(["NVDA"]);
-    await f.send("engine.accrue", walletFor("alice"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "accrue", args: [id] }) });
+    await f.send("engine.accrue", walletFor("alice"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "accrue", args: [id] }) }, 3_000_000n); // explicit gas: the estimate taken right after a warp has come in under the real cost (OutOfGas)
     const logs = (await pub.getContractEvents({ address: C.engine, abi: OptionEngineAbi, eventName: "Accrued", args: { id }, fromBlock: BigInt(dep.deployBlock), toBlock: "latest" }));
     assert(logs.length >= 2, `only ${logs.length} Accrued events`);
     const times = await Promise.all(logs.map(async (l) => Number((await pub.getBlock({ blockNumber: l.blockNumber! })).timestamp)));

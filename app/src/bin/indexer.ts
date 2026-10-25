@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { createClients } from "../chain/clients";
 import { assertDeploymentNetwork, loadOptionDeployment } from "../chain/deployment";
-import { confirmationBlocks, loadConfig, safeConfigSummary, stripKeeperSecrets } from "../config";
+import { confirmationBlocks, loadConfig, snapshotHeartbeatMs, safeConfigSummary, stripKeeperSecrets } from "../config";
 import { createDbClient } from "../db/client";
 import { createLogger, safeErrorSummary } from "../log";
 import { createRpcChainSource } from "../indexer/chain-source";
@@ -49,6 +49,7 @@ try {
           pollActiveMs: config.INDEXER_POLL_ACTIVE_MS,
           pollBaseMs: config.INDEXER_POLL_BASE_MS,
           pollIdleMs: config.INDEXER_POLL_IDLE_MS,
+          snapshotHeartbeatMs: snapshotHeartbeatMs(config),
         },
         source: createRpcChainSource(clients),
         reader: createRpcSnapshotReader(clients, deployment),

@@ -33,13 +33,52 @@ const toTick = (row: TickDbRow): TickRow => ({
   haltedSince: row.halted_since ? new Date(row.halted_since).toISOString() : null,
 });
 
-/** The account's open sell hold on a series (decision 30), as the indexer last read it, or null. */
-export async function activeHold(deps: QueryDeps, seriesId: string, account: string, now: Date): Promise<{ s: string; until: string } | null> {
-  const rows = (await deps.sql`
+/** Hold length when no snapshot has stored the engine's configured one (EngineCore.DEFAULT_HOLD). */
+const DEFAULT_HOLD_SECONDS = 1_800;
+
+/** The account's open sell hold on a series (decision 30). The indexed `holds` row is the engine's own reading, but the
+ * snapshot lags the chain: a buy since then is read from `trades` (hold = buy time + hold seconds, buy-time trade S from
+ * the tick at that time: the worse of the feed S and the trade TWAP for the buyer). The engine keeps the later end and
+ * the more binding S across re-buys, so the two sources are merged the same way. `isCall` picks the more binding side
+ * (a call seller is hurt by the lower S, a put seller by the higher). */
+export async function activeHold(deps: QueryDeps, seriesId: string, account: string, now: Date, isCall = true): Promise<{ s: string; until: string } | null> {
+  const nowIso = now.toISOString();
+  const read = (await deps.sql`
     SELECT s::text AS s, until FROM holds
-    WHERE series_id = ${seriesId.toLowerCase()} AND account = ${account.toLowerCase()} AND until > ${now.toISOString()}
+    WHERE series_id = ${seriesId.toLowerCase()} AND account = ${account.toLowerCase()} AND until > ${nowIso}
   `) as unknown as { s: string; until: Date | string }[];
-  return rows[0] ? { s: rows[0].s, until: new Date(rows[0].until).toISOString() } : null;
+  const recent = (await deps.sql`
+    SELECT t.ts, (SELECT hold_seconds FROM pool_nav WHERE hold_seconds IS NOT NULL ORDER BY ts DESC LIMIT 1) AS hold_seconds,
+      tk.spot::text AS spot, tk.trade_twap::text AS twap
+    FROM trades t
+    JOIN series sr ON sr.id = t.series_id
+    LEFT JOIN LATERAL (
+      SELECT spot, trade_twap FROM ticks WHERE name = sr.name AND ts <= t.ts ORDER BY ts DESC LIMIT 1
+    ) tk ON true
+    WHERE t.series_id = ${seriesId.toLowerCase()} AND t.recipient = ${account.toLowerCase()} AND t.side = 'buy'
+      AND t.ts > ${new Date(now.getTime() - 86_400_000).toISOString()}
+    ORDER BY t.ts DESC
+  `) as unknown as { ts: Date | string; hold_seconds: number | null; spot: string | null; twap: string | null }[];
+
+  let found: { s: number | null; untilMs: number } | null = null;
+  const binding = (a: number | null, b: number | null): number | null =>
+    (a === null ? b : b === null ? a : isCall ? Math.min(a, b) : Math.max(a, b));
+  const merge = (s: number | null, untilMs: number): void => {
+    found = found ? { s: binding(found.s, s), untilMs: Math.max(found.untilMs, untilMs) } : { s, untilMs };
+  };
+  for (const row of read) merge(Number(row.s), new Date(row.until).getTime());
+  for (const row of recent) {
+    const untilMs = new Date(row.ts).getTime() + 1_000 * (row.hold_seconds ?? DEFAULT_HOLD_SECONDS);
+    if (untilMs <= now.getTime()) continue;
+    // A buy's S is the worse for a buyer: the higher of feed and TWAP for a call, the lower for a put.
+    const spot = row.spot === null ? null : Number(row.spot);
+    const twap = row.twap === null ? 0 : Number(row.twap);
+    merge(spot === null ? null : (twap > 0 ? (isCall ? Math.max(spot, twap) : Math.min(spot, twap)) : spot), untilMs);
+  }
+  const hold = found as { s: number | null; untilMs: number } | null;
+  // A hold whose buy-time S is unknown (no tick before the buy) cannot be priced: show none rather than a guess.
+  if (!hold || hold.s === null || !(hold.s > 0)) return null;
+  return { s: String(hold.s), until: new Date(hold.untilMs).toISOString() };
 }
 
 /** The newest price tick of one name, or null when nothing has been indexed for it. */

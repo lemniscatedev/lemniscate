@@ -34,7 +34,8 @@ LOOKBACK_DAYS = 45
 ALERT_REPEAT_S = 6 * 3600
 # F44: a broadcast post with no receipt after this long is treated as dropped.
 PENDING_TTL_S = 15 * 60
-# F43: the indexer snapshots every 10 minutes (more on events); ticks older than two heartbeats and a margin are a dead indexer.
+# F43: the indexer snapshots at least every 10 minutes in production (INDEXER_SNAPSHOT_HEARTBEAT_MS, capped at 10 min; the
+# fork profile uses 60 s so a warped clock does not pause names); ticks older than two heartbeats plus 5 minutes are a dead indexer.
 MAX_TICK_AGE_S = 25 * 60
 MIN_RELATIVE_CHANGE = 0.01
 # F05: when the target sigma is further than this (relative) above what is posted, buys stay blocked until the ramp has caught up.

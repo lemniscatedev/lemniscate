@@ -27,6 +27,10 @@ jobs:
           version: v1.8.1
       - name: Build (fails if any contract exceeds EIP-170)
         run: forge build --sizes
+      - name: EIP-170 headroom >= 1 KB for every deployable contract
+        run: python3 script/ci/code-size.py
+      - name: Storage layouts of the upgradeable contracts are unchanged (contracts/layout/)
+        run: script/ci/storage-layout.sh check
       - name: Test
         run: forge test -vv
       - name: Privileged functions are all listed (PRIV-1/2)

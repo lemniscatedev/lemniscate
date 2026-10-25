@@ -530,6 +530,36 @@ suite("option API over indexed data", () => {
     await db.sql`DELETE FROM holds`;
   });
 
+  test("27d: a buy the snapshot has not read yet already shows and applies the hold (lagging tick)", async () => {
+    // No holds row (the snapshot lags): a buy 5 minutes ago, with the feed at 230 then, must hold a call sell at 230 -> worse S is 220 now.
+    const extra = at(-10 * 60_000);
+    await db.sql`INSERT INTO ticks (stock_token, name, ts, block, spot, session, fresh, buys_paused, price_updated_at)
+      VALUES (${NVDA}, 'NVDA', ${extra}, 190, 230, 'REGULAR', true, false, ${extra})`;
+    await db.sql`INSERT INTO trades (tx_hash, log_index, block, ts, series_id, account, recipient, side, units, shares, usdg, v_mark, sigma_bps, session)
+      VALUES ('0xlag', 0, 199, ${at(-5 * 60_000)}, ${id(2)}, ${ALICE}, ${ALICE}, 'buy', 10, 10, 60, 5.5, 5000, 'REGULAR')`;
+    await db.sql`UPDATE ticks SET spot = 210 WHERE name = 'NVDA' AND ts = ${at(0)}`;
+    fresh();
+    try {
+      const held = await (await post("/v1/quote", { series: id(2), units: "9", side: "sell", account: ALICE })).json() as any;
+      expect(held.hold).toEqual({ until: new Date(Date.parse(at(-5 * 60_000)) + 1_800_000).toISOString(), buyPrice: "230", applied: false });
+      // now the feed S (210) is already the lower, so the hold changes nothing; with the feed above the buy price it binds
+      await db.sql`UPDATE ticks SET spot = 250 WHERE name = 'NVDA' AND ts = ${at(0)}`;
+      fresh();
+      const bound = await (await post("/v1/intent/sell", { series: id(2), units: "9", account: ALICE })).json() as any;
+      expect(bound.hold.applied).toBe(true);
+      expect(bound.hold.buyPrice).toBe("230");
+      const plain = await (await post("/v1/quote", { series: id(2), units: "9", side: "sell" })).json() as any;
+      expect(BigInt(bound.quote.usdg)).toBeLessThan(BigInt(plain.quote.usdg));
+      // an expired buy shows no hold
+      await db.sql`UPDATE trades SET ts = ${at(-3_600_000)} WHERE tx_hash = '0xlag'`;
+      expect((await (await post("/v1/quote", { series: id(2), units: "9", side: "sell", account: ALICE })).json() as any).hold).toBeNull();
+    } finally {
+      await db.sql`DELETE FROM trades WHERE tx_hash = '0xlag'`;
+      await db.sql`DELETE FROM ticks WHERE name = 'NVDA' AND ts = ${extra}`;
+      await db.sql`UPDATE ticks SET spot = 220 WHERE name = 'NVDA' AND ts = ${at(0)}`;
+    }
+  });
+
   test("decision 31/36: a halted name carries a settle notice; /v1/pool shows the navLiability bounds", async () => {
     const latest = at(-30_000);
     await db.sql`UPDATE pool_nav SET nav_liability_low = 49000, nav_liability_high = 52000, halt_settle_delay_seconds = 86400 WHERE ts = ${latest}`;

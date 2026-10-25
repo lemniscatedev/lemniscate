@@ -1,0 +1,170 @@
+[
+  {
+    "label": "usdg",
+    "slot": "0",
+    "offset": 0,
+    "type": "contract IERC20"
+  },
+  {
+    "label": "engine",
+    "slot": "1",
+    "offset": 0,
+    "type": "contract IOptionEngine"
+  },
+  {
+    "label": "priceGuard",
+    "slot": "2",
+    "offset": 0,
+    "type": "contract IPriceGuard"
+  },
+  {
+    "label": "priceReference",
+    "slot": "3",
+    "offset": 0,
+    "type": "contract IPriceReference"
+  },
+  {
+    "label": "reserve",
+    "slot": "4",
+    "offset": 0,
+    "type": "contract IReserve"
+  },
+  {
+    "label": "feeRouter",
+    "slot": "5",
+    "offset": 0,
+    "type": "contract IFeeRouter"
+  },
+  {
+    "label": "publicDeposits",
+    "slot": "5",
+    "offset": 20,
+    "type": "bool"
+  },
+  {
+    "label": "depositsPaused",
+    "slot": "5",
+    "offset": 21,
+    "type": "bool"
+  },
+  {
+    "label": "lockSeconds",
+    "slot": "5",
+    "offset": 22,
+    "type": "uint32"
+  },
+  {
+    "label": "cashBufferBps",
+    "slot": "5",
+    "offset": 26,
+    "type": "uint16"
+  },
+  {
+    "label": "maxHedgeSlippageBps",
+    "slot": "5",
+    "offset": 28,
+    "type": "uint16"
+  },
+  {
+    "label": "navGuardOpenBps",
+    "slot": "5",
+    "offset": 30,
+    "type": "uint16"
+  },
+  {
+    "label": "navGuardClosedBps",
+    "slot": "6",
+    "offset": 0,
+    "type": "uint16"
+  },
+  {
+    "label": "maxTotalDeposits",
+    "slot": "6",
+    "offset": 2,
+    "type": "uint128"
+  },
+  {
+    "label": "isDepositor",
+    "slot": "7",
+    "offset": 0,
+    "type": "mapping(address => bool)"
+  },
+  {
+    "label": "lastDeposit",
+    "slot": "8",
+    "offset": 0,
+    "type": "mapping(address => uint256)"
+  },
+  {
+    "label": "_book",
+    "slot": "9",
+    "offset": 0,
+    "type": "struct PoolHedging.Book"
+  },
+  {
+    "label": "_guard",
+    "slot": "12",
+    "offset": 0,
+    "type": "struct PoolHedging.Guard"
+  },
+  {
+    "label": "nextTicket",
+    "slot": "14",
+    "offset": 0,
+    "type": "uint256"
+  },
+  {
+    "label": "queuedShares",
+    "slot": "15",
+    "offset": 0,
+    "type": "uint256"
+  },
+  {
+    "label": "_tickets",
+    "slot": "16",
+    "offset": 0,
+    "type": "mapping(uint256 => struct PoolLayers.Ticket)"
+  },
+  {
+    "label": "feeOwed",
+    "slot": "17",
+    "offset": 0,
+    "type": "uint256"
+  },
+  {
+    "label": "highWaterNavPerShare",
+    "slot": "18",
+    "offset": 0,
+    "type": "uint256"
+  },
+  {
+    "label": "lastNavUsdg",
+    "slot": "19",
+    "offset": 0,
+    "type": "uint256"
+  },
+  {
+    "label": "vaultHook",
+    "slot": "20",
+    "offset": 0,
+    "type": "address"
+  },
+  {
+    "label": "staking",
+    "slot": "21",
+    "offset": 0,
+    "type": "contract ILmnsStaking"
+  },
+  {
+    "label": "_pot",
+    "slot": "22",
+    "offset": 0,
+    "type": "struct PoolLayers.Pot"
+  },
+  {
+    "label": "__gap",
+    "slot": "23",
+    "offset": 0,
+    "type": "uint256[27]"
+  }
+]

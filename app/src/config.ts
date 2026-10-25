@@ -30,6 +30,9 @@ const envSchema = z.object({
   INDEXER_POLL_ACTIVE_MS: z.coerce.number().int().positive().default(5000),
   INDEXER_POLL_BASE_MS: z.coerce.number().int().positive().default(15000),
   INDEXER_POLL_IDLE_MS: z.coerce.number().int().positive().default(60000),
+  // Longest gap between indexer snapshots (ticks), ms. Unset: 10 minutes on mainnet, 60 s on the fork profile, so a warped fork
+  // clock does not leave the vol-engine's 25-minute tick-age limit waiting for the next snapshot. Capped at 10 minutes.
+  INDEXER_SNAPSHOT_HEARTBEAT_MS: z.coerce.number().int().min(5000).max(600_000).optional(),
   DEPLOYMENT_FILE: z.string().min(1).default("/app/deployments/fork.json"),
   // hedge (todo 14) is opt-in until the hedger lands. receipts and lister are new in todo 13.
   KEEPER_ENABLED_JOBS: z.string().default("sessions,lister,accrue,risk,corp-actions,receipts,reference,earnings,queued-sells,fee-distribute,settle-halted,staking-sync"),
@@ -113,6 +116,12 @@ export type RuntimeConfig = Omit<ParsedConfig, "ALCHEMY_API_KEYS" | "CORS_ORIGIN
 // Two local blocks give ~6s confirmation latency; real RHC retains 20 blocks.
 export function confirmationBlocks(config: Pick<RuntimeConfig, "NETWORK">): number {
   return config.NETWORK === "fork" ? 2 : 20;
+}
+
+/** Snapshot heartbeat of the indexer: the override, else 60 s on the fork profile and 10 minutes (the production value the
+ * vol-engine's 25-minute tick-age limit is sized for) elsewhere. */
+export function snapshotHeartbeatMs(config: Pick<RuntimeConfig, "NETWORK" | "INDEXER_SNAPSHOT_HEARTBEAT_MS">): number {
+  return config.INDEXER_SNAPSHOT_HEARTBEAT_MS ?? (config.NETWORK === "fork" ? 60_000 : 600_000);
 }
 
 export class ConfigurationError extends Error {

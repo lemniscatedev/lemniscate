@@ -58,7 +58,7 @@ const failed = (value: Prepared | Failure): value is Failure => "status" in valu
 
 /** The selling account's open hold on the series (decision 30), from the indexer's last read of engine.holdOf. */
 async function sellHold(deps: ApiDependencies, series: SeriesView, account: string | undefined, now: Date): Promise<{ s: string; until: string } | null> {
-  return account ? activeHold(deps, series.id, account, now) : null;
+  return account ? activeHold(deps, series.id, account, now, series.isCall) : null;
 }
 
 const withHold = (market: MarketInputs, hold: { s: string; until: string } | null): MarketInputs =>

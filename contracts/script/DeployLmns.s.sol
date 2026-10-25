@@ -56,6 +56,13 @@ contract DeployLmns is Script, SystemConfig {
         vm.startBroadcast();
         (staking, burn) = _deployLmns(p);
         vm.stopBroadcast();
+        string memory file = vm.envOr("DEPLOYMENT_FILE", string.concat("deployments/", vm.envString("LMNS_PROFILE"), ".json"));
+        if (vm.exists(file)) {
+            recordInDeployment(file, address(staking), address(burn));
+            console2.log("  deployment file updated", file);
+        } else {
+            console2.log("  no deployment file at", file, "; add contracts.staking and contracts.buyBurn by hand");
+        }
         console2.log("  LmnsStaking ", address(staking));
         console2.log("  LmnsBuyBurn ", address(burn));
         console2.log("  unstake delay (s)", staking.UNSTAKE_DELAY());
@@ -70,6 +77,13 @@ contract DeployLmns is Script, SystemConfig {
         console2.log("  pool.setStaking(staking)");
         console2.log("  engine.setFeeTiers(staking)");
         console2.log('  feeRouter.setRecipient("stakers", staking); feeRouter.setRecipient("burn", burn)');
+    }
+
+    /// @notice Writes the two addresses into the deployment JSON (`contracts.staking`, `contracts.buyBurn`, the app's
+    /// OptionDeployment schema) so the keeper's syncLoss / buyAndBurn jobs find them when phase 2 is switched on.
+    function recordInDeployment(string memory file, address staking, address burn) public {
+        vm.writeJson(vm.toString(staking), file, ".contracts.staking");
+        vm.writeJson(vm.toString(burn), file, ".contracts.buyBurn");
     }
 
     /// @notice F37 / BAT-3: the most slippage either LMNS swap may allow once routed (pool fee + 50 bps on a 1% pool).
