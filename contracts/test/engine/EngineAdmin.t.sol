@@ -94,9 +94,9 @@ contract EngineAdminTest is EngineBase {
         bytes32 id = _list(address(nvda), true, 100e18, DAILY);
         IOptionEngine.Quote memory q = engine.quote(id, 10e18, true);
         vm.expectEmit(true, true, false, true, address(engine));
-        emit IOptionEngine.Bought(id, alice, bob, 10e18, 10e18, q.usdg, q.vMarkWad, q.sigmaBps, SessionKind.REGULAR);
+        emit IOptionEngine.Bought(id, alice, alice, 10e18, 10e18, q.usdg, q.vMarkWad, q.sigmaBps, SessionKind.REGULAR);
         vm.prank(alice);
-        engine.buy(id, 10e18, type(uint128).max, uint64(vm.getBlockTimestamp()), bob);
+        engine.buy(id, 10e18, type(uint128).max, uint64(vm.getBlockTimestamp()), alice);
 
         skip(1 hours);
         uint256 n = _normAfter(id);
@@ -108,9 +108,9 @@ contract EngineAdminTest is EngineBase {
         uint256 units = Math.mulDiv(10e18, n, WAD);
         IOptionEngine.Quote memory s = engine.quote(id, units, false);
         vm.expectEmit(true, true, false, true, address(engine));
-        emit IOptionEngine.Sold(id, bob, alice, units, 10e18, s.usdg, s.vMarkWad, s.sigmaBps, SessionKind.REGULAR);
-        vm.prank(bob);
-        engine.sell(id, 10e18, 0, uint64(vm.getBlockTimestamp()), alice);
+        emit IOptionEngine.Sold(id, alice, bob, units, 10e18, s.usdg, s.vMarkWad, s.sigmaBps, SessionKind.REGULAR);
+        vm.prank(alice);
+        engine.sell(id, 10e18, 0, uint64(vm.getBlockTimestamp()), bob);
 
         vm.expectEmit(false, true, false, true, address(engine));
         emit IOptionEngine.BuysPaused(true, bytes32(0), true);

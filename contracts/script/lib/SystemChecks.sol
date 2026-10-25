@@ -94,6 +94,7 @@ abstract contract SystemChecks is SystemDeployer {
         _failIf(FeeRouter(d.feeRouter).pool() != d.pool, "FEE_ROUTER_POOL");
         _failIf(address(PriceGuard(d.priceGuard).marketHours()) != d.marketHours, "PRICE_GUARD_MARKET_HOURS");
         _failIf(AgentRouter(d.agentRouter).engine() != d.engine, "AGENT_ROUTER_ENGINE");
+        _failIf(e.agentRouter() != d.agentRouter, "ENGINE_AGENT_ROUTER");
         // Review fixes (todo 27): the $1 minimum trade, the 30-minute hold and the 7-day settle delay stay on.
         (uint64 minTrade, uint32 hold, uint32 settleDelay) = e.guards();
         _failIf(minTrade < 1e6 || hold < 30 minutes || settleDelay < 7 days, "TRADE_GUARDS");

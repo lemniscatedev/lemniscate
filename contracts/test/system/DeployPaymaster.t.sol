@@ -22,6 +22,10 @@ contract DeployPaymasterHarness is DeployPaymaster {
     function parse(string memory json, Config memory c, Deployed memory d) external view returns (PaymasterCfg memory) {
         return parsePaymaster(json, c, d);
     }
+
+    function checkDeposit(PaymasterCfg memory p) external pure {
+        validateDeposit(p);
+    }
 }
 
 /// @notice Security review F39: the paymaster is deployed by script with reviewed caps and a post-deploy check that
@@ -48,7 +52,7 @@ contract DeployPaymasterTest is Test {
         d.usdg = makeAddr("usdg");
         d.agentRouter = makeAddr("agentRouter");
         d.deployer = deployer;
-        // The mainnet section of docs/runbooks/deploy/deploy-config.mainnet.json (values, not addresses).
+        // A funded-at-deploy config (depositWei = minDepositWei). The exact mainnet section is in _mainnetJson().
         string memory json = string.concat(
             '{"paymaster":{"entryPoint":"', vm.toString(address(ep)), '","kernelFactory":"',
             vm.toString(makeAddr("kernelFactory")), '","signer":"', vm.toString(makeAddr("pmSigner")),
@@ -57,6 +61,60 @@ contract DeployPaymasterTest is Test {
             '"depositWei":500000000000000000,"minDepositWei":500000000000000000}}'
         );
         p = h.parse(json, c, d);
+    }
+
+    /// @dev The `.paymaster` section of deploy-config.mainnet.json (2026-10-25) value for value; only the addresses are
+    /// swapped for test ones (the mainnet signer is a zero placeholder until the wallet pack exists).
+    function _mainnetJson() internal returns (string memory) {
+        return string.concat(
+            '{"paymaster":{"entryPoint":"', vm.toString(address(ep)), '","kernelFactory":"',
+            vm.toString(makeAddr("kernelFactory")), '","signer":"', vm.toString(makeAddr("pmSigner")),
+            '","maxCostPerOpWei":2000000000000000,"accountDailyCapWei":10000000000000000,',
+            '"globalDailyCapWei":250000000000000000,"unstakeDelaySec":86400,"stakeWei":100000000000000000,',
+            '"depositWei":0,"minDepositWei":500000000000000000}}'
+        );
+    }
+
+    /// @dev Review R18 (regression): with the mainnet values (deposit 0 = the owner funds it later, minimum 0.5 ETH)
+    /// the scripted deploy's own check failed PM_DEPOSIT_LOW and run() reverted before broadcast. It now passes; the
+    /// final check names exactly the documented pending items (owner acceptance, deposit) until they are done.
+    function test_R18_mainnetConfigDeploysAndCheckNamesOnlyThePendingItems() public {
+        DeployPaymaster.PaymasterCfg memory m = h.parse(_mainnetJson(), c, d);
+        h.checkDeposit(m);
+        LemniscatePaymaster pm = h.deploy(m, d, deployer);
+        assertEq(h.failures(pm, m, c, d, true).length, 0, "run()'s check passes");
+        string[] memory f = h.failures(pm, m, c, d, false);
+        assertEq(f.length, 2);
+        assertTrue(_has(f, "PM_OWNER") && _has(f, "PM_DEPOSIT_LOW"));
+        vm.prank(safe);
+        pm.acceptOwnership();
+        pm.deposit{value: 0.5 ether}();
+        assertEq(h.failures(pm, m, c, d, false).length, 0, "check passes once funded and accepted");
+    }
+
+    /// @dev PROPERTY: for any deposit setting, either the config is refused before any transaction, or the scripted
+    /// deploy passes its own check and the final check fails only on the documented pending items.
+    function testFuzz_R18_depositSettingNeverBreaksTheScriptedDeploy(uint256 depositWei, uint256 minDepositWei) public {
+        DeployPaymaster.PaymasterCfg memory m = h.parse(_mainnetJson(), c, d);
+        m.depositWei = bound(depositWei, 0, 2 ether);
+        m.minDepositWei = bound(minDepositWei, 0, 2 ether);
+        try h.checkDeposit(m) {}
+        catch {
+            assertTrue(m.minDepositWei == 0 || (m.depositWei != 0 && m.depositWei < m.minDepositWei));
+            return;
+        }
+        LemniscatePaymaster pm = h.deploy(m, d, deployer);
+        assertEq(h.failures(pm, m, c, d, true).length, 0, "run()'s check passes");
+        string[] memory f = h.failures(pm, m, c, d, false);
+        for (uint256 i; i < f.length; ++i) {
+            assertTrue(_has(_pending(), f[i]), f[i]);
+        }
+    }
+
+    function _pending() internal pure returns (string[] memory s) {
+        s = new string[](2);
+        s[0] = "PM_OWNER";
+        s[1] = "PM_DEPOSIT_LOW";
     }
 
     function _deploy() internal returns (LemniscatePaymaster pm) {

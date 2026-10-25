@@ -19,6 +19,9 @@ interface IAgentRouterEngine {
     function shieldList(address stock) external view returns (bytes32[] memory);
     function ticketCount() external view returns (uint256);
     function syncSeries(uint256 maxCount) external;
+    function sellFor(address owner, bytes32 id, uint128 tokens, uint128 minProceedsUsdg, uint64 deadline)
+        external
+        returns (uint256 proceedsUsdg);
 }
 
 /// @title AgentRouter
@@ -97,6 +100,8 @@ contract AgentRouter is IAgentRouter, ReentrancyGuardTransient {
     }
 
     /// @inheritdoc IAgentRouter
+    /// @dev Since review R04 the engine escrows agent sells with the owner as the ticket's seller, so the owner cancels
+    /// with `engine.cancelQueued`; the router records no tickets and this only reverts (kept for the frozen interface).
     function cancelQueuedFor(uint256 ticket) external nonReentrant {
         Ticket memory t = _tickets[ticket];
         if (t.owner != msg.sender) revert NotTicketOwner(ticket);
@@ -131,16 +136,14 @@ contract AgentRouter is IAgentRouter, ReentrancyGuardTransient {
         Series memory s = REGISTRY.seriesOf(seriesId);
         _requireStock(owner, s.stock);
 
-        // `owner` set a policy for msg.sender (_active reverts otherwise) and approved this router; tokens only go to the
-        // engine on the owner's behalf. Slither arbitrary-send-erc20 false positive.
-        // slither-disable-next-line arbitrary-send-erc20
-        IERC20(s.token).safeTransferFrom(owner, address(this), tokens);
+        // Review R04/R03: the engine sells as the owner (the owner's balance, hold, fee tier and ticket), so another
+        // user's recent buy or a stranger's tokens sent to this router never touch the price or the size check. The
+        // owner's consent is the policy (canSell, names) checked above; no option tokens pass through the router.
         uint256 ticketsBefore = IAgentRouterEngine(address(ENGINE)).ticketCount();
-        proceeds = ENGINE.sell(seriesId, tokens, minProceedsUsdg, deadline, owner);
+        proceeds = IAgentRouterEngine(address(ENGINE)).sellFor(owner, seriesId, tokens, minProceedsUsdg, deadline);
         uint256 ticketsAfter = IAgentRouterEngine(address(ENGINE)).ticketCount();
         if (ticketsAfter != ticketsBefore) {
-            // Escrowed by the engine: the router is the ticket's seller, the owner is its recipient and canceller.
-            _tickets[ticketsAfter] = Ticket({owner: owner, token: s.token});
+            // Escrowed by the engine with the owner as the ticket's seller: the owner cancels it with engine.cancelQueued.
             emit QueuedSellFor(ticketsAfter, owner, msg.sender, seriesId);
         }
         emit AgentTrade(owner, msg.sender, seriesId, false, proceeds);

@@ -92,6 +92,18 @@ contract DeployPaymaster is LemniscateScript {
             "DeployPaymaster: the paymaster signer must be its own key"
         );
         require(p.unstakeDelaySec >= MIN_UNSTAKE_DELAY && p.stakeWei != 0, "DeployPaymaster: stake (>= 1 day delay) is required");
+        validateDeposit(p);
+    }
+
+    /// @notice Review R18: the deposit sent at deploy is either 0 (the owner funds it after the deploy, the runbook's
+    /// path; `run` then leaves only PM_DEPOSIT_LOW to `check`) or at least the runway the check requires, so a
+    /// mismatch fails before any transaction instead of in the post-deploy check.
+    function validateDeposit(PaymasterCfg memory p) internal pure {
+        require(p.minDepositWei != 0, "DeployPaymaster: minDepositWei is required");
+        require(
+            p.depositWei == 0 || p.depositWei >= p.minDepositWei,
+            "DeployPaymaster: depositWei must be 0 (fund later) or at least minDepositWei"
+        );
     }
 
     // ------------------------------------------------------------------------------------------------ deploy
@@ -120,7 +132,8 @@ contract DeployPaymaster is LemniscateScript {
     // ------------------------------------------------------------------------------------------------ check
 
     /// @notice Every failed check of a deployed paymaster (empty = pass). `allowPending`: right after deploy the Safe
-    /// has not accepted ownership yet, so a pending owner equal to the Safe is fine.
+    /// has not accepted ownership yet, so a pending owner equal to the Safe is fine, and a config that funds the
+    /// deposit later (depositWei 0, review R18) has no deposit yet; `check` (allowPending false) still requires both.
     function paymasterFailures(
         LemniscatePaymaster pm,
         PaymasterCfg memory p,
@@ -153,7 +166,7 @@ contract DeployPaymaster is LemniscateScript {
         (uint256 deposit, bool staked, uint112 stake, uint32 delay,) =
             IEntryPointDepositInfo(p.entryPoint).getDepositInfo(address(pm));
         if (!staked || stake < p.stakeWei || delay < p.unstakeDelaySec || delay < MIN_UNSTAKE_DELAY) f[n++] = "PM_NOT_STAKED";
-        if (deposit < p.minDepositWei) f[n++] = "PM_DEPOSIT_LOW";
+        if (deposit < p.minDepositWei && !(allowPending && p.depositWei == 0)) f[n++] = "PM_DEPOSIT_LOW";
         out = new string[](n);
         for (uint256 i; i < n; ++i) {
             out[i] = f[i];

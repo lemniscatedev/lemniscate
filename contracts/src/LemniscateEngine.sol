@@ -75,12 +75,14 @@ contract LemniscateEngine is
     event HedgeDepthCapSet(address indexed stock, uint256 capWad);
     event UpgradesFrozen();
     event FeeTiersSet(address feeTiers);
+    event AgentRouterSet(address agentRouter);
 
     error ZeroAddress();
     error UpgradesAreFrozen();
     error NotGuardian();
     error InvalidGuards();
     error NotSeriesToken();
+    error NotAgentRouter();
 
     EngineHelper public immutable HELPER;
 
@@ -180,6 +182,18 @@ contract LemniscateEngine is
         emit FeeTiersSet(feeTiers_);
     }
 
+    /// @notice Admin (timelock): the AgentRouter whose `sellFor` sells an owner's tokens as that owner (review R04) and
+    /// which alone may buy for another recipient (R02). The router checks the owner's policy; zero switches agents off.
+    function setAgentRouter(address router) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (router != address(0) && router.code.length == 0) revert ZeroAddress();
+        EngineStorage.layout().agentRouter = router;
+        emit AgentRouterSet(router);
+    }
+
+    function agentRouter() external view returns (address) {
+        return EngineStorage.layout().agentRouter;
+    }
+
     function feeTiers() external view returns (address) {
         return EngineStorage.layout().feeTiers;
     }
@@ -239,7 +253,19 @@ contract LemniscateEngine is
         nonReentrant
         returns (uint256 proceedsUsdg)
     {
-        return EngineSellLib.sell(HELPER, id, tokens, minProceedsUsdg, deadline, recipient);
+        return EngineSellLib.sell(HELPER, msg.sender, id, tokens, minProceedsUsdg, deadline, recipient);
+    }
+
+    /// @notice The agent router sells `owner`'s tokens for them (review R04): the engine burns from the owner and prices,
+    /// sizes and escrows exactly as the owner's own `sell` would (the owner's hold, balance, fee tier and ticket),
+    /// paying the owner. Only the configured AgentRouter, which enforces the owner's agent policy (canSell, names).
+    function sellFor(address owner, bytes32 id, uint128 tokens, uint128 minProceedsUsdg, uint64 deadline)
+        external
+        nonReentrant
+        returns (uint256 proceedsUsdg)
+    {
+        if (msg.sender != EngineStorage.layout().agentRouter || msg.sender == address(0)) revert NotAgentRouter();
+        return EngineSellLib.sell(HELPER, owner, id, tokens, minProceedsUsdg, deadline, owner);
     }
 
     /// @inheritdoc IOptionEngine
@@ -261,19 +287,18 @@ contract LemniscateEngine is
         EngineSellLib.cancelQueued(ticket);
     }
 
-    /// @notice Called by a series' option token on every holder-to-holder transfer (after it accrues): the receiver
-    /// takes over the sender's open hold (review F01: a transfer must not reset the minimum hold).
-    function onTokenTransfer(bytes32 id, address from, address to) external {
+    /// @notice Called by a series' option token before every holder-to-holder transfer (after it accrues). Review R02:
+    /// tokens under the sender's open hold cannot move until it ends (the hold is bound to them and never handed to
+    /// anyone, so nobody can write another account's hold); the sender's other tokens move freely.
+    function onTokenTransfer(bytes32 id, address from, address, uint256 amount) external view {
         EngineStorage.Layout storage $ = EngineStorage.layout();
-        if (msg.sender != $.info[id].token || msg.sender == address(0)) revert NotSeriesToken();
-        EngineStorage.Hold memory f = $.holds[id][from];
-        if (f.until <= block.timestamp) return;
-        EngineStorage.Hold storage t = $.holds[id][to];
-        if (t.until <= block.timestamp || ($.info[id].isCall ? f.s < t.s : f.s > t.s)) t.s = f.s;
-        if (f.until > t.until) t.until = f.until;
+        address token = $.info[id].token;
+        if (msg.sender != token || msg.sender == address(0)) revert NotSeriesToken();
+        EngineStorage.Hold memory f = EngineCore.openHold(id, from);
+        if (f.tokens != 0 && amount + f.tokens > IERC20(token).balanceOf(from)) revert HeldTokens(f.until);
     }
 
-    /// @notice An account's open hold on a series (until 0 or in the past: none).
+    /// @notice An account's hold on a series (until 0 or in the past: none): its S and how many of its tokens it binds.
     function holdOf(bytes32 id, address account) external view returns (EngineStorage.Hold memory) {
         return EngineStorage.layout().holds[id][account];
     }
@@ -301,6 +326,11 @@ contract LemniscateEngine is
 
     function nameMark(address stock) external view returns (EngineStorage.NameMark memory) {
         return EngineStorage.layout().marks[stock];
+    }
+
+    /// @notice A name's NAV-mark tier (0 live, 1 dust; review R09/R07): envelope, units, pass and its last completion.
+    function markTier(address stock, uint256 tier) external view returns (EngineStorage.MarkTier memory) {
+        return EngineStorage.layout().tiers[stock][tier];
     }
 
     // --------------------------------------------------------------------------------------------------- accrue
@@ -342,12 +372,12 @@ contract LemniscateEngine is
 
     /// @inheritdoc IOptionEngine
     function quote(bytes32 id, uint256 units, bool isBuy) external view returns (Quote memory) {
-        return EngineOpsLib.quote(HELPER, id, units, isBuy, address(0));
+        return isBuy ? EngineOpsLib.quote(HELPER, id, units, true, address(0)) : EngineSellLib.quoteSell(HELPER, id, units, address(0));
     }
 
     /// @notice `quote` with `account`'s $LMNS fee tier applied (what that account's buy or sell would get).
     function quoteFor(bytes32 id, uint256 units, bool isBuy, address account) external view returns (Quote memory) {
-        return EngineOpsLib.quote(HELPER, id, units, isBuy, account);
+        return isBuy ? EngineOpsLib.quote(HELPER, id, units, true, account) : EngineSellLib.quoteSell(HELPER, id, units, account);
     }
 
     /// @inheritdoc IOptionEngine

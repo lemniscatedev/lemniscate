@@ -77,6 +77,10 @@ interface IOptionEngine {
     /// @dev Buys refused by a pause: "GLOBAL", "SERIES", "PRICE", "STRESS", "DRAWDOWN", "HEDGE".
     error BuysArePaused(bytes32 reason);
     error QueueNotFillable(uint256 ticket);
+    /// @dev Review R02: only the buyer itself (or the engine's agent router, for its owner) may receive a buy.
+    error NotOwnBuy();
+    /// @dev Review R02: tokens under an open hold cannot be transferred before `until`.
+    error HeldTokens(uint64 until);
 
     /// @dev Fills a queued sell at the current price (any session but HALTED); anyone may call, proceeds go to the
     /// ticket's recipient.

@@ -22,41 +22,70 @@ library EngineSellLib {
 
     /// @dev Never blocked by a pause. HALTED (or no usable price/vol) escrows into a ticket; so does a payout the pool
     /// cannot make (USDG or Stock Token paused or frozen by its issuer), instead of reverting or losing value.
-    function sell(EngineHelper h, bytes32 id, uint256 tokens, uint256 minProceeds, uint64 deadline, address recipient)
-        public
-        returns (uint256 proceeds)
-    {
+    /// `seller` is msg.sender, or the owner an agent sells for through the engine's agent router (review R04): the
+    /// balance, hold, size rule, fee tier and ticket are always the token owner's, never an intermediary's.
+    function sell(
+        EngineHelper h,
+        address seller,
+        bytes32 id,
+        uint256 tokens,
+        uint256 minProceeds,
+        uint64 deadline,
+        address recipient
+    ) public returns (uint256 proceeds) {
         if (block.timestamp > deadline) revert IOptionEngine.Expired();
         if (tokens == 0 || recipient == address(0)) revert IOptionEngine.BelowMinimum();
         EngineStorage.Layout storage $ = EngineStorage.layout();
         EngineCore.Ctx memory c = EngineCore.context(h, id, false);
         EngineCore.applyFunding(h, c);
-        EngineCore.checkSellSize(c, msg.sender, tokens);
+        tokens = EngineCore.sellSize(c, seller, tokens);
+        EngineStorage.Hold memory hd = EngineCore.takeHold(id, seller, tokens);
         if (!EngineCore.sellable(c)) {
-            escrow(c, msg.sender, recipient, tokens, minProceeds);
+            escrow(c, seller, recipient, tokens, minProceeds, hd);
             return 0;
         }
         uint256 units = Math.mulDiv(tokens, c.norm, WAD);
         EngineHelper.Book memory b = EngineCore.bookFor(h, c, tokens, false, false);
-        (IOptionEngine.Quote memory q, uint256 spread) = EngineCore.priceTrade(
-            h, c, b, $.pool.navFor(b.tNow), units, false, msg.sender, EngineCore.tradeS(c, false, msg.sender)
-        );
+        (IOptionEngine.Quote memory q, uint256 spread) =
+            EngineCore.priceSell(h, c, b, $.pool.navFor(b.tNow), tokens, seller, hd);
         proceeds = q.usdg;
         if (proceeds < minProceeds) revert IOptionEngine.Slippage(proceeds, minProceeds);
         uint256 gasBefore = gasleft();
         try $.pool.pay(recipient, proceeds, spread) {
-            IOptionToken(c.token).burn(msg.sender, tokens);
+            IOptionToken(c.token).burn(seller, tokens);
             EngineCore.dropIfEmpty(id, c.stock, c.token);
             EngineCore.storeBook(c, b);
             EngineCore.reportBuyback(c, tokens, spread);
-            emit IOptionEngine.Sold(id, msg.sender, recipient, units, tokens, proceeds, q.vMarkWad, q.sigmaBps, c.session);
+            emit IOptionEngine.Sold(id, seller, recipient, units, tokens, proceeds, q.vMarkWad, q.sigmaBps, c.session);
             EngineCore.recheck(h, false);
         } catch {
             // A payout that failed for lack of gas is not a blocked payout: never queue the sell for that.
             EngineCore.requireNotOutOfGas(gasBefore);
-            escrow(c, msg.sender, recipient, tokens, minProceeds);
+            escrow(c, seller, recipient, tokens, minProceeds, hd);
             proceeds = 0;
         }
+    }
+
+    /// @dev Exactly what `account` selling `units` would get now (its open hold applies to its held tokens first; the
+    /// trade's own accrual is simulated).
+    function quoteSell(EngineHelper h, bytes32 id, uint256 units, address account)
+        external
+        view
+        returns (IOptionEngine.Quote memory q)
+    {
+        EngineCore.Ctx memory c = EngineCore.contextView(h, id, false);
+        if (!c.priced) {
+            q.session = c.session;
+            return q;
+        }
+        bool due = c.lastAccrual < block.timestamp;
+        if (due) c.norm = EngineCore.nextNorm(c);
+        uint256 tokens = Math.mulDiv(units, WAD, c.norm, Math.Rounding.Ceil);
+        EngineHelper.Book memory b = EngineCore.bookFor(h, c, tokens, false, due);
+        EngineStorage.Hold memory hd;
+        if (account != address(0)) hd = EngineCore.openHold(id, account);
+        (q,) = EngineCore.priceSell(h, c, b, EngineStorage.layout().pool.navFor(b.tNow), tokens, account, hd);
+        q.buyable = EngineCore.buyBlock(c) == 0;
     }
 
     /// @dev Anyone may fill at the current trade price (any session but HALTED), never below the seller's minProceeds.
@@ -70,12 +99,15 @@ library EngineSellLib {
         uint256 tokens = t.tokens;
         uint256 units = Math.mulDiv(tokens, c.norm, WAD);
         EngineHelper.Book memory b = EngineCore.bookFor(h, c, tokens, false, false);
-        (IOptionEngine.Quote memory q, uint256 spread) = EngineCore.priceTrade(
-            h, c, b, $.pool.navFor(b.tNow), units, false, t.seller, EngineCore.tradeS(c, false, t.seller)
-        );
+        // The ticket carries its own hold (review R02/R04): never the seller's later buys, never anyone else's.
+        EngineStorage.Hold memory hd = $.ticketHolds[ticket];
+        if (hd.until <= block.timestamp) delete hd;
+        (IOptionEngine.Quote memory q, uint256 spread) =
+            EngineCore.priceSell(h, c, b, $.pool.navFor(b.tNow), tokens, t.seller, hd);
         usdgOut = q.usdg;
         if (usdgOut < t.minProceeds) revert IOptionEngine.Slippage(usdgOut, t.minProceeds);
         t.open = false;
+        delete $.ticketHolds[ticket];
         $.pool.pay(t.recipient, usdgOut, spread); // a blocked payout reverts: the ticket stays open
         IOptionToken(c.token).burn(address(this), tokens);
         EngineCore.dropIfEmpty(t.id, c.stock, c.token);
@@ -92,20 +124,33 @@ library EngineSellLib {
         if (!t.open) revert IOptionEngine.QueueNotFillable(ticket);
         if (msg.sender != t.seller) revert IOptionEngine.NotTicketSeller(ticket);
         t.open = false;
-        address token = $.info[t.id].token;
+        EngineStorage.SeriesInfo storage si = $.info[t.id];
+        address token = si.token;
         IOptionToken(token).burn(address(this), t.tokens);
         IOptionToken(token).mint(t.seller, t.tokens);
+        // The tokens come back under whatever is left of their hold (review R02: cancelling cannot shed it).
+        EngineStorage.Hold memory hd = $.ticketHolds[ticket];
+        if (hd.until > block.timestamp && hd.tokens != 0) {
+            EngineCore.addHold(t.id, t.seller, hd.s, hd.until, hd.tokens, si.isCall);
+        }
+        delete $.ticketHolds[ticket];
         emit IOptionEngine.QueuedSellCancelled(ticket);
     }
 
     /// @dev Moves `tokens` of `seller` into the engine's escrow (they keep paying funding) and opens a ticket.
-    function escrow(EngineCore.Ctx memory c, address seller, address recipient, uint256 tokens, uint256 minProceeds)
-        private
-    {
+    function escrow(
+        EngineCore.Ctx memory c,
+        address seller,
+        address recipient,
+        uint256 tokens,
+        uint256 minProceeds,
+        EngineStorage.Hold memory hd
+    ) private {
         EngineStorage.Layout storage $ = EngineStorage.layout();
         IOptionToken(c.token).burn(seller, tokens);
         IOptionToken(c.token).mint(address(this), tokens);
         uint256 ticket = ++$.ticketCount;
+        if (hd.tokens != 0) $.ticketHolds[ticket] = hd;
         $.tickets[ticket] = EngineStorage.Ticket({
             seller: seller,
             queuedAt: uint64(block.timestamp),

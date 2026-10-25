@@ -46,6 +46,8 @@ library EngineCore {
     uint32 internal constant DEFAULT_SETTLE_DELAY = 7 days;
     /// @dev Gas forwarded to PriceGuard.tradeTwap (one Uniswap observe; the real read is well under this).
     uint256 private constant TWAP_READ_GAS = 400_000;
+    /// @dev SeriesInfo.liveIdx of a series retired as dust that still has tokens outstanding (review R07).
+    uint32 internal constant RETIRED = type(uint32).max;
     /// @dev Bounds the engine applies to whatever the $LMNS fee-tier contract returns (todo 20 R4).
     uint16 internal constant MAX_FEE_DISC_BPS = 5_000;
     uint16 internal constant MAX_SPREAD_DISC_BPS = 2_000;
@@ -234,24 +236,74 @@ library EngineCore {
     }
 
     /// @dev The S a trade is priced at (review F01/F02/F10/F22/F23): the worse for the trader of the feed (or last
-    /// good / settlement) S and the trade TWAP, and for a sell inside the account's hold also the buy-time S. A
-    /// manipulated pool can only worsen the manipulator's own fill (others are bounded by maxCost / minProceeds).
-    function tradeS(Ctx memory c, bool isBuy, address account) internal view returns (uint256 s) {
+    /// good / settlement) S and the trade TWAP. A manipulated pool can only worsen the manipulator's own fill (others
+    /// are bounded by maxCost / minProceeds). A sell's held tokens are priced at `heldS` on top (review R02).
+    function tradeS(Ctx memory c, bool isBuy) internal view returns (uint256 s) {
         s = c.s;
         bool up = isBuy == c.isCall; // the trader is worse off at a higher S
         uint256 twap = tradeTwap(c.stock);
         if (twap != 0) s = up ? Math.max(s, twap) : Math.min(s, twap);
-        if (!isBuy && account != address(0)) {
-            EngineStorage.Hold memory hd = EngineStorage.layout().holds[c.id][account];
-            if (hd.until > block.timestamp) s = up ? Math.max(s, hd.s) : Math.min(s, hd.s);
-        }
     }
 
-    /// @dev Starts or extends `who`'s hold on series `id` at buy price `s`, keeping the more binding S.
-    function recordHold(bytes32 id, address who, uint256 s, bool isCall) internal {
+    /// @dev The sell S of held tokens: the worse for the seller of the trade S and the hold's buy S.
+    function heldS(Ctx memory c, uint256 s, uint256 holdS) internal pure returns (uint256) {
+        return c.isCall ? Math.min(s, holdS) : Math.max(s, holdS);
+    }
+
+    /// @dev `who`'s open hold on `id` (zero when it has ended).
+    function openHold(bytes32 id, address who) internal view returns (EngineStorage.Hold memory hd) {
+        hd = EngineStorage.layout().holds[id][who];
+        if (hd.until <= block.timestamp) delete hd;
+    }
+
+    /// @dev Review R02: adds `tokens` bought at `s` (or handed back from a cancelled ticket) to `who`'s hold, keeping the
+    /// more binding S and the later end. Only the account's own buys (or its agent router's, for it) and its own
+    /// cancelled tickets reach here, so nobody can pin or extend another account's hold.
+    function addHold(bytes32 id, address who, uint256 s, uint256 until, uint256 tokens, bool isCall) internal {
         EngineStorage.Hold storage hd = EngineStorage.layout().holds[id][who];
-        if (hd.until <= block.timestamp || (isCall ? s < hd.s : s > hd.s)) hd.s = uint128(s);
-        hd.until = uint64(block.timestamp + holdSeconds());
+        if (hd.until <= block.timestamp || hd.tokens == 0) {
+            hd.s = uint128(s);
+            hd.tokens = 0;
+            hd.until = 0;
+        } else if (isCall ? s < hd.s : s > hd.s) {
+            hd.s = uint128(s);
+        }
+        hd.tokens += uint128(tokens);
+        if (until > hd.until) hd.until = uint64(until);
+    }
+
+    /// @dev A sell or escrow of `tokens` by `who` uses its held tokens first (the worse case for the seller): returns
+    /// the hold that applies to them (`tokens` = how many) and takes them off the account's hold.
+    function takeHold(bytes32 id, address who, uint256 tokens) internal returns (EngineStorage.Hold memory used) {
+        used = openHold(id, who);
+        if (used.tokens == 0) return used;
+        if (tokens < used.tokens) used.tokens = uint128(tokens);
+        EngineStorage.layout().holds[id][who].tokens -= used.tokens;
+    }
+
+    /// @dev Prices a sell of `tokens` whose first `hd.tokens` are held at the hold's S (review R02): the held part at the
+    /// worse of the trade S and the hold S, the rest at the trade S. The quote's per-unit fields are the free part's.
+    function priceSell(
+        EngineHelper h,
+        Ctx memory c,
+        EngineHelper.Book memory b,
+        int256 navNow,
+        uint256 tokens,
+        address account,
+        EngineStorage.Hold memory hd
+    ) internal view returns (IOptionEngine.Quote memory q, uint256 spread) {
+        uint256 units = Math.mulDiv(tokens, c.norm, WAD);
+        uint256 s0 = tradeS(c, false);
+        uint256 sH = hd.tokens == 0 ? s0 : heldS(c, s0, hd.s);
+        uint256 uH = sH == s0 ? 0 : Math.mulDiv(Math.min(hd.tokens, tokens), c.norm, WAD);
+        if (uH == 0) return priceTrade(h, c, b, navNow, units, false, account, s0);
+        (q, spread) = priceTrade(h, c, b, navNow, uH, false, account, sH);
+        if (units == uH) return (q, spread);
+        (IOptionEngine.Quote memory f, uint256 sf) = priceTrade(h, c, b, navNow, units - uH, false, account, s0);
+        f.usdg += q.usdg;
+        f.feeUsdg += q.feeUsdg;
+        f.dailyCostUsdg += q.dailyCostUsdg;
+        return (f, spread + sf);
     }
 
     function minTradeUsdg() internal view returns (uint256) {
@@ -265,15 +317,17 @@ library EngineCore {
     }
 
     /// @dev Review F08/F14: a partial sell must be worth the minimum and leave at least the minimum behind; selling
-    /// the whole balance is always allowed (law 4), whatever it is worth.
-    function checkSellSize(Ctx memory c, address seller, uint256 tokens) internal view {
+    /// the whole balance is always allowed (law 4), whatever it is worth. Review R03: a remainder worth less than the
+    /// minimum (for example dust a stranger sent just before) is swept into the sale instead of reverting it, so a
+    /// whole-balance sell can never be turned into a reverting partial one. Returns the tokens to sell.
+    function sellSize(Ctx memory c, address seller, uint256 tokens) internal view returns (uint256) {
         uint256 bal = IERC20(c.token).balanceOf(seller);
-        if (tokens >= bal) return;
+        if (tokens >= bal) return tokens;
         if (!c.priced) revert IOptionEngine.BelowMinimum();
         uint256 minWad = minTradeUsdg() * 1e12;
-        if (liab(tokens, c.norm, c.pu.v) < minWad || liab(bal - tokens, c.norm, c.pu.v) < minWad) {
-            revert IOptionEngine.BelowMinimum();
-        }
+        if (liab(tokens, c.norm, c.pu.v) < minWad) revert IOptionEngine.BelowMinimum();
+        if (liab(bal - tokens, c.norm, c.pu.v) < minWad) return bal;
+        return tokens;
     }
 
     /// @dev One VolOracle read per stock and speed per transaction (transient cache).
@@ -311,10 +365,13 @@ library EngineCore {
         si.rateMicro = uint48(rNow);
         c.rate0 = rNow * 1e6;
         c.norm = newNorm;
+        uint256 prevMark = c.lastAccrual; // the series' last mark was made with its last accrual
         c.lastAccrual = uint64(block.timestamp);
         $.registry.storeAccrual(c.id, uint128(newNorm), uint64(block.timestamp));
         if (newNorm < oldNorm) reportFunding(c.id, liab(c.supply, oldNorm, c.pu.v) - liab(c.supply, newNorm, c.pu.v));
-        storeBook(c, bookFor(h, c, 0, false, false));
+        storeBookAt(c, bookFor(h, c, 0, false, false), prevMark);
+        // Review R07: a retired dust series that is worth the minimum again goes back on the live list (the grid).
+        if (si.liveIdx == RETIRED && $.risk[c.id].value >= minTradeUsdg() * 1e12) markLive(c.id, c.stock);
         emit IOptionEngine.Accrued(c.id, uint128(newNorm), c.pu.v, c.pu.payoff, c.session);
         return true;
     }
@@ -384,7 +441,14 @@ library EngineCore {
         );
     }
 
+    /// @dev A trade's book update: the series was marked in this block already (by the trade's own accrual, or an
+    /// earlier one in the same block; a trade without a usable price never stores a book).
     function storeBook(Ctx memory c, EngineHelper.Book memory b) internal {
+        storeBookAt(c, b, c.lastAccrual);
+    }
+
+    /// @dev `prevAt`: when the series' stored mark was made (EngineMarkLib passes, review R09).
+    function storeBookAt(Ctx memory c, EngineHelper.Book memory b, uint256 prevAt) internal {
         EngineStorage.Layout storage $ = EngineStorage.layout();
         EngineHelper.Risk memory r = b.sAfter;
         $.risk[c.id] = EngineStorage.SeriesRisk({
@@ -415,7 +479,8 @@ library EngineCore {
             [b.sNow.value, b.sAfter.value],
             b.unitsAfter,
             c.s,
-            c.sigmaPosted
+            c.sigmaPosted,
+            prevAt
         );
     }
 
@@ -659,22 +724,24 @@ library EngineCore {
     function markLive(bytes32 id, address stock) internal {
         EngineStorage.Layout storage $ = EngineStorage.layout();
         EngineStorage.SeriesInfo storage si = $.info[id];
-        if (si.liveIdx != 0) return;
+        if (si.liveIdx != 0 && si.liveIdx != RETIRED) return;
         $.live[stock].push(id);
         si.liveIdx = uint32($.live[stock].length);
     }
 
     /// @dev Drops a series from its stock's live list once its supply is zero (after a burn).
     function dropIfEmpty(bytes32 id, address stock, address token) internal {
-        if (EngineStorage.layout().info[id].liveIdx == 0 || IERC20(token).totalSupply() != 0) return;
-        dropFromLive(id, stock);
+        EngineStorage.SeriesInfo storage si = EngineStorage.layout().info[id];
+        if (si.liveIdx == 0 || IERC20(token).totalSupply() != 0) return;
+        if (si.liveIdx == RETIRED) si.liveIdx = 0; // a retired series sold out: nothing left to accrue
+        else dropFromLive(id, stock);
     }
 
     /// @dev Swap-and-pop removal from the live list (empty series, or dust retired by EngineOpsLib.retireDust).
     function dropFromLive(bytes32 id, address stock) internal {
         EngineStorage.Layout storage $ = EngineStorage.layout();
         uint32 idx = $.info[id].liveIdx;
-        if (idx == 0) return;
+        if (idx == 0 || idx == RETIRED) return;
         bytes32[] storage list = $.live[stock];
         bytes32 last = list[list.length - 1];
         list[idx - 1] = last;

@@ -95,6 +95,10 @@ contract PriceGuard is AccessControl, IPriceGuard {
     uint32 public constant MAX_TRADE_TWAP_WINDOW = 30 minutes;
     /// @notice CLOSED/UNKNOWN last-good-price age bound (review F07) and the bounds of its setter.
     uint32 public constant DEFAULT_MAX_AGE_CLOSED = 5 days;
+    /// @dev Review R05: probes of the calendar after a stale feed's first stale instant, every DERIVED_HALT_STEP (16 x
+    /// 6 h covers any closure up to 4 days; a derived halt starts at most 6 h after the first in-session stale moment).
+    uint256 private constant DERIVED_HALT_PROBES = 16;
+    uint256 private constant DERIVED_HALT_STEP = 6 hours;
     uint32 public constant MIN_MAX_AGE_CLOSED = 2 days;
     uint32 public constant MAX_MAX_AGE_CLOSED = 14 days;
     /// @dev 10^exp converts the pool's raw quote-per-stock price to WAD per whole token; 18/6 decimals gives 30.
@@ -349,9 +353,13 @@ contract PriceGuard is AccessControl, IPriceGuard {
         return _twapPrice(src);
     }
 
-    /// @notice When the current halt started (poke's latch; 0 = not halted). The engine settles a stock (ORC-4) from it.
+    /// @notice When the current halt started (0 = not halted): the earlier of poke's latch and the halt derived from the
+    /// feed's own staleness (review R05: no poke needed). The engine settles a stock (ORC-4) from it.
     function haltedSince(address stock) external view returns (uint256) {
-        return _states[stock].haltedSince;
+        uint256 latched = _states[stock].haltedSince;
+        uint256 derived = _derivedHalt(_requireKnown(stock), feedDecimals[stock]);
+        if (latched == 0) return derived;
+        return derived != 0 && derived < latched ? derived : latched;
     }
 
     /// @inheritdoc IPriceGuard
@@ -483,7 +491,7 @@ contract PriceGuard is AccessControl, IPriceGuard {
                     || (
                         st.lastGoodS != 0
                             && block.timestamp > uint256(st.lastGoodAt) + (maxClosed == 0 ? DEFAULT_MAX_AGE_CLOSED : maxClosed)
-                    )
+                    ) || _derivedHalt(cfg, feedDecimals[stock]) != 0
             ) halted = true;
         }
 
@@ -608,6 +616,25 @@ contract PriceGuard is AccessControl, IPriceGuard {
         t.mult = (t.effectiveAt != 0 && block.timestamp >= t.effectiveAt && t.pending != 0) ? t.pending : t.ui;
         t.ok = ok1 && ok2 && ok3 && ok4 && t.ui != 0 && t.ui <= MAX_MULTIPLIER && t.pending <= MAX_MULTIPLIER
             && t.mult != 0;
+    }
+
+    /// @dev Review R05: the halt start derived from the feed alone, so the F21 latch and the ORC-4 settle clock do not
+    /// depend on anyone calling `poke`. The feed's latest round is stale in session (what `_evaluate` reads as HALTED)
+    /// from its updatedAt + maxAge on; the first such moment the calendar puts in session (probing that instant and every
+    /// 6 h after it for 4 days, past any weekend or holiday closure; a later probe only starts the halt later) is the
+    /// derived start. 0 = the feed is not stale at any in-session moment so far, or unreadable (then only poke's latch applies).
+    function _derivedHalt(StockConfig memory cfg, uint8 decimals_) private view returns (uint256) {
+        (bool valid,, uint256 updatedAt) = _readFeed(cfg.feed, decimals_);
+        if (!valid) return 0;
+        uint256 t = updatedAt + Math.max(cfg.maxAgeRegular, cfg.maxAgeExtended) + 1;
+        address mh = address(marketHours);
+        if (mh == address(0)) return 0;
+        for (uint256 k; k < DERIVED_HALT_PROBES && t <= block.timestamp; ++k) {
+            (bool ok, uint256 v) = _staticWord(mh, abi.encodeCall(IMarketHours.kindAt, (t)));
+            if (ok && (v == uint256(SessionKind.REGULAR) || v == uint256(SessionKind.EXTENDED))) return t;
+            t += DERIVED_HALT_STEP;
+        }
+        return 0;
     }
 
     /// @return valid answer > 0, updatedAt in (0, now], scaled answer within MAX_S

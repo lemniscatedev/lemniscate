@@ -25,6 +25,7 @@ library EngineStorage {
         address token;
         uint64 lastAccrual;
         /// @dev 1-based position in `live[stock]` (0 = no tokens outstanding), packed with lastAccrual (todo 07b R2).
+        /// Review R07: RETIRED (type(uint32).max) = off the live list as dust but with tokens outstanding.
         uint32 liveIdx;
         uint128 strike;
         uint128 norm;
@@ -75,9 +76,12 @@ library EngineStorage {
     }
 
     /// @dev The worse-for-the-seller S of an account's recent buys of a series and when the hold ends (review F01).
+    /// Review R02: the hold is bound to the tokens those buys minted (`tokens`, appended): only that many tokens are
+    /// priced at `s`, held tokens cannot be transferred while the hold is open, and nobody else can write it.
     struct Hold {
         uint64 until;
         uint128 s;
+        uint128 tokens;
     }
 
     /// @dev One series' contribution to its name's NAV mark (review F12/F15): the S and base sigma it was valued at and
@@ -85,13 +89,40 @@ library EngineStorage {
     struct SeriesMark {
         uint104 s; // the pricing domain tops out at 1e30 < 2^104
         uint128 units;
-        uint24 sigma; // bps, at most 30,000
+        /// @dev Bits 0-22: base sigma in bps (at most 30,000). Bit 23 (review R09/R07): the mark's tier, set when the
+        /// series' value at the mark was under the minimum trade (dust, retired series included). The mark's time is
+        /// the series' lastAccrual (every mark is made right after an accrual in the same block).
+        uint24 sigma;
+    }
+
+    /// @dev Review R09/R07: one tier of a name's NAV-mark envelope. A pass ends when every series with units in the tier
+    /// has been marked since it began, in any number of transactions; the envelope then becomes the marks of that pass
+    /// and `tc` its start, so the bounds tighten after every keeper pass whatever its batching (and at once when the
+    /// whole tier is marked in one block). Dust series (tier 1, retired ones included) never collapse with the live
+    /// tier: their marks stay in their own envelope until a dust pass re-marks them.
+    struct MarkTier {
+        uint128 lo; // envelope of the tier's current marks (0 = empty)
+        uint128 hi;
+        uint128 passLo; // envelope of the marks made in the open pass (after passStart)
+        uint128 passHi;
+        uint128 nowLo; // envelope of the marks made at nowTs
+        uint128 nowHi;
+        uint256 uCall;
+        uint256 uPut;
+        uint256[2] val; // per speed, book value at the marks (WAD USDG)
+        uint40 tc; // start of the last completed pass: every current mark is at or after it
+        uint40 passStart; // a series marked at or before it is still due in the open pass
+        uint40 nowTs;
+        uint32 pending; // series with units in the tier marked at or before passStart
+        uint32 count; // series with units in the tier
+        uint32 nowCount; // series with units in the tier marked at nowTs
     }
 
     /// @dev Per-name sums that bound the liability at today's S from the last-touch book in O(1) per name: delta and
     /// delta x mark S (tangent, a lower bound by convexity), units of calls and puts (|delta| <= 1, an upper bound),
     /// the envelope [lo, hi] of the mark prices, per speed vega and vega x mark sigma (first-order vol term), and per
     /// speed book value plus the time of the last full re-mark (funding accrued since the marks, follow-up B2).
+    /// Review R09/R07: lo, hi, uCall, uPut, val and tc are no longer written (see MarkTier); the tangent and vol sums are.
     struct NameMark {
         int256 d;
         int256 ds;
@@ -145,6 +176,19 @@ library EngineStorage {
         mapping(address stock => uint256) settleS;
         mapping(address stock => NameMark) marks;
         mapping(bytes32 id => SeriesMark) seriesMarks;
+        // ---- round-2 review fixes (todo 28), appended
+        /// @dev The AgentRouter (review R04): the only caller of `sellFor`, and the only account that may buy for
+        /// another recipient (R02). Zero = none.
+        address agentRouter;
+        /// @dev The seller's hold carried by a queued sell (review R02): the held part of the ticket's tokens and its S.
+        mapping(uint256 ticket => Hold) ticketHolds;
+        /// @dev Review R09/R07: per name, the live tier (0) and the dust tier (1) of the NAV-mark envelope. Replaces
+        /// NameMark's lo/hi/uCall/uPut/val/tc (kept in place, no longer written); NameMark keeps the tangent and vol sums.
+        mapping(address stock => MarkTier[2]) tiers;
+        /// @dev Review R07: every series ever retired as dust, per stock (entries are never removed; readers skip those
+        /// back on the live list or without supply), so monitoring still counts retired units.
+        mapping(address stock => bytes32[]) retired;
+        mapping(bytes32 id => bool) everRetired;
     }
 
     /// @dev keccak256(abi.encode(uint256(keccak256("lemniscate.storage.Engine")) - 1)) & ~bytes32(uint256(0xff))

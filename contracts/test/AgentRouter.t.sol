@@ -10,6 +10,7 @@ import {IOptionEngine} from "../src/interfaces/IOptionEngine.sol";
 import {ISeriesRegistry} from "../src/interfaces/ISeriesRegistry.sol";
 import {SessionKind} from "../src/libs/OptionTypes.sol";
 import {EngineBase} from "./engine/EngineBase.sol";
+import {LemniscateEngine} from "../src/LemniscateEngine.sol";
 
 /// @dev An engine that calls back into the router from `buy` (R7: the router's entry points are nonReentrant).
 contract ReentrantEngine {
@@ -55,6 +56,8 @@ contract AgentRouterTest is EngineBase {
         _lowMinTrade();
         owner = alice;
         router = new AgentRouter(address(engine));
+        vm.prank(admin);
+        engine.setAgentRouter(address(router));
         callN = _list(address(nvda), true, 100e18, WEEKLY);
         callT = _list(address(tsla), true, 200e18, WEEKLY);
         vm.prank(owner);
@@ -264,23 +267,23 @@ contract AgentRouterTest is EngineBase {
 
     function test_R4_queuedSellStaysTheOwners() public {
         (, uint256 tokens) = _agentBuy(callN, 4e18);
-        _approveTokens(callN);
         guard.setSession(address(nvda), SessionKind.HALTED);
         vm.prank(agent);
         uint256 proceeds = router.sellFor(owner, callN, uint128(tokens), 0, _now());
         assertEq(proceeds, 0);
         uint256 ticket = engine.ticketCount();
-        assertEq(router.ticketOwner(ticket), owner);
+        // Review R04: the engine escrows as the owner, so the owner (not the router) is the ticket's seller.
+        assertEq(engine.queuedSell(ticket).seller, owner, "owner is the seller");
         assertEq(engine.queuedSell(ticket).recipient, owner, "fill pays the owner");
+        assertEq(router.ticketOwner(ticket), address(0), "router keeps no tickets");
 
-        vm.expectRevert(abi.encodeWithSelector(IAgentRouter.NotTicketOwner.selector, ticket));
+        vm.expectRevert(abi.encodeWithSelector(IOptionEngine.NotTicketSeller.selector, ticket));
         vm.prank(agent);
-        router.cancelQueuedFor(ticket);
+        engine.cancelQueued(ticket);
 
         vm.prank(owner);
-        router.cancelQueuedFor(ticket);
+        engine.cancelQueued(ticket);
         assertEq(_token(callN).balanceOf(owner), tokens, "escrow back to the owner");
-        assertEq(router.ticketOwner(ticket), address(0));
         _assertNothingStuck(callN);
     }
 
@@ -346,12 +349,17 @@ contract AgentRouterTest is EngineBase {
         router.shieldFor(owner, address(nvda), 1e18, 500, type(uint128).max, _now());
     }
 
-    function test_R5_sellNeedsOptionTokenApproval() public {
+    /// @dev Review R04: the policy's canSell is the owner's consent; the engine burns from the owner directly, so no
+    /// option-token approval is needed and none is consumed. Only the configured router may call engine.sellFor.
+    function test_R5_sellNeedsNoTokenApprovalButOnlyTheRouterSellsFor() public {
         (, uint256 tokens) = _agentBuy(callN, 1e18);
-        vm.expectRevert();
+        vm.expectRevert(LemniscateEngine.NotAgentRouter.selector);
+        vm.prank(agent);
+        engine.sellFor(owner, callN, uint128(tokens), 0, _now());
+        skip(31 minutes);
         vm.prank(agent);
         router.sellFor(owner, callN, uint128(tokens), 0, _now());
-        assertEq(_token(callN).balanceOf(owner), tokens);
+        assertEq(_token(callN).balanceOf(owner), 0);
     }
 
     function test_R5_sellsDoNotSpendBudget() public {

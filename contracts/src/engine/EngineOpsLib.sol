@@ -7,7 +7,6 @@ import {SessionKind} from "../libs/OptionTypes.sol";
 import {EngineHelper} from "../EngineHelper.sol";
 import {EngineStorage} from "./EngineStorage.sol";
 import {EngineCore} from "./EngineCore.sol";
-import {EngineMarkLib} from "./EngineMarkLib.sol";
 
 /// @title EngineOpsLib
 /// @notice Accrual, dust retirement, the ORC-4 settlement, risk pokes, quote and vMark of LemniscateEngine (external
@@ -28,56 +27,44 @@ library EngineOpsLib {
         if (EngineCore.applyFunding(h, c)) EngineCore.recheck(h, false);
     }
 
-    /// @dev Skips, for about one cold SLOAD each, series already accrued in this block, series off the live list (no
-    /// supply, or retired as dust) and dust series (last-touch value under the minimum trade; they accrue lazily on
-    /// their next trade or transfer), so archived, empty or dusted series cost the keeper nothing (R2, review F08/F24).
-    /// A stock all of whose live series are marked in this block gets its NAV-mark envelope collapsed (review F12).
+    /// @dev Skips, for about one cold SLOAD each, series already accrued in this block and series without units (no
+    /// supply; unknown series included). Review R09: dust series are accrued when sent (the keeper sends them at its
+    /// slower dust cadence, decision 49): a NAV-mark pass needs every series with units re-marked, in any batching.
+    /// Review R07: retired series too, so the keeper's dust pass really re-marks them (and re-lists them once they are
+    /// worth the minimum again).
     function accrueMany(EngineHelper h, bytes32[] calldata ids) external {
         EngineStorage.Layout storage $ = EngineStorage.layout();
-        uint256 dust = EngineCore.minTradeUsdg() * 1e12;
-        address[] memory seen = new address[](ids.length);
-        uint256 n;
         for (uint256 i; i < ids.length; ++i) {
             EngineStorage.SeriesInfo storage si = $.info[ids[i]];
-            // one slot: no tokens outstanding (unknown series included) or already accrued in this block
+            // one slot: no tokens outstanding (unknown series included; retired dust series still count) or already
+            // accrued in this block
             if (si.liveIdx == 0 || si.lastAccrual >= block.timestamp) continue;
-            if ($.risk[ids[i]].value < dust) continue;
             EngineCore.Ctx memory c = EngineCore.context(h, ids[i], false);
-            if (!EngineCore.applyFunding(h, c)) continue;
-            uint256 k;
-            while (k < n && seen[k] != c.stock) ++k;
-            if (k == n) seen[n++] = c.stock;
-        }
-        for (uint256 k; k < n; ++k) {
-            collapseIfMarked(seen[k], dust);
+            EngineCore.applyFunding(h, c);
         }
         EngineCore.recheck(h, true);
     }
 
-    /// @dev Collapses `stock`'s NAV-mark envelope to this transaction's S when every non-dust live series is marked in
-    /// this block (one warm SLOAD per live series).
-    function collapseIfMarked(address stock, uint256 dust) private {
-        EngineStorage.Layout storage $ = EngineStorage.layout();
-        bytes32[] storage live = $.live[stock];
-        for (uint256 j; j < live.length; ++j) {
-            if ($.info[live[j]].lastAccrual < block.timestamp && $.risk[live[j]].value >= dust) return;
-        }
-        EngineMarkLib.collapse(stock, EngineCore.readPrice(stock, false).s);
-    }
-
     /// @dev Review F08/F24: takes series whose whole outstanding value (refreshed now) is under the minimum trade off
-    /// the live list, so keeper loops and monitoring never grow with dust. Holders keep their tokens and can still sell
-    /// or transfer them (a sell or transfer accrues and prices as usual); a new buy puts the series back on the list.
+    /// the live list, so the keeper's 5-minute grid never grows with dust. Holders keep their tokens and can still sell
+    /// or transfer them. Review R07: a retired series still accrues when sent to accrueMany (the keeper's dust pass),
+    /// keeps its units in the NAV bounds (dust tier) and the exact liability, and any accrual that finds it worth the
+    /// minimum again puts it back on the live list.
     function retireDust(EngineHelper h, bytes32[] calldata ids) external returns (uint256 retired) {
         EngineStorage.Layout storage $ = EngineStorage.layout();
         uint256 dust = EngineCore.minTradeUsdg() * 1e12;
         for (uint256 i; i < ids.length; ++i) {
             EngineStorage.SeriesInfo storage si = $.info[ids[i]];
-            if (si.liveIdx == 0) continue;
+            if (si.liveIdx == 0 || si.liveIdx == EngineCore.RETIRED) continue;
             EngineCore.Ctx memory c = EngineCore.context(h, ids[i], false);
             EngineCore.applyFunding(h, c);
             if ($.risk[ids[i]].value >= dust) continue;
             EngineCore.dropFromLive(ids[i], c.stock);
+            si.liveIdx = EngineCore.RETIRED;
+            if (!$.everRetired[ids[i]]) {
+                $.everRetired[ids[i]] = true;
+                $.retired[c.stock].push(ids[i]);
+            }
             emit SeriesRetired(ids[i]);
             ++retired;
         }
@@ -125,8 +112,8 @@ library EngineOpsLib {
         EngineCore.sync(maxCount);
     }
 
-    /// @dev Exactly what a trade of `units` would get now (the trade's own accrual is simulated).
-    /// `account` gets its $LMNS fee tier (zero = no discount).
+    /// @dev Exactly what a buy of `units` would get now (the trade's own accrual is simulated); sells are quoted by
+    /// EngineSellLib.quoteSell (the seller's hold). `account` gets its $LMNS fee tier (zero = no discount).
     function quote(EngineHelper h, bytes32 id, uint256 units, bool isBuy, address account)
         external
         view
@@ -142,7 +129,7 @@ library EngineOpsLib {
         uint256 tokens = isBuy ? units * WAD / c.norm : Math.mulDiv(units, WAD, c.norm, Math.Rounding.Ceil);
         EngineHelper.Book memory b = EngineCore.bookFor(h, c, tokens, isBuy, due);
         (q,) = EngineCore.priceTrade(
-            h, c, b, EngineStorage.layout().pool.navFor(b.tNow), units, isBuy, account, EngineCore.tradeS(c, isBuy, account)
+            h, c, b, EngineStorage.layout().pool.navFor(b.tNow), units, isBuy, account, EngineCore.tradeS(c, isBuy)
         );
         q.buyable = EngineCore.buyBlock(c) == 0;
     }

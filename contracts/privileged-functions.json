@@ -323,13 +323,6 @@
       "gate": "once:initializer",
       "delay": "n/a (caller's own balance, role or one-time setup)"
     },
-    "LemniscateEngine.onTokenTransfer(bytes32,address,address)": {
-      "contract": "LemniscateEngine",
-      "function": "onTokenTransfer(bytes32,address,address)",
-      "gate": "anyone",
-      "delay": "none (permissionless)",
-      "note": "the series' own option token only (else NotSeriesToken)"
-    },
     "LemniscateEngine.pokeRisk()": {
       "contract": "LemniscateEngine",
       "function": "pokeRisk()",
@@ -367,6 +360,19 @@
       "gate": "anyone",
       "delay": "none (permissionless)",
       "note": "sells the caller's own tokens; never paused"
+    },
+    "LemniscateEngine.sellFor(address,bytes32,uint128,uint128,uint64)": {
+      "contract": "LemniscateEngine",
+      "function": "sellFor(address,bytes32,uint128,uint128,uint64)",
+      "gate": "contract:agent-router",
+      "delay": "agent-router only",
+      "note": "the configured AgentRouter only, inside the owner's policy (R04)"
+    },
+    "LemniscateEngine.setAgentRouter(address)": {
+      "contract": "LemniscateEngine",
+      "function": "setAgentRouter(address)",
+      "gate": "role:DEFAULT_ADMIN_ROLE",
+      "delay": "default_admin 48h timelock"
     },
     "LemniscateEngine.setBuysPaused(bool)": {
       "contract": "LemniscateEngine",
@@ -454,6 +460,13 @@
       "gate": "contract:entrypoint",
       "delay": "entrypoint only",
       "note": "ERC-4337 entry point only"
+    },
+    "LemniscatePaymaster.registerKernelAccount(address,bytes,bytes32)": {
+      "contract": "LemniscatePaymaster",
+      "function": "registerKernelAccount(address,bytes,bytes32)",
+      "gate": "anyone",
+      "delay": "none (permissionless)",
+      "note": "only a deployed standard Kernel account of KERNEL_FACTORY (R17)"
     },
     "LemniscatePaymaster.renounceOwnership()": {
       "contract": "LemniscatePaymaster",

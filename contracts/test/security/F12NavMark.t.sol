@@ -131,8 +131,8 @@ contract F12NavMarkTest is SystemFixture {
         emit log_named_uint("claim value, hedge at the TWAP", atTwap);
         assertApproxEqRel(atFeed - atTwap, gap, 0.01e18, "exit values the hedge at the lower TWAP");
         assertEq(pool.nav(), midAtFeed, "mid NAV unchanged");
-        _mockTradeTwap(106e18); // a higher TWAP never raises an exit
-        assertEq(pool.previewRedeem(shares), atFeed, "exit at the lower feed S");
+        _mockTradeTwap(106e18); // a higher TWAP never raises an exit (R16: it now also marks the calls up)
+        assertLe(pool.previewRedeem(shares), atFeed, "a higher TWAP never raises an exit");
     }
 
     /// @dev B2-1, entry side: a deposit values the hedge at the higher of the feed S and the trade TWAP.
@@ -145,8 +145,8 @@ contract F12NavMarkTest is SystemFixture {
         _mockTradeTwap(100e18); // the TWAP has not followed the down print yet
         uint256 atTwap = pool.previewDeposit(100_000e6);
         assertLt(atTwap, atFeed, "fewer shares while the TWAP says the hedge is worth more");
-        _mockTradeTwap(94e18);
-        assertEq(pool.previewDeposit(100_000e6), atFeed, "a lower TWAP never cheapens an entry");
+        _mockTradeTwap(94e18); // R16: it now also lowers the entry's liability tangent
+        assertLe(pool.previewDeposit(100_000e6), atFeed, "a lower TWAP never cheapens an entry");
     }
 
     /// @dev B2-1: the high-water mark a deposit records is the exit-side NAV (the checkpoint's), never the entry

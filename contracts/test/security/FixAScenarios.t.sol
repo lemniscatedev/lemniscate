@@ -49,15 +49,14 @@ contract FixAScenariosTest is EngineBase {
         assertLe(proceeds * 1e12, (UNITS / 1e18) * v, "CLOSED sell inside the hold priced at the buy S at best");
     }
 
-    function test_F01_buyingForOtherAccountsHoldsEach_sybil() public {
+    /// @dev Review R02 replaced this: buying for another account wrote that account's hold, so a stranger could pin
+    /// anyone's sell price. Only the buyer itself (or the configured agent router) may now be a buy's recipient.
+    function test_F01_buyingForOtherAccountsRefused_sybil() public {
         bytes32 id = _list(address(nvda), true, 100e18, DAILY);
         vm.prank(alice);
+        vm.expectRevert(IOptionEngine.NotOwnBuy.selector);
         engine.buy(id, uint128(UNITS), type(uint128).max, uint64(vm.getBlockTimestamp()), carol);
-        EngineStorage.Hold memory h = engine.holdOf(id, carol);
-        assertEq(h.until, vm.getBlockTimestamp() + 30 minutes);
-        assertEq(h.s, 100e18);
-        guard.setS(address(nvda), 101e18);
-        assertLt(_sellQuote(id, 1_000e18, carol), _sellQuote(id, 1_000e18, address(0)));
+        assertEq(engine.holdOf(id, carol).until, 0);
     }
 
     function test_F01_smallRebuyCannotLiftTheHoldPrice_dust() public {
@@ -83,7 +82,7 @@ contract FixAScenariosTest is EngineBase {
         bytes32 id = _list(address(nvda), true, 100e18, DAILY);
         _buy(alice, id, UNITS);
         vm.expectRevert(LemniscateEngine.NotSeriesToken.selector);
-        engine.onTokenTransfer(id, alice, bob);
+        engine.onTokenTransfer(id, alice, bob, 1);
     }
 
     // ------------------------------------------------------------------------------------- F07/F21 ORC-4, queue
@@ -183,8 +182,9 @@ contract FixAScenariosTest is EngineBase {
         skip(5 days);
         assertEq(engine.retireDust(ids), 1);
         assertEq(engine.liveSeries(address(nvda)).length, 0);
-        // The keeper's loop skips it; bob can still transfer and sell.
+        // Review R07: the keeper's dust pass still accrues it; bob can still transfer and sell.
         engine.accrueMany(ids);
+        assertEq(registry.seriesOf(id).lastAccrual, vm.getBlockTimestamp());
         IERC20 token = _token(id);
         vm.prank(bob);
         token.transfer(carol, tokens);

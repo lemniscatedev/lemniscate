@@ -99,6 +99,7 @@ abstract contract SystemDeployer is SystemConfig {
         _params(c, d);
         _grantRoles(c, d);
         d.agentRouter = address(new AgentRouter(d.engine));
+        LemniscateEngine(d.engine).setAgentRouter(d.agentRouter); // review R04: agent sells price as the owner
         if (c.vaults.enabled) _deployVaults(c, d);
         if (c.handoff) _handoff(c, d);
     }

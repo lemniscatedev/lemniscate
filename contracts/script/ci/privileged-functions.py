@@ -44,7 +44,8 @@ DEFAULT_NOTES = {
     "AgentRouter.cancelQueuedFor(uint256)": "the owner of that queued sell",
     "LemniscateEngine.cancelQueued(uint256)": "the ticket's seller only",
     "LemniscateEngine.sell(bytes32,uint128,uint128,uint64,address)": "sells the caller's own tokens; never paused",
-    "LemniscateEngine.onTokenTransfer(bytes32,address,address)": "the series' own option token only (else NotSeriesToken)",
+    "LemniscateEngine.sellFor(address,bytes32,uint128,uint128,uint64)": "the configured AgentRouter only, inside the owner's policy (R04)",
+    "LemniscatePaymaster.registerKernelAccount(address,bytes,bytes32)": "only a deployed standard Kernel account of KERNEL_FACTORY (R17)",
     "LemniscateEngine.retireDust(bytes32[])": "only series whose whole value is under the minimum trade",
     "LemniscateEngine.settleHalted(address)": "only a stock HALTED for the settle delay (7 days), at its last good price",
     "WriterPool.requestWithdraw(uint256)": "burns the caller's own shares; never paused",
@@ -129,6 +130,8 @@ def classify(header: str, body: str, source: str, helpers: dict) -> str:
             gates.append(gate)
     if re.search(r"\bNotEngine\b|\bonlyEngine\b", text) and "contract:engine" not in gates:
         gates.append("contract:engine")
+    if re.search(r"\bNotAgentRouter\b", text):
+        gates.append("contract:agent-router")
     if re.search(r"\bNotPool\b", text) and "contract:pool" not in gates:
         gates.append("contract:pool")
     if re.search(r"\bNotVaultHook\b", text):

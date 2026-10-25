@@ -50,6 +50,9 @@ contract MockFundingEngine {
         registry.storeAccrual(id, uint128(n), uint64(block.timestamp));
     }
 
+    /// @dev The engine's transfer hook (review R02): this mock holds nothing, so every transfer passes.
+    function onTokenTransfer(bytes32, address, address, uint256) external view {}
+
     function mint(bytes32 id, address to, uint256 amount) external {
         IOptionToken(registry.seriesOf(id).token).mint(to, amount);
     }

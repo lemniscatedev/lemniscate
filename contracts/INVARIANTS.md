@@ -203,3 +203,21 @@ itself (market closed, sybils, permanent hold, one bad user, dust).
 | F26 | Only Kernel accounts are sponsored: a sender the paymaster saw deployed through `KERNEL_FACTORY` in a sponsored operation (initCode covered by the sponsor signature), or one the owner registered; nothing is written before the signature verifies | `test/Paymaster.t.sol::test_F26_*` |
 | F38 | The daily caps book `actualGasCost` plus the most the EntryPoint adds after postOp (postOp gas limit plus 10% of call and postOp limits) at the op's fee, never more than the reservation | `test/Paymaster.t.sol::test_F38_capsBookPostOpGasAndPenalty` |
 | F39 | Caps are non-zero, nested (per op <= per account per day <= global) and under hard ceilings (0.05 / 0.5 / 10 ETH); `DeployPaymaster.s.sol` deploys from the reviewed deploy-config values and its check names owner, signer, immutables, stake, deposit and cap mismatches | `test/Paymaster.t.sol::test_F39_limitsHaveHardCeilings`, `test/system/DeployPaymaster.t.sol::test_F39_*` |
+
+## Round-2 review fixes, lane A (todo 28; review of 2026-10-25)
+
+Each finding has its PoC as a regression test and a fuzz test of the general property (audit-fix loop rules 4-5).
+
+| Finding | Property (fuzz) | Tests |
+| --- | --- | --- |
+| R02 | No action by other accounts (buys for X, own buys, transfers to X, price moves, time) changes X's hold, and X's old tokens sell like a fresh account's | `security/R02HoldPoisoning.t.sol` |
+| R03 | Donations of any size to a seller or the router never make a whole-balance sell revert; the router sell equals the direct sell | `security/R03DustDonation.t.sol` |
+| R04 | For owners A != B, B's sellFor proceeds equal B's direct sell whatever A and strangers did | `security/R04RouterOwnerSell.t.sol` |
+| R05 | With no poke ever, a feed stale in session halts (CLOSED reads HALTED) and the halt start is never before the feed went stale and at most one 6 h probe after its first in-session stretch | `security/R05DerivedHalt.t.sol` |
+| R07 | After any path of prices, retirements and keeper calls: claim bound >= exact liability over every series with supply, every such series accrued by the keeper, holder funding equal to the never-retired path | `security/R07RetiredDust.t.sol` |
+| R08 | For any cash spend between the pot and a claim, value(burned shares) <= paid + charged shortfall | `security/R08ProRataBurn.t.sol` |
+| R09 | For any series count across the batch boundary and batch size 1-45: bounds bracket the exact liability; tight after a complete batched pass | `security/R09MarkPasses.t.sol` |
+| R10 | With no price, vol, funding or liability change, no checkpoint/claim sequence under any exit pessimism moves the Reserve | `security/R10ReserveMidNav.t.sol` |
+| R16 | For any feed S and trade TWAP (REGULAR or CLOSED): exit bound >= exact at both prices, entry bound <= exact at both | `security/R16LiabilityTwap.t.sol` |
+| R17 | A standard Kernel account is sponsorable whoever deployed it and whoever registers it; non-standard setups never register | `security/R17KernelRegister.t.sol` |
+| R18 | Any deposit setting is refused up front or the scripted deploy passes its own check, leaving only the documented pending items | `system/DeployPaymaster.t.sol::*R18*` |

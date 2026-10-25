@@ -29,6 +29,9 @@ library EngineTradeLib {
         if (block.timestamp > deadline) revert IOptionEngine.Expired();
         if (units == 0 || recipient == address(0)) revert IOptionEngine.BelowMinimum();
         EngineStorage.Layout storage $ = EngineStorage.layout();
+        // Review R02: a buy's hold is written to its recipient, so only the buyer itself (or the agent router, under
+        // the owner's policy) may be the recipient: nobody can open, pin or extend another account's hold.
+        if (recipient != msg.sender && msg.sender != $.agentRouter) revert IOptionEngine.NotOwnBuy();
         EngineCore.Ctx memory c = EngineCore.context(h, id, true);
         EngineCore.applyFunding(h, c);
         uint8 code = EngineCore.buyBlock(c);
@@ -39,13 +42,13 @@ library EngineTradeLib {
         EngineHelper.Book memory b = EngineCore.bookFor(h, c, tokens, true, false);
         int256 navNow = $.pool.navFor(b.tNow);
         EngineCore.checkCaps(h, c, b, navNow, recipient, tokens);
-        uint256 sTrade = EngineCore.tradeS(c, true, address(0));
+        uint256 sTrade = EngineCore.tradeS(c, true);
         (IOptionEngine.Quote memory q, uint256 spread) =
             EngineCore.priceTrade(h, c, b, navNow, units, true, msg.sender, sTrade);
         cost = q.usdg;
         if (cost < EngineCore.minTradeUsdg()) revert IOptionEngine.BelowMinimum();
         if (cost > maxCost) revert IOptionEngine.Slippage(cost, maxCost);
-        EngineCore.recordHold(id, recipient, sTrade, c.isCall);
+        EngineCore.addHold(id, recipient, sTrade, block.timestamp + EngineCore.holdSeconds(), tokens, c.isCall);
         $.usdg.safeTransferFrom(msg.sender, address($.pool), cost);
         $.pool.onSale(id, cost, spread);
         IOptionToken(c.token).mint(recipient, tokens);

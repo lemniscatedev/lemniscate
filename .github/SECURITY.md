@@ -155,13 +155,14 @@ script's `check(address)` asserts the owner (the Safe), signer, immutables, stak
 | LemniscateEngine | `freezeUpgrades()` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | LemniscateEngine | `grantRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | LemniscateEngine | `initialize(address,address,address,address,address,address)` | once:initializer | n/a (caller's own balance, role or one-time setup) |
-| LemniscateEngine | `onTokenTransfer(bytes32,address,address)` | anyone (the series' own option token only (else NotSeriesToken)) | none (permissionless) |
 | LemniscateEngine | `pokeRisk()` | anyone | none (permissionless) |
 | LemniscateEngine | `pruneShieldList(address,uint256)` | anyone | none (permissionless) |
 | LemniscateEngine | `renounceRole(bytes32,address)` | self | n/a (caller's own balance, role or one-time setup) |
 | LemniscateEngine | `retireDust(bytes32[])` | anyone (only series whose whole value is under the minimum trade) | none (permissionless) |
 | LemniscateEngine | `revokeRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | LemniscateEngine | `sell(bytes32,uint128,uint128,uint64,address)` | anyone (sells the caller's own tokens; never paused) | none (permissionless) |
+| LemniscateEngine | `sellFor(address,bytes32,uint128,uint128,uint64)` | contract:agent-router (the configured AgentRouter only, inside the owner's policy (R04)) | agent-router only |
+| LemniscateEngine | `setAgentRouter(address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | LemniscateEngine | `setBuysPaused(bool)` | role:DEFAULT_ADMIN_ROLE or role:GUARDIAN_ROLE | default_admin 48h timelock / guardian instant |
 | LemniscateEngine | `setFeeTiers(address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | LemniscateEngine | `setGuards(tuple)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
@@ -176,6 +177,7 @@ script's `check(address)` asserts the owner (the Safe), signer, immutables, stak
 | LemniscatePaymaster | `addStake(uint32)` | owner | owner (a Safe, 2-step ownership, no timelock) |
 | LemniscatePaymaster | `deposit()` | anyone (funds the paymaster) | none (permissionless) |
 | LemniscatePaymaster | `postOp(uint8,bytes,uint256,uint256)` | contract:entrypoint (ERC-4337 entry point only) | entrypoint only |
+| LemniscatePaymaster | `registerKernelAccount(address,bytes,bytes32)` | anyone (only a deployed standard Kernel account of KERNEL_FACTORY (R17)) | none (permissionless) |
 | LemniscatePaymaster | `renounceOwnership()` | owner | owner (a Safe, 2-step ownership, no timelock) |
 | LemniscatePaymaster | `setKernelAccounts(address[],bool)` | owner | owner (a Safe, 2-step ownership, no timelock) |
 | LemniscatePaymaster | `setLimits(uint256,uint256,uint256)` | owner | owner (a Safe, 2-step ownership, no timelock) |
@@ -493,6 +495,30 @@ Each has a regression test that fails without it and a property or fuzz test of 
   run (about 288 no-op transactions a day per 45 series). Held series that are off the live list now go to a single `engine.accrue`
   once per dust cadence (a day), and the job counts as accrued only what it sent to `accrueMany`. A property test over random books
   checks that a second run with nothing changed sends nothing and that a retired series costs at most two single accruals a day.
+
+## Contract protections added by the round-2 review (2026-10-25, lane A)
+
+These amend the bullets above where they differ (decisions 54-64).
+
+- Sell hold (R02): the 30-minute hold binds only the tokens the account's own buys minted; only those are priced at the buy S.
+  Held tokens cannot be transferred until the hold ends, a transfer never writes the receiver's hold, and only the buyer itself
+  (or the configured AgentRouter, for its owner) may receive a buy, so nobody can pin or extend another account's sell price.
+  Accepted: a buyer cannot move its tokens for 30 minutes after a buy; selling is never blocked.
+- Agent sells (R04/R03): the AgentRouter sells through `engine.sellFor`, which prices, sizes and escrows as the owner (balance,
+  hold, fee tier, ticket). A partial sell whose remainder is worth less than the minimum trade sells the whole balance instead of
+  reverting, so dust sent to a seller or a router never blocks an exit.
+- Retired dust (R07): a series retired as dust still accrues when the keeper sends it, re-lists once worth the minimum again,
+  stays in the NAV bounds and in `totalLiability`; retirement never changes a holder's funding.
+- LP-flow bounds (R09/R16): the NAV envelope resets per pass (every series of a tier re-marked, in any batching), separately for
+  live and dust series, and both bounds use the worse for the LP of the feed S and the trade TWAP. Accepted: between dust passes
+  the dust tier's claim bound can be lower than exact (claims priced low, never high); the keeper's dust cadence bounds it.
+- Reserve (R10/R08): the Reserve covers only a drop of the mid (book value, hedge at S) NAV below the high-water mark, never the exit
+  side's pessimism; a pro-rata claim capped to the cash on hand burns only the shares it is paid for.
+- Halts (R05): PriceGuard derives the halt start from the feed's own staleness, so the CLOSED-reads-HALTED rule and the ORC-4
+  settle clock work with nobody calling `poke`. Accepted: the derived start can be up to 6 hours late when the first stale moment
+  falls in a closure.
+- Paymaster (R17/R18): anyone can register a deployed standard Kernel account (`registerKernelAccount`), so deploying a user's
+  account first cannot make it unsponsorable; `DeployPaymaster` passes with the mainnet config (deposit funded after deploy).
 
 ## Audit history
 

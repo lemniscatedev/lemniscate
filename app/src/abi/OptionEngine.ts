@@ -164,6 +164,19 @@ export const OptionEngineAbi = [
   },
   {
     "type": "function",
+    "name": "agentRouter",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "bookValue",
     "inputs": [],
     "outputs": [
@@ -538,6 +551,11 @@ export const OptionEngineAbi = [
             "name": "s",
             "type": "uint128",
             "internalType": "uint128"
+          },
+          {
+            "name": "tokens",
+            "type": "uint128",
+            "internalType": "uint128"
           }
         ]
       }
@@ -597,6 +615,107 @@ export const OptionEngineAbi = [
         "name": "",
         "type": "bytes32[]",
         "internalType": "bytes32[]"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "markTier",
+    "inputs": [
+      {
+        "name": "stock",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "tier",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct EngineStorage.MarkTier",
+        "components": [
+          {
+            "name": "lo",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "hi",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "passLo",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "passHi",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "nowLo",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "nowHi",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "uCall",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "uPut",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "val",
+            "type": "uint256[2]",
+            "internalType": "uint256[2]"
+          },
+          {
+            "name": "tc",
+            "type": "uint40",
+            "internalType": "uint40"
+          },
+          {
+            "name": "passStart",
+            "type": "uint40",
+            "internalType": "uint40"
+          },
+          {
+            "name": "nowTs",
+            "type": "uint40",
+            "internalType": "uint40"
+          },
+          {
+            "name": "pending",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "count",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "nowCount",
+            "type": "uint32",
+            "internalType": "uint32"
+          }
+        ]
       }
     ],
     "stateMutability": "view"
@@ -791,13 +910,18 @@ export const OptionEngineAbi = [
         "internalType": "address"
       },
       {
-        "name": "to",
+        "name": "",
         "type": "address",
         "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "outputs": [],
-    "stateMutability": "nonpayable"
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -1301,6 +1425,45 @@ export const OptionEngineAbi = [
   },
   {
     "type": "function",
+    "name": "sellFor",
+    "inputs": [
+      {
+        "name": "owner",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "tokens",
+        "type": "uint128",
+        "internalType": "uint128"
+      },
+      {
+        "name": "minProceedsUsdg",
+        "type": "uint128",
+        "internalType": "uint128"
+      },
+      {
+        "name": "deadline",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "proceedsUsdg",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "seriesBuysPaused",
     "inputs": [
       {
@@ -1468,6 +1631,19 @@ export const OptionEngineAbi = [
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "setAgentRouter",
+    "inputs": [
+      {
+        "name": "router",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -1972,6 +2148,19 @@ export const OptionEngineAbi = [
         "type": "uint8",
         "indexed": false,
         "internalType": "enum SessionKind"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "AgentRouterSet",
+    "inputs": [
+      {
+        "name": "agentRouter",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
       }
     ],
     "anonymous": false
@@ -2663,6 +2852,17 @@ export const OptionEngineAbi = [
   },
   {
     "type": "error",
+    "name": "HeldTokens",
+    "inputs": [
+      {
+        "name": "until",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InvalidGuards",
     "inputs": []
   },
@@ -2673,12 +2873,22 @@ export const OptionEngineAbi = [
   },
   {
     "type": "error",
+    "name": "NotAgentRouter",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NotGuardian",
     "inputs": []
   },
   {
     "type": "error",
     "name": "NotInitializing",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotOwnBuy",
     "inputs": []
   },
   {

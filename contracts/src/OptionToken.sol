@@ -7,7 +7,7 @@ import {IOptionEngine} from "./interfaces/IOptionEngine.sol";
 
 /// @dev The engine's transfer hook (LemniscateEngine.onTokenTransfer, review F01).
 interface IOptionTokenHolds {
-    function onTokenTransfer(bytes32 id, address from, address to) external;
+    function onTokenTransfer(bytes32 id, address from, address to, uint256 amount) external view;
 }
 
 /// @title OptionToken
@@ -51,13 +51,13 @@ contract OptionToken is ERC20Upgradeable, IOptionToken {
         _burn(from, amount);
     }
 
-    /// @dev Accrue the series before any balance changes. A holder-to-holder transfer also hands the sender's open
-    /// minimum hold to the receiver (review F01). That call cannot be starved of gas to skip it: it needs far less than
-    /// the 1/64 of the forwarded gas this function keeps for the transfer itself.
+    /// @dev Accrue the series before any balance changes. A holder-to-holder transfer must also pass the engine's hold
+    /// check (review R02: tokens under the sender's open sell hold cannot move until it ends); it reverts the transfer,
+    /// so no gas choice can skip it.
     function _update(address from, address to, uint256 value) internal override {
         IOptionEngine(engine).accrue(seriesId);
         if (from != address(0) && to != address(0)) {
-            try IOptionTokenHolds(engine).onTokenTransfer(seriesId, from, to) {} catch {}
+            IOptionTokenHolds(engine).onTokenTransfer(seriesId, from, to, value);
         }
         super._update(from, to, value);
     }

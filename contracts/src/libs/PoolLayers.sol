@@ -217,7 +217,13 @@ library PoolLayers {
             shortfall += want - got;
         }
         uint256 cash = c.usdg.balanceOf(address(this));
-        if (proRata && cash + shortfall < target) target = cash + shortfall; // never more than is there
+        if (proRata && cash + shortfall < target) {
+            // Never more than is there (the day's pot is a number; pay() and rebalance may have spent its cash). Review
+            // R08: the shares burned shrink with the payout, so a capped claim keeps the shares it is not paid for.
+            target = cash + shortfall;
+            uint256 cut = Math.mulDiv(shares, target, x.value, Math.Rounding.Ceil);
+            if (cut < burnShares) burnShares = cut;
+        }
         paid = target > shortfall ? target - shortfall : 0;
         if (burnShares == 0 || paid == 0) revert NothingClaimable();
         t.shares = shares - burnShares;

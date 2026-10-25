@@ -16,6 +16,11 @@ interface IPaymasterEntryPoint {
     function balanceOf(address account) external view returns (uint256);
 }
 
+/// @dev The Kernel factory's address derivation (v3.3 `getAddress(initData, salt)`, CREATE2 over its implementation).
+interface IKernelFactoryAddress {
+    function getAddress(bytes calldata data, bytes32 salt) external view returns (address);
+}
+
 /// @title LemniscatePaymaster
 /// @notice Verifying paymaster for ERC-4337 EntryPoint v0.7. It pays gas only for user operations that
 /// (1) carry a signature from the sponsoring signer, (2) call nothing but the option engine, the agent router,
@@ -61,6 +66,12 @@ contract LemniscatePaymaster is Ownable2Step {
     /// @dev Kernel / ERC-7579 `execute(bytes32,bytes)`.
     bytes4 private constant EXECUTE = 0xe9ae5c53;
     bytes4 private constant APPROVE = 0x095ea7b3;
+    /// @notice Review R17: the ZeroDev ECDSA validator, the root validator of the standard Lemniscate account (the same
+    /// address on chains 4663 and 46630, verified with cast; app/src/aa/config.ts KERNEL_ECDSA_VALIDATOR).
+    address public constant ECDSA_VALIDATOR = 0x845ADb2C711129d4f3966735eD98a9F09fC4cE57;
+    /// @dev Kernel v3 `initialize(bytes21,address,bytes,bytes,bytes[])`.
+    bytes4 private constant KERNEL_INITIALIZE =
+        bytes4(keccak256("initialize(bytes21,address,bytes,bytes,bytes[])"));
 
     IPaymasterEntryPoint public immutable ENTRY_POINT;
     address public immutable ENGINE;
@@ -104,6 +115,7 @@ contract LemniscatePaymaster is Ownable2Step {
     error AccountDailyCapExceeded(address account, uint256 wouldSpend, uint256 cap);
     error GlobalDailyCapExceeded(uint256 wouldSpend, uint256 cap);
     error UnknownAccount(address sender);
+    error NotStandardAccount();
     error BadLimits();
 
     constructor(
@@ -354,6 +366,27 @@ contract LemniscatePaymaster is Ownable2Step {
         accountDailyCap = accountDailyCap_;
         globalDailyCap = globalDailyCap_;
         emit LimitsChanged(maxCostPerOp_, accountDailyCap_, globalDailyCap_);
+    }
+
+    /// @notice Permissionless (review R17): registers `account` as a Kernel account when it is the deployed KERNEL_FACTORY
+    /// account for `initData` and `salt`, and `initData` is the standard setup the sponsor signs for (root validator =
+    /// the ECDSA validator, no hook, a 20-byte owner, no hook data, no init config). The CREATE2 address binds the init
+    /// data, so this proves the same setup a sponsored deployment would have; whoever deployed it does not matter, so a
+    /// stranger deploying a user's account first can no longer make it unsponsorable. Not called during validation.
+    function registerKernelAccount(address account, bytes calldata initData, bytes32 salt) external {
+        if (initData.length < 4 || bytes4(initData[0:4]) != KERNEL_INITIALIZE) revert NotStandardAccount();
+        (bytes21 root, address hook, bytes memory validatorData, bytes memory hookData, bytes[] memory initConfig) =
+            abi.decode(initData[4:], (bytes21, address, bytes, bytes, bytes[]));
+        if (
+            root != bytes21(abi.encodePacked(bytes1(0x01), ECDSA_VALIDATOR)) || hook != address(1)
+                || validatorData.length != 20 || hookData.length != 0 || initConfig.length != 0
+        ) revert NotStandardAccount();
+        if (IKernelFactoryAddress(KERNEL_FACTORY).getAddress(initData, salt) != account || account.code.length == 0) {
+            revert UnknownAccount(account);
+        }
+        if (kernelAccount[account]) return;
+        kernelAccount[account] = true;
+        emit KernelAccountSet(account, true);
     }
 
     /// @notice Registers (or forgets) Kernel accounts deployed without a sponsored operation, after checking off chain

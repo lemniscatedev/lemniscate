@@ -188,15 +188,22 @@ library PoolHedging {
         v.cash = x.usdg.balanceOf(address(this));
         int256 gross = _toInt(v.cash * USDG_TO_WAD) - _toInt(x.feeOwed * USDG_TO_WAD);
         gross += _toInt(_perpEquity(g, x.lastNavUsdg) * USDG_TO_WAD);
-        (uint256 hedgeWad, int256 up, int256 down, uint256[] memory prices) =
+        (uint256 hedgeWad, uint256 hedgeMid, int256 up, int256 down, uint256[] memory prices) =
             _value(b, x.priceGuard, x.engine, x.guard, x.openBps, x.closedBps, x.side);
         v.prices = prices;
-        gross += _toInt(hedgeWad);
-        v.raw = gross - _toInt(x.liability);
-        v.reserveShare = _reserveShare(x, v.raw);
+        v.raw = gross + _toInt(hedgeWad) - _toInt(x.liability);
+        // Review R10: the first-loss layers cover a drop of the honestly marked (mid) NAV below the high-water mark,
+        // never the exit side's pessimism (upper liability bound, hedge at min(S, TWAP)), which stays with the LPs who
+        // stay instead of being drawn from the Reserve on every claim.
+        v.reserveShare = _reserveShare(x, x.side == 0 ? v.raw : gross + _toInt(hedgeMid) - _toInt(_bookValue(x.engine)));
         v.nav = v.raw + _toInt(v.reserveShare);
         v.navLow = v.nav + down;
         v.navHigh = v.nav + up;
+    }
+
+    /// @dev The engine's O(1) book value (decision 26), the mid liability.
+    function _bookValue(IOptionEngine engine) private view returns (uint256) {
+        return address(engine) == address(0) ? 0 : engine.bookValue();
     }
 
     /// @dev The part of the first-loss layers needed to lift NAV per share back to the high-water mark: the reserve
@@ -218,7 +225,7 @@ library PoolHedging {
         return int256(value);
     }
 
-    /// @dev Returns hedgeWad (sum of units x S over tracked stocks, WAD USDG), up (sum of positive best-case guard
+    /// @dev Returns hedgeWad (sum of units x the side's S over tracked stocks, WAD USDG), hedgeMid (at S), up (sum of positive best-case guard
     /// moves), down (sum of negative worst-case guard moves) and prices (S per tracked stock, 0 when not read).
     function _value(
         Book storage b,
@@ -228,7 +235,7 @@ library PoolHedging {
         uint16 openBps,
         uint16 closedBps,
         uint8 side
-    ) private view returns (uint256 hedgeWad, int256 up, int256 down, uint256[] memory prices) {
+    ) private view returns (uint256 hedgeWad, uint256 hedgeMid, int256 up, int256 down, uint256[] memory prices) {
         uint256 count = b.stocks.length;
         prices = new uint256[](count);
         for (uint256 i; i < count; ++i) {
@@ -239,6 +246,7 @@ library PoolHedging {
             prices[i] = s;
             uint256 hv = Math.mulDiv(units, side == 0 || units == 0 ? s : _sideS(pg, stock, s, side), 1e18);
             hedgeWad += hv;
+            hedgeMid += Math.mulDiv(units, s, 1e18);
             if (!guard || address(engine) == address(0)) continue;
             (int256 best, int256 worst) = _guardMove(engine, stock, s, hv, live ? openBps : closedBps);
             if (best > 0) up += best;
