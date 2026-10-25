@@ -115,11 +115,12 @@ describe("decision 30/31 trade-price state", () => {
     const { clients } = fakeClients((call) => {
       if (call.functionName !== "holdOf") throw new Error(call.functionName);
       if (call.args?.[1] === ADDR.bob) throw new Error("revert");
-      return { until: 1_790_000_600n, s: 118n * WAD };
+      return { until: 1_790_000_600n, s: 118n * WAD, tokens: 3n * WAD };
     });
     const holds = await createRpcSnapshotReader(clients, testDeployment()).readHolds!([
       { seriesId: b32(1), account: ADDR.alice }, { seriesId: b32(1), account: ADDR.bob },
     ], 3n);
-    expect(holds).toEqual([{ seriesId: b32(1), account: ADDR.alice, until: 1_790_000_600n, sWad: 118n * WAD }]);
+    // R02: the hold binds only the tokens its buys minted (Hold.tokens)
+    expect(holds).toEqual([{ seriesId: b32(1), account: ADDR.alice, until: 1_790_000_600n, sWad: 118n * WAD, tokensWad: 3n * WAD }]);
   });
 });

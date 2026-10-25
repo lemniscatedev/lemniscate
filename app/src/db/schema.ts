@@ -423,6 +423,8 @@ export const holds = pgTable(
     until: at("until").notNull(),
     s: amount("s").notNull(),
     block: chainBlock().notNull(),
+    /** R02 (decision 54): the tokens the hold binds (engine.holdOf(...).tokens); null = not read yet (all treated as held). */
+    tokens: amount("tokens"),
   },
   (table) => [
     primaryKey({ name: "holds_pk", columns: [table.seriesId, table.account] }),

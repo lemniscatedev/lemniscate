@@ -224,7 +224,7 @@ export class FakeReader implements SnapshotReader {
   stocks: Record<string, Partial<StockReading>> = {};
   series: Record<string, Partial<SeriesReading>> = {};
   /** engine.holdOf answers by `${seriesId}:${account}`; pairs asked for are recorded. */
-  holds: Record<string, { until: bigint; sWad: bigint }> = {};
+  holds: Record<string, { until: bigint; sWad: bigint; tokensWad?: bigint }> = {};
   holdPairs: string[] = [];
   fail = false;
 

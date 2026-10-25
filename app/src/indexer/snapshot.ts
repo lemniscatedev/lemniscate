@@ -55,12 +55,14 @@ export interface StockReading {
   readonly haltedSince?: bigint;
 }
 
-/** engine.holdOf(id, account): an open hold until `until` (unix seconds) at buy-time S `sWad` (decision 30). */
+/** engine.holdOf(id, account): an open hold until `until` (unix seconds) at buy-time S `sWad` (decision 30) on
+ * `tokensWad` tokens (R02, decision 54: only the tokens the account's own buys minted). */
 export interface HoldReading {
   readonly seriesId: string;
   readonly account: string;
   readonly until: bigint;
   readonly sWad: bigint;
+  readonly tokensWad?: bigint;
 }
 
 export interface SeriesReading {
@@ -202,8 +204,9 @@ export function createRpcSnapshotReader(clients: ServiceClients, deployment: Opt
       pairs.forEach((pair, index) => {
         const entry = r[index];
         if (!entry || entry.status !== "success" || !entry.result) return;
-        const value = entry.result as { until: bigint; s: bigint };
-        found.push({ ...pair, until: asBigInt(value.until), sWad: asBigInt(value.s) });
+        const value = entry.result as { until: bigint; s: bigint; tokens?: bigint };
+        found.push({ ...pair, until: asBigInt(value.until), sWad: asBigInt(value.s),
+          ...(value.tokens === undefined ? {} : { tokensWad: asBigInt(value.tokens) }) });
       });
       return found;
     },
@@ -314,14 +317,15 @@ export async function writeSnapshot(
   }
 
   for (const hold of input.holds ?? []) {
-    if (hold.until * 1_000n <= BigInt(input.ts.getTime()) || hold.sWad === 0n) {
+    if (hold.until * 1_000n <= BigInt(input.ts.getTime()) || hold.sWad === 0n || hold.tokensWad === 0n) {
       await tx`DELETE FROM holds WHERE series_id = ${hold.seriesId} AND account = ${hold.account}`;
       continue;
     }
+    const tokens = hold.tokensWad === undefined ? null : wad(hold.tokensWad);
     await tx`
-      INSERT INTO holds (series_id, account, until, s, block)
-      VALUES (${hold.seriesId}, ${hold.account}, ${new Date(Number(hold.until) * 1_000).toISOString()}, ${wad(hold.sWad)}, ${block})
-      ON CONFLICT (series_id, account) DO UPDATE SET until = EXCLUDED.until, s = EXCLUDED.s, block = EXCLUDED.block
+      INSERT INTO holds (series_id, account, until, s, block, tokens)
+      VALUES (${hold.seriesId}, ${hold.account}, ${new Date(Number(hold.until) * 1_000).toISOString()}, ${wad(hold.sWad)}, ${block}, ${tokens})
+      ON CONFLICT (series_id, account) DO UPDATE SET until = EXCLUDED.until, s = EXCLUDED.s, block = EXCLUDED.block, tokens = EXCLUDED.tokens
     `;
   }
 
@@ -343,8 +347,8 @@ const HOLD_LOOKBACK_MS = 86_400_000;
 /** Most (series, account) pairs re-read per snapshot, newest first. */
 export const HOLD_PAIRS_PER_SNAPSHOT = 600;
 
-/** (series, account) pairs that may hold: buy recipients and option-token receivers of the last day, and every stored
- * hold (so an expired or extended one is corrected). */
+/** (series, account) pairs that may hold: buy recipients of the last day and every stored hold (so an expired, sold or
+ * extended one is corrected). R02 (decision 54): a transfer never writes the receiver's hold, so receivers are not read. */
 export async function holdCandidates(sql: Sql, at: Date): Promise<{ seriesId: string; account: string }[]> {
   const cut = new Date(at.getTime() - HOLD_LOOKBACK_MS).toISOString();
   const rows = (await sql`
@@ -352,8 +356,8 @@ export async function holdCandidates(sql: Sql, at: Date): Promise<{ seriesId: st
       SELECT series_id, account, max(ts) AS ts FROM (
         SELECT series_id, recipient AS account, ts FROM trades WHERE side = 'buy' AND ts > ${cut}
         UNION ALL
-        SELECT series_id, to_addr, ts FROM transfers
-        WHERE series_id IS NOT NULL AND ts > ${cut} AND to_addr <> '0x0000000000000000000000000000000000000000'
+        -- a cancelled queued sell hands its tokens back under what is left of their hold (R02)
+        SELECT series_id, seller, closed_at FROM queued_sells WHERE status = 'cancelled' AND closed_at > ${cut}
         UNION ALL
         SELECT series_id, account, until FROM holds
       ) touched GROUP BY series_id, account
