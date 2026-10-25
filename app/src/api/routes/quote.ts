@@ -59,17 +59,20 @@ async function prepare(deps: ApiDependencies, series: SeriesView | null): Promis
 const failed = (value: Prepared | Failure): value is Failure => "status" in value;
 
 /** The selling account's open hold on the series (decision 30), from the indexer's last read of engine.holdOf. */
-async function sellHold(deps: ApiDependencies, series: SeriesView, account: string | undefined, now: Date): Promise<{ s: string; until: string } | null> {
+type SellHold = { s: string; until: string; tokens: string | null };
+async function sellHold(deps: ApiDependencies, series: SeriesView, account: string | undefined, now: Date): Promise<SellHold | null> {
   return account ? activeHold(deps, series.id, account, now, series.isCall) : null;
 }
 
-const withHold = (market: MarketInputs, hold: { s: string; until: string } | null): MarketInputs =>
-  (hold ? { ...market, hold: { s: Number(hold.s), untilMs: Date.parse(hold.until) } } : market);
+/** R02 (decision 54): only the held tokens (x the norm projected to now: units) are priced at the hold's S. */
+const withHold = (market: MarketInputs, hold: SellHold | null, norm?: number): MarketInputs =>
+  (hold ? { ...market, hold: { s: Number(hold.s), untilMs: Date.parse(hold.until),
+    ...(hold.tokens === null || norm === undefined ? {} : { units: Number(hold.tokens) * norm }) } } : market);
 
-const holdView = (hold: { s: string; until: string } | null, quote: EngineQuote) =>
-  (hold ? { until: hold.until, buyPrice: trimDecimal(hold.s), applied: quote.holdApplied } : null);
+const holdView = (hold: SellHold | null, quote: EngineQuote) =>
+  (hold ? { until: hold.until, buyPrice: trimDecimal(hold.s), applied: quote.holdApplied, tokens: hold.tokens === null ? null : trimDecimal(hold.tokens) } : null);
 
-const holdNote = (until: string) => `You bought this option recently. Until ${until} (the hold after a purchase, 30 minutes by default) a sell is priced at the less favourable of the current price and the price when you bought.`;
+const holdNote = (until: string) => `You bought this option recently. Until ${until} (the hold after a purchase, 30 minutes by default) the tokens that purchase gave you are priced at the less favourable of the current price and the price when you bought, and cannot be transferred.`;
 
 function rawQuote(quote: EngineQuote) {
   return {
@@ -100,7 +103,7 @@ const intentResponses = {
   200: { description: "Unsigned calldata and the approvals it needs", content: { "application/json": { schema: intentResponseSchema } } },
   404: { description: "Unknown series or name", content: { "application/json": { schema: apiErrorSchema } } },
   409: { description: "Buys are blocked right now", content: { "application/json": { schema: apiErrorSchema } } },
-  422: { description: "Amount out of range", content: { "application/json": { schema: apiErrorSchema } } },
+  422: { description: "Amount out of range, or a buy for another wallet (NOT_OWN_BUY)", content: { "application/json": { schema: apiErrorSchema } } },
   503: { description: "No price or volatility indexed yet", content: { "application/json": { schema: apiErrorSchema } } },
   403: { description: "Invites are required and this wallet has not redeemed a code (buy and shield only; sells are never gated)", content: { "application/json": { schema: apiErrorSchema } } },
 };
@@ -122,7 +125,9 @@ export function registerQuoteRoutes(app: OpenAPIHono, deps: ApiDependencies): vo
     if (failed(prepared)) return context.json(prepared.body, prepared.status as 404);
     const { series, ctx, now } = prepared;
     const hold = body.side === "sell" ? await sellHold(deps, series, body.account, now) : null;
-    const quote = quoteUnits(seriesInputs(series), withHold(marketInputs(ctx, series), hold), unitsWad, body.side === "buy");
+    const base = marketInputs(ctx, series);
+    const holdNorm = hold ? Number(normDecimal(projectedNorm(seriesInputs(series), base, Number(series.norm), Date.parse(series.lastAccrual)))) : undefined;
+    const quote = quoteUnits(seriesInputs(series), withHold(base, hold, holdNorm), unitsWad, body.side === "buy");
     if (!quote) return context.json({ error: "NO_VOL", message: "No volatility inputs are indexed for this series yet." }, 503);
     return context.json({
       series: series.id, side: body.side, unitsWad: unitsWad.toString(), quote: rawQuote(quote),
@@ -144,6 +149,12 @@ export function registerQuoteRoutes(app: OpenAPIHono, deps: ApiDependencies): vo
     const body = context.req.valid("json");
     const gated = await inviteGate(deps, [body.account, body.owner]);
     if (gated) return context.json(gated, 403);
+    // R02 (decision 54): only the buyer itself (or the configured AgentRouter, for its owner) may receive a buy; the engine
+    // reverts NotOwnBuy otherwise, so a gift is refused here with the reason.
+    const router = (deps.deployment.contracts as { agentRouter?: string }).agentRouter?.toLowerCase();
+    if (body.recipient && body.recipient.toLowerCase() !== body.account.toLowerCase() && body.account.toLowerCase() !== router) {
+      return context.json({ error: "NOT_OWN_BUY", message: "Options cannot be bought for another wallet: the buyer receives them. Buy, then transfer once the 30-minute hold after the purchase has ended." }, 422);
+    }
     const unitsWad = parseWad(body.units);
     if (!unitsWad || unitsWad > UINT128_MAX) return context.json({ error: "BAD_REQUEST", message: "Units must be a positive number." }, 422);
     const prepared = await prepare(deps, await getSeries(deps, body.series));
@@ -177,11 +188,12 @@ export function registerQuoteRoutes(app: OpenAPIHono, deps: ApiDependencies): vo
     if (failed(prepared)) return context.json(prepared.body, prepared.status);
     const { series, ctx, now } = prepared;
     const hold = await sellHold(deps, series, body.account, now);
-    const market = withHold(marketInputs(ctx, series), hold);
+    const base = marketInputs(ctx, series);
+    // The engine accrues before the sell: burn the tokens that hold `units` at the norm projected to now.
+    const norm = normDecimal(projectedNorm(seriesInputs(series), base, Number(series.norm), Date.parse(series.lastAccrual)));
+    const market = withHold(base, hold, Number(norm));
     const quote = quoteUnits(seriesInputs(series), market, unitsWad, false);
     if (!quote) return context.json({ error: "NO_VOL", message: "No volatility inputs are indexed for this series yet." }, 503);
-    // The engine accrues before the sell: burn the tokens that hold `units` at the norm projected to now.
-    const norm = normDecimal(projectedNorm(seriesInputs(series), market, Number(series.norm), Date.parse(series.lastAccrual)));
     let tokens = tokensForUnits(unitsWad, norm);
     if (tokens === null || tokens > UINT128_MAX) return context.json({ error: "BAD_REQUEST", message: "Amount out of range." }, 422);
     // "Sell everything": the units the positions view showed a moment ago need a hair more tokens now (funding kept

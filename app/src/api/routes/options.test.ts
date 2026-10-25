@@ -207,8 +207,12 @@ suite("option API over indexed data", () => {
     expect(decoded.functionName).toBe("buy");
     expect(lower(decoded.args)).toEqual([id(2), 10n * 10n ** 18n, BigInt(body.maxCostUsdg), BigInt(body.deadline), ALICE]);
     expect(Math.abs(body.deadline - (Math.floor(Date.now() / 1000) + 120))).toBeLessThanOrEqual(3);
-    const other = await (await post("/v1/intent/buy", { series: id(2), units: "1", account: ALICE, recipient: ADDR.bob })).json() as any;
-    expect(lower(decodeFunctionData({ abi: OptionEngineAbi, data: other.data }).args)[4]).toBe(ADDR.bob);
+    // R02 (decision 54): a buy cannot be gifted (the engine reverts NotOwnBuy); the API refuses it up front
+    const gift = await post("/v1/intent/buy", { series: id(2), units: "1", account: ALICE, recipient: ADDR.bob });
+    expect(gift.status).toBe(422);
+    expect(((await gift.json()) as any).error).toBe("NOT_OWN_BUY");
+    const self = await (await post("/v1/intent/buy", { series: id(2), units: "1", account: ALICE, recipient: ALICE })).json() as any;
+    expect(lower(decodeFunctionData({ abi: OptionEngineAbi, data: self.data }).args)[4]).toBe(ALICE.toLowerCase());
   });
 
   test("buy intents are refused with a reason when the session or the series blocks buys, and EXTENDED is allowed", async () => {
@@ -543,7 +547,7 @@ suite("option API over indexed data", () => {
     const plain = await (await post("/v1/quote", { series: id(2), units: "9", side: "sell" })).json() as any;
     expect(plain.hold).toBeNull();
     const held = await (await post("/v1/quote", { series: id(2), units: "9", side: "sell", account: ALICE })).json() as any;
-    expect(held.hold).toEqual({ until: new Date(until).toISOString(), buyPrice: "210", applied: true });
+    expect(held.hold).toEqual({ until: new Date(until).toISOString(), buyPrice: "210", applied: true, tokens: null }); // a row without a token count: all held
     expect(BigInt(held.quote.usdg)).toBeLessThan(BigInt(plain.quote.usdg));
     const intent = await (await post("/v1/intent/sell", { series: id(2), units: "9", account: ALICE })).json() as any;
     expect(intent.hold.applied).toBe(true);
@@ -553,6 +557,34 @@ suite("option API over indexed data", () => {
     const other = await (await post("/v1/intent/sell", { series: id(2), units: "9", account: ZERO.replace(/0$/, "1") })).json() as any;
     expect(other.hold).toBeNull();
     await db.sql`DELETE FROM holds`;
+  });
+
+  test("R02 (28-merge): a sell prices only the held tokens at the hold's S; the indexed count plus buys since the snapshot", async () => {
+    const until = at(10 * 60_000);
+    // series 2: norm 0.9, so a 9-unit sell burns 10 tokens; 4 of alice's tokens are held (snapshot at block 200)
+    await db.sql`INSERT INTO holds (series_id, account, until, s, block, tokens) VALUES (${id(2)}, ${ALICE.toLowerCase()}, ${until}, 210, 200, 4)`;
+    fresh();
+    try {
+      const plain = await (await post("/v1/quote", { series: id(2), units: "9", side: "sell" })).json() as any;
+      const all = await (await post("/v1/quote", { series: id(2), units: "3.6", side: "sell", account: ALICE })).json() as any;
+      const part = await (await post("/v1/quote", { series: id(2), units: "9", side: "sell", account: ALICE })).json() as any;
+      const freeOnly = await (await post("/v1/quote", { series: id(2), units: "5.4", side: "sell" })).json() as any;
+      expect(part.hold).toMatchObject({ applied: true, tokens: "4" });
+      expect(BigInt(part.quote.usdg)).toBeLessThan(BigInt(plain.quote.usdg));
+      // held part (4 tokens = 3.6 units at the hold's S) + free part (5.4 units at the trade S), within rounding
+      const sum = BigInt(all.quote.usdg) + BigInt(freeOnly.quote.usdg);
+      expect(BigInt(part.quote.usdg) - sum <= 2n && sum - BigInt(part.quote.usdg) <= 2n).toBe(true);
+      // a buy after the snapshot block adds its tokens; one the snapshot already read does not count twice
+      await db.sql`INSERT INTO trades (tx_hash, log_index, block, ts, series_id, account, recipient, side, units, shares, usdg, v_mark, sigma_bps, session)
+        VALUES ('0xold', 0, 199, ${at(-60_000)}, ${id(2)}, ${ALICE}, ${ALICE}, 'buy', 3.6, 4, 30, 5.5, 5000, 'REGULAR'),
+               ('0xnew', 0, 201, ${at(-30_000)}, ${id(2)}, ${ALICE}, ${ALICE}, 'buy', 1.8, 2, 15, 5.5, 5000, 'REGULAR')`;
+      const more = await (await post("/v1/intent/sell", { series: id(2), units: "9", account: ALICE })).json() as any;
+      expect(more.hold.tokens).toBe("6");
+      expect(BigInt(more.quote.usdg)).toBeLessThan(BigInt(part.quote.usdg));
+    } finally {
+      await db.sql`DELETE FROM trades WHERE tx_hash IN ('0xold', '0xnew')`;
+      await db.sql`DELETE FROM holds`;
+    }
   });
 
   test("27d: a buy the snapshot has not read yet already shows and applies the hold (lagging tick)", async () => {
@@ -566,7 +598,7 @@ suite("option API over indexed data", () => {
     fresh();
     try {
       const held = await (await post("/v1/quote", { series: id(2), units: "9", side: "sell", account: ALICE })).json() as any;
-      expect(held.hold).toEqual({ until: new Date(Date.parse(at(-5 * 60_000)) + 1_800_000).toISOString(), buyPrice: "230", applied: false });
+      expect(held.hold).toEqual({ until: new Date(Date.parse(at(-5 * 60_000)) + 1_800_000).toISOString(), buyPrice: "230", applied: false, tokens: "10" });
       // now the feed S (210) is already the lower, so the hold changes nothing; with the feed above the buy price it binds
       await db.sql`UPDATE ticks SET spot = 250 WHERE name = 'NVDA' AND ts = ${at(0)}`;
       fresh();

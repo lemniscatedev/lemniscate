@@ -74,8 +74,9 @@ export interface MarketInputs {
    * trader (decision 30). Absent, null or 0: unavailable, the feed S alone prices the trade (as the engine does). */
   readonly tradeTwap?: number | null;
   /** The account's open hold on this series (engine.holdOf): a sell before `untilMs` is priced at the worse of the trade
-   * S and the buy-time `s` (decision 30). Only sells of that account carry it. */
-  readonly hold?: { readonly s: number; readonly untilMs: number } | null;
+   * S and the buy-time `s` (decision 30). Only sells of that account carry it. R02 (decision 54): only `units` option units
+   * (the held tokens x norm) are priced so, the rest at the trade S; absent = every unit sold is held (the worse case). */
+  readonly hold?: { readonly s: number; readonly untilMs: number; readonly units?: number } | null;
   /** engine.settlePrice: an ORC-4 settled stock (decision 31) reads CLOSED at this price while its feed is HALTED. */
   readonly settlePrice?: number | null;
 }
@@ -304,6 +305,23 @@ const wadOf = (value: number): bigint => (Number.isFinite(value) && value > 0 ? 
 
 /** The quote for `unitsWad` option units (WAD), shaped like IOptionEngine.Quote. Null when no vol was ever posted. */
 export function quoteUnits(series: SeriesInputs, raw: MarketInputs, unitsWad: bigint, isBuy: boolean): EngineQuote | null {
+  // R02 (EngineCore.priceSell): a sell uses the held tokens first; only those are priced at the hold's S, the rest at the
+  // trade S, both against the same book. The quote's per-unit fields are the free part's.
+  const hold = raw.hold;
+  if (!isBuy && hold && hold.units !== undefined && hold.untilMs > raw.nowMs && hold.s > 0) {
+    const heldWad = hold.units > 0 ? BigInt(Math.floor(hold.units * 1e12)) * 1_000_000n : 0n;
+    if (heldWad <= 0n) return quoteUnits(series, { ...raw, hold: null }, unitsWad, isBuy);
+    if (heldWad < unitsWad) {
+      const held = quoteUnits(series, { ...raw, hold: { s: hold.s, untilMs: hold.untilMs } }, heldWad, false);
+      if (held && held.holdApplied) {
+        const free = quoteUnits(series, { ...raw, hold: null }, unitsWad - heldWad, false);
+        if (!free) return null;
+        return { ...free, usdg: free.usdg + held.usdg, feeUsdg: free.feeUsdg + held.feeUsdg,
+          dailyCostUsdg: free.dailyCostUsdg + held.dailyCostUsdg, holdApplied: true };
+      }
+      return quoteUnits(series, { ...raw, hold: null }, unitsWad, isBuy);
+    }
+  }
   const market = effectiveMarket(raw);
   const units = Number(unitsWad) / 1e18;
   const trade = tradeSpot(series, market, isBuy);

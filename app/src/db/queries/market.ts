@@ -41,14 +41,15 @@ const DEFAULT_HOLD_SECONDS = 1_800;
  * the tick at that time: the worse of the feed S and the trade TWAP for the buyer). The engine keeps the later end and
  * the more binding S across re-buys, so the two sources are merged the same way. `isCall` picks the more binding side
  * (a call seller is hurt by the lower S, a put seller by the higher). */
-export async function activeHold(deps: QueryDeps, seriesId: string, account: string, now: Date, isCall = true): Promise<{ s: string; until: string } | null> {
+export async function activeHold(deps: QueryDeps, seriesId: string, account: string, now: Date, isCall = true): Promise<{ s: string; until: string; tokens: string | null } | null> {
   const nowIso = now.toISOString();
   const read = (await deps.sql`
-    SELECT s::text AS s, until FROM holds
+    SELECT s::text AS s, until, block::text AS block, tokens::text AS tokens FROM holds
     WHERE series_id = ${seriesId.toLowerCase()} AND account = ${account.toLowerCase()} AND until > ${nowIso}
-  `) as unknown as { s: string; until: Date | string }[];
+  `) as unknown as { s: string; until: Date | string; block: string; tokens: string | null }[];
   const recent = (await deps.sql`
-    SELECT t.ts, (SELECT hold_seconds FROM pool_nav WHERE hold_seconds IS NOT NULL ORDER BY ts DESC LIMIT 1) AS hold_seconds,
+    SELECT t.ts, t.block::text AS block, t.shares::text AS shares,
+      (SELECT hold_seconds FROM pool_nav WHERE hold_seconds IS NOT NULL ORDER BY ts DESC LIMIT 1) AS hold_seconds,
       tk.spot::text AS spot, tk.trade_twap::text AS twap
     FROM trades t
     JOIN series sr ON sr.id = t.series_id
@@ -58,7 +59,7 @@ export async function activeHold(deps: QueryDeps, seriesId: string, account: str
     WHERE t.series_id = ${seriesId.toLowerCase()} AND t.recipient = ${account.toLowerCase()} AND t.side = 'buy'
       AND t.ts > ${new Date(now.getTime() - 86_400_000).toISOString()}
     ORDER BY t.ts DESC
-  `) as unknown as { ts: Date | string; hold_seconds: number | null; spot: string | null; twap: string | null }[];
+  `) as unknown as { ts: Date | string; block: string; shares: string; hold_seconds: number | null; spot: string | null; twap: string | null }[];
 
   let found: { s: number | null; untilMs: number } | null = null;
   const binding = (a: number | null, b: number | null): number | null =>
@@ -66,10 +67,17 @@ export async function activeHold(deps: QueryDeps, seriesId: string, account: str
   const merge = (s: number | null, untilMs: number): void => {
     found = found ? { s: binding(found.s, s), untilMs: Math.max(found.untilMs, untilMs) } : { s, untilMs };
   };
+  // R02 (decision 54): the hold binds only the tokens the account's own buys minted. The snapshot's count, plus the tokens of
+  // buys after the snapshot's block (or of every open buy when there is no row); sells since then are not subtracted, so the
+  // count can only be too high, which prices the quote lower (the safe side for minProceeds). A row from before the token
+  // count was stored (null) leaves every token held.
+  const indexed = read[0];
+  let tokens: number | null = indexed ? (indexed.tokens === null ? null : Number(indexed.tokens)) : 0;
   for (const row of read) merge(Number(row.s), new Date(row.until).getTime());
   for (const row of recent) {
     const untilMs = new Date(row.ts).getTime() + 1_000 * (row.hold_seconds ?? DEFAULT_HOLD_SECONDS);
     if (untilMs <= now.getTime()) continue;
+    if (tokens !== null && (!indexed || BigInt(row.block) > BigInt(indexed.block))) tokens += Number(row.shares);
     // A buy's S is the worse for a buyer: the higher of feed and TWAP for a call, the lower for a put.
     const spot = row.spot === null ? null : Number(row.spot);
     const twap = row.twap === null ? 0 : Number(row.twap);
@@ -78,7 +86,7 @@ export async function activeHold(deps: QueryDeps, seriesId: string, account: str
   const hold = found as { s: number | null; untilMs: number } | null;
   // A hold whose buy-time S is unknown (no tick before the buy) cannot be priced: show none rather than a guess.
   if (!hold || hold.s === null || !(hold.s > 0)) return null;
-  return { s: String(hold.s), until: new Date(hold.untilMs).toISOString() };
+  return { s: String(hold.s), until: new Date(hold.untilMs).toISOString(), tokens: tokens === null ? null : String(tokens) };
 }
 
 /** The newest price tick of one name, or null when nothing has been indexed for it. */

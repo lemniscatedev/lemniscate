@@ -98,7 +98,10 @@ export const quoteBodySchema = z.object({
 
 /** The seller's open hold (decision 30): until then a sell is priced at the less favourable of the current trade price
  * and the price when the account bought. `applied` says whether that changes this quote. */
-export const holdSchema = z.object({ until: isoDateTime, buyPrice: decimal, applied: z.boolean() });
+export const holdSchema = z.object({ until: isoDateTime, buyPrice: decimal, applied: z.boolean(),
+  /** R02 (decision 54): how many of the account's tokens the hold binds (only those are priced so, and they cannot be
+   * transferred until `until`); null = not indexed yet, every token sold is treated as held. */
+  tokens: decimal.nullable() });
 
 /** Decision 31 notice: the name's feed is HALTED (latched since `since`). From `settleableAt` anyone may settle it at its
  * last good price (ORC-4), after which sells and queued sells go through at that price; `settledPrice` once settled. */

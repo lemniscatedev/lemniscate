@@ -300,6 +300,31 @@ describe("F01/F02/F10/F22/F23 trade price: worse of S and the trade TWAP, and th
     expect(quoteUnits(series(), market({ hold: { s: 105, untilMs: hold.untilMs } }), WAD, false)!.holdApplied).toBe(false);
   });
 
+  test("R02 (28-merge): only the held units are priced at the hold's S; the rest at the trade S, as EngineCore.priceSell", () => {
+    const untilMs = 1_000_000 + 60_000;
+    const half = 5n * WAD / 10n;
+    const split = quoteUnits(series(), market({ hold: { s: 95, untilMs, units: 0.5 } }), WAD, false)!;
+    const heldPart = quoteUnits(series(), at(95), half, false)!;
+    const freePart = quoteUnits(series(), market(), WAD - half, false)!;
+    expect(split.usdg).toBe(heldPart.usdg + freePart.usdg);
+    expect(split.feeUsdg).toBe(heldPart.feeUsdg + freePart.feeUsdg);
+    expect(split.holdApplied).toBe(true);
+    expect(split.tradeSpot).toBe(100); // the per-unit fields are the free part's (the engine's quote)
+    // held units at or above the sale: all of it at the hold's S; none held: no hold
+    expect(quoteUnits(series(), market({ hold: { s: 95, untilMs, units: 3 } }), WAD, false)!.usdg).toBe(quoteUnits(series(), at(95), WAD, false)!.usdg);
+    const none = quoteUnits(series(), market({ hold: { s: 95, untilMs, units: 0 } }), WAD, false)!;
+    expect(none.holdApplied).toBe(false);
+    expect(none.usdg).toBe(quoteUnits(series(), market(), WAD, false)!.usdg);
+    // PROPERTY: for any held share, the sell lies between the fully held and the free quote and grows as fewer are held
+    let previous = -1n;
+    for (let share = 1; share >= 0; share -= 0.05) {
+      const q = quoteUnits(series(), market({ hold: { s: 95, untilMs, units: share } }), WAD, false)!.usdg;
+      expect(q >= quoteUnits(series(), at(95), WAD, false)!.usdg - 1n && q <= quoteUnits(series(), market(), WAD, false)!.usdg + 1n).toBe(true);
+      expect(q + 1n >= previous).toBe(true);
+      previous = q;
+    }
+  });
+
   test("an ORC-4 settled stock quotes sells as CLOSED at the settlement price; buys stay blocked", () => {
     const settled = market({ session: "HALTED", spot: 90, settlePrice: 80 });
     const sell = quoteUnits(series(), settled, WAD, false)!;
