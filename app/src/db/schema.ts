@@ -779,6 +779,25 @@ export const indexerSkippedEvents = pgTable(
   ],
 );
 
+/** R17 (decision 62): standard Kernel accounts deployed outside a sponsored operation, queued by the API for the keeper's
+ * LemniscatePaymaster.registerKernelAccount call. */
+export const kernelRegistrations = pgTable(
+  "kernel_registrations",
+  {
+    account: text("account").primaryKey(),
+    owner: text("owner").notNull(),
+    initData: text("init_data").notNull(),
+    salt: text("salt").notNull(),
+    requestedAt: at("requested_at").notNull().defaultNow(),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: at("next_attempt_at").notNull().defaultNow(),
+    doneAt: at("done_at"),
+    txHash: text("tx_hash"),
+    lastError: text("last_error"),
+  },
+  (table) => [index("kernel_registrations_pending_idx").on(table.nextAttemptAt).where(sql`done_at IS NULL`)],
+);
+
 /** F25/F31: gas sponsorships the API signed (quota bookkeeping, per UTC day). */
 export const sponsorshipGrants = pgTable(
   "sponsorship_grants",

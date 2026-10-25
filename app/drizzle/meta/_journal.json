@@ -134,6 +134,13 @@
       "when": 1790780000017,
       "tag": "0018_sponsorship_reservations",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1790780000018,
+      "tag": "0019_kernel_registrations",
+      "breakpoints": true
     }
   ]
 }

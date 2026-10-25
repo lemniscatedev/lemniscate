@@ -4,6 +4,10 @@ import { pino } from "pino";
 import { encodeFunctionData, type Address, type Hex } from "viem";
 import { OptionEngineAbi } from "../abi";
 import { withRpcBudget } from "../aa/chain";
+import { KERNEL_ECDSA_VALIDATOR, KERNEL_V33_FACTORY } from "../aa/config";
+import { KERNEL_V33_IMPLEMENTATION, predictKernelAddressOffline } from "../aa/counterfactual";
+import { kernelInitData } from "../aa/kernel";
+import { kernelSalt } from "../aa/userop";
 import { ACCOUNT, ENGINE, OWNER, USDG, createTestServices } from "../aa/test-support";
 import { applyMigrations, createTestDatabase, testDatabaseUrl, type TestDatabase } from "../testing/db";
 import { TtlCache } from "./cache";
@@ -114,6 +118,38 @@ suite("F25/F31 sponsorship policy", () => {
     expect((await db.sql`select count(*)::int as n from sponsorship_grants`)[0]!.n).toBe(0);
     t.state.implementations.delete(ACCOUNT.toLowerCase());
     expect((await t.call("buy", { account: ACCOUNT })).json.sponsored).toBe(true);
+  });
+
+  test("R17 (decision 62): a standard account someone else deployed is queued for registerKernelAccount; a non-standard one is not", async () => {
+    await db.sql`truncate kernel_registrations`;
+    const t = build();
+    const owner = addr(0xbeef01);
+    const standard = predictKernelAddressOffline({ factory: KERNEL_V33_FACTORY as Address, validator: KERNEL_ECDSA_VALIDATOR as Address,
+      implementation: KERNEL_V33_IMPLEMENTATION as Address }, owner, 0);
+    registerAccount(t, standard, owner);
+    fund(t, standard, 100);
+    t.state.kernelAccounts = new Set(); // deployed through the public factory by a stranger: the paymaster never saw it
+    const first = (await t.call("buy", { account: standard })).json;
+    expect(first.sponsored).toBe(false);
+    expect(first.sponsorship.reason).toBe("ACCOUNT_REGISTERING");
+    const rows = await db.sql`select account, owner, init_data, salt from kernel_registrations`;
+    expect(rows.map((r) => ({ ...r }))).toEqual([{ account: standard.toLowerCase(), owner, init_data: kernelInitData(KERNEL_ECDSA_VALIDATOR as Address, owner),
+      salt: kernelSalt(0) }]);
+    await t.call("buy", { account: standard }); // asking again queues nothing new
+    expect((await db.sql`select count(*)::int as n from kernel_registrations`)[0]!.n).toBe(1);
+    // The keeper registered it: sponsored from then on.
+    t.state.kernelAccounts = new Set([standard.toLowerCase()]);
+    await Bun.sleep(0);
+    const t2 = build();
+    registerAccount(t2, standard, owner); fund(t2, standard, 100); t2.state.kernelAccounts = new Set([standard.toLowerCase()]);
+    expect((await t2.call("buy", { account: standard })).json.sponsored).toBe(true);
+    // An account whose address is not the standard setup of its stored owner (another index, another init) is not queued.
+    const other = build();
+    fund(other, ACCOUNT, 100);
+    other.state.kernelAccounts = new Set();
+    expect((await other.call("buy", { account: ACCOUNT })).json.sponsorship.reason).toBe("ACCOUNT_UNREGISTERED");
+    expect((await db.sql`select count(*)::int as n from kernel_registrations`)[0]!.n).toBe(1);
+    expect(t.signed() + other.signed()).toBe(0);
   });
 
   test("F25 exploit: 1,000 fresh owners asking for sponsored sells get 0 signatures and book nothing", async () => {

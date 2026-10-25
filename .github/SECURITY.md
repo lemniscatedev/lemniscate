@@ -524,6 +524,9 @@ These amend the bullets above where they differ (decisions 54-64).
   falls in a closure.
 - Paymaster (R17/R18): anyone can register a deployed standard Kernel account (`registerKernelAccount`), so deploying a user's
   account first cannot make it unsponsorable; `DeployPaymaster` passes with the mainnet config (deposit funded after deploy).
+  Service side (28-merge): when the API sees a deployed account the paymaster does not know and its address is the standard
+  setup of its stored owner, it answers `ACCOUNT_REGISTERING` (unsponsored this time) and queues it; the keeper's
+  `kernel-register` job sends `registerKernelAccount` (the API holds no funded key) and backs off one that reverts.
 
 ## Audit history
 

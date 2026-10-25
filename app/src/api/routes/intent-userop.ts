@@ -112,6 +112,7 @@ export function registerIntentUserOp(app: OpenAPIHono, deps: ApiDependencies): v
       deps, chain: svc.chain, kernelValidator: svc.config.kernelValidator, usdg: contracts.usdg as Address,
       paymaster: svc.config.paymaster?.address,
       kernelImplementation: (optionalEnv("AA_KERNEL_IMPLEMENTATION") || KERNEL_V33_IMPLEMENTATION) as Address,
+      kernelFactory: svc.config.kernelFactory,
     });
   };
   const respondError = (error: unknown) => {
@@ -168,6 +169,7 @@ export function registerIntentUserOp(app: OpenAPIHono, deps: ApiDependencies): v
             kind: intent.kind, account: extra.data.account, owner: extra.data.owner,
             ipKey: rateLimitKey(clientIp(context, deps.config.API_CLIENT_IP_HEADER ?? "")), plain,
             ...(svc.sponsor ? { validitySeconds: svc.config.paymaster?.validitySeconds ?? 300 } : {}),
+            accountIndex: extra.data.accountIndex,
           });
           if (decision.granted) { ticket = decision.ticket; sponsorship = { requested: true, granted: true }; }
           else sponsorship = { requested: true, granted: false, reason: decision.reason, message: decision.message };

@@ -35,7 +35,7 @@ const envSchema = z.object({
   INDEXER_SNAPSHOT_HEARTBEAT_MS: z.coerce.number().int().min(5000).max(600_000).optional(),
   DEPLOYMENT_FILE: z.string().min(1).default("/app/deployments/fork.json"),
   // hedge (todo 14) is opt-in until the hedger lands. receipts and lister are new in todo 13.
-  KEEPER_ENABLED_JOBS: z.string().default("sessions,lister,accrue,risk,corp-actions,receipts,reference,earnings,queued-sells,fee-distribute,settle-halted,staking-sync"),
+  KEEPER_ENABLED_JOBS: z.string().default("sessions,lister,accrue,risk,corp-actions,receipts,reference,earnings,queued-sells,fee-distribute,settle-halted,staking-sync,kernel-register"),
   KEEPER_DRY_RUN: z.enum(["0", "1"]).default("0").transform((value) => value === "1"),
   // Accrue a series once its last accrual is this old and somebody holds it. Spec: at least hourly, so 3600 is the cap.
   KEEPER_ACCRUE_MAX_AGE_SECONDS: z.coerce.number().int().min(300).max(3600).default(3600),
@@ -58,6 +58,8 @@ const envSchema = z.object({
   KEEPER_GAS_MULTIPLIER_BPS: z.coerce.number().int().min(12_000).max(40_000).default(15_000),
   KEEPER_GAS_HEADROOM: z.coerce.number().int().min(0).max(5_000_000).default(500_000),
   KEEPER_GAS_CAP: z.coerce.number().int().min(1_000_000).max(64_000_000).default(32_000_000),
+  // R17 (decision 62): LemniscatePaymaster, for the keeper's kernel-register job (the same variable the API's sponsorship uses).
+  PAYMASTER_ADDRESS: z.preprocess((value) => (value === "" ? undefined : value), z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional()),
   KEEPER_ACCRUE_BATCH: z.coerce.number().int().min(1).max(45).default(40),
   // R13: the 5-minute funding grid samples only non-archived series with at least this much outstanding value, at most this many per slot
   // (the most valuable first); the rest are covered by the hourly catch-up.

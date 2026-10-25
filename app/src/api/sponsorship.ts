@@ -2,6 +2,9 @@ import type { Address } from "viem";
 import type { Sql } from "postgres";
 import type { AaChain } from "../aa/chain";
 import { RpcBudgetError } from "../aa/chain";
+import { predictKernelAddressOffline } from "../aa/counterfactual";
+import { kernelInitData } from "../aa/kernel";
+import { kernelSalt } from "../aa/userop";
 import type { RuntimeConfig } from "../config";
 import { invitesRequired, isApproved } from "../db/queries/invites";
 import { getSeries } from "../db/queries/series";
@@ -30,7 +33,7 @@ export type SponsorshipKind = "buy" | "sell" | "shield";
 export type DenialReason =
   | "INVITE_REQUIRED" | "BELOW_MINIMUM" | "NO_POSITION" | "INSUFFICIENT_BALANCE" | "OWNER_UNVERIFIED"
   | "QUOTA_ACCOUNT" | "QUOTA_OWNER" | "QUOTA_NETWORK" | "QUOTA_GLOBAL" | "UNAVAILABLE"
-  | "ACCOUNT_UNREGISTERED" | "ACCOUNT_UNSUPPORTED";
+  | "ACCOUNT_UNREGISTERED" | "ACCOUNT_UNSUPPORTED" | "ACCOUNT_REGISTERING";
 
 export interface SponsorshipInput {
   readonly kind: SponsorshipKind;
@@ -43,6 +46,8 @@ export interface SponsorshipInput {
   readonly plain: Record<string, unknown>;
   /** How long the signature stays usable, seconds (the paymaster validity); the reservation lasts a minute longer. */
   readonly validitySeconds?: number;
+  /** The Kernel account index the request names (the CREATE2 salt), default 0 (R17 registration check). */
+  readonly accountIndex?: number | undefined;
 }
 
 export type SponsorshipDecision =
@@ -72,6 +77,7 @@ const MESSAGES: Record<DenialReason, string> = {
   UNAVAILABLE: "Sponsorship could not be checked right now, so gas is not sponsored.",
   ACCOUNT_UNREGISTERED: "Gas is sponsored only for smart accounts the paymaster knows (created with sponsored gas or registered). The operation is returned unsponsored.",
   ACCOUNT_UNSUPPORTED: "This smart account runs an implementation the paymaster does not sponsor. The operation is returned unsponsored.",
+  ACCOUNT_REGISTERING: "This smart account was created outside the app, so it is being registered with the paymaster now. Sponsored gas works in a few minutes; this operation is returned unsponsored.",
 };
 
 const deny = (reason: DenialReason): SponsorshipDecision => ({ granted: false, reason, message: MESSAGES[reason] });
@@ -110,12 +116,28 @@ export interface SponsorshipGateOptions {
    * through the Kernel factory in the same operation, which is what the paymaster accepts. */
   readonly paymaster?: Address | undefined;
   readonly kernelImplementation?: Address | undefined;
+  /** R17 (decision 62): the Kernel factory the paymaster trusts. With it, a deployed standard account the paymaster does not
+   * know (someone deployed it through the public factory) is queued for the keeper's registerKernelAccount call. */
+  readonly kernelFactory?: Address | undefined;
 }
 
 export function createSponsorshipGate(options: SponsorshipGateOptions): SponsorshipGate {
   const { deps, chain } = options;
   const limits = options.limits ?? limitsFromConfig(deps.config);
   const sql = deps.sql as Sql;
+
+  /** R17: queue a deployed, unknown account for LemniscatePaymaster.registerKernelAccount when it is the standard setup of its
+   * stored owner (the address the factory gives the standard init data and salt). The contract checks it all again. */
+  async function queueRegistration(account: Address, owner: Address, accountIndex = 0): Promise<boolean> {
+    if (!options.kernelFactory || !options.kernelImplementation) return false;
+    if (!Number.isInteger(accountIndex) || accountIndex < 0 || accountIndex > 0xffff_ffff) return false;
+    const deployment = { factory: options.kernelFactory, validator: options.kernelValidator, implementation: options.kernelImplementation };
+    if (predictKernelAddressOffline(deployment, owner, accountIndex).toLowerCase() !== account.toLowerCase()) return false;
+    await sql`insert into kernel_registrations (account, owner, init_data, salt)
+      values (${account.toLowerCase()}, ${owner.toLowerCase()}, ${kernelInitData(options.kernelValidator, owner)}, ${kernelSalt(accountIndex)})
+      on conflict (account) do nothing`;
+    return true;
+  }
 
   return {
     async evaluate(input) {
@@ -135,7 +157,9 @@ export function createSponsorshipGate(options: SponsorshipGateOptions): Sponsors
             const implementation = await chain.implementationOf(input.account);
             const expected = options.kernelImplementation?.toLowerCase();
             if (!implementation || (expected && implementation.toLowerCase() !== expected)) return deny("ACCOUNT_UNSUPPORTED");
-            if (!await chain.paymasterKnowsAccount(options.paymaster, input.account)) return deny("ACCOUNT_UNREGISTERED");
+            if (!await chain.paymasterKnowsAccount(options.paymaster, input.account)) {
+              return deny(await queueRegistration(input.account, owner as Address, input.accountIndex) ? "ACCOUNT_REGISTERING" : "ACCOUNT_UNREGISTERED");
+            }
           }
         }
         if (group === "entry" && await invitesRequired(deps)) {
