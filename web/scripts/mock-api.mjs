@@ -105,7 +105,10 @@ export function startMockApi({port=4190,overrides={},seed=false}={}){
   }
   if(req.method==='POST'){
    const body=await readBody(req);
-   if(p==='/v1/quote'){const q=body&&market.quote(body.series,Number(body.units),body.side);return q?send(res,200,q):send(res,404,{error:'NOT_FOUND',message:'Unknown series.'})}
+   if(p==='/v1/quote'){const q=body&&market.quote(body.series,Number(body.units),body.side);
+    // R02: a sell inside the seller's 30-minute hold carries the hold view (overrides.hold), as the API does for an account
+    if(q&&body.side==='sell'&&body.account&&overrides.hold)q.hold={...overrides.hold};
+    return q?send(res,200,q):send(res,404,{error:'NOT_FOUND',message:'Unknown series.'})}
    if((m=p.match(/^\/v1\/intent\/(buy|sell|shield)$/))){if(m[1]!=='sell'&&overrides.invites&&!approved.has(String(body?.account||'').toLowerCase())&&!approved.has(String(body?.owner||'').toLowerCase()))return send(res,403,{error:'INVITE_REQUIRED',message:'Lemniscate is invite-only for now. Enter your invite code to start buying. Selling is always open.'});if(url.searchParams.get('format')==='userop')return send(res,503,{error:'AA_UNAVAILABLE',message:'One-tap flows are not configured on this server. Use the plain transaction.'});const [status,out]=intent(m[1],body);return send(res,status,out)}
    if(p==='/v1/invites/redeem'){
     const code=String(body?.code||'').toUpperCase().replace(/[^A-Z0-9]/g,''),a=String(body?.address||'').toLowerCase();

@@ -134,7 +134,9 @@ await section('C',async()=>{
  ok('C wallet connected chip',(await page.locator('.dash-header [data-address]').getAttribute('data-address').catch(()=>''))==='0x00000000000000000000000000000000000a11ce','');
  // buy
  await page.waitForSelector('[data-action="review"]:not([disabled])',{timeout:10_000});
- await page.click('[data-action="review"]');await page.click('[data-action="confirm-buy"]');
+ await page.click('[data-action="review"]');
+ ok('C buy review: the 30-minute hold and no-gift rule are stated (R02)',/cannot be transferred for 30 minutes/.test(await page.locator('dialog[open]').first().innerText().catch(()=>'')),'');
+ await page.click('[data-action="confirm-buy"]');
  await page.waitForFunction(()=>/Done\./.test(document.querySelector('#tx-status')?.innerText||''),null,{timeout:15_000}).catch(()=>{});
  const sent=await page.evaluate(()=>window.__sent||[]);
  ok('C buy: approve then engine call',sent.length===2&&sent[0].data.startsWith('0x095ea7b3')&&sent[1].to==='0x00000000000000000000000000000000000000e1',sent.map(s=>s.data.slice(0,10)).join(','));
@@ -144,6 +146,18 @@ await section('C',async()=>{
  body=await text(page);
  ok('C position from API',/NVDA Up/.test(body)&&/Weekly · Strike \$180\.00/.test(body),'');
  ok('C positions 390px',(await width(page))===WIDTH,'');
+ // R02: a sell inside the hold shows which tokens are held and how they are priced; the quote is asked for this account
+ overrides.hold={until:new Date(Date.now()+20*60_000).toISOString(),buyPrice:'190',applied:true,tokens:'2'};
+ await page.click('[data-action="sell"]');await page.waitForFunction(()=>/Proceeds after spread/.test(document.querySelector('#sell-summary')?.innerText||''),null,{timeout:8_000}).catch(()=>{});
+ ok('C sell inside the hold explains it (R02)',/2 of these tokens/.test(await page.locator('#sell-summary').innerText().catch(()=>'')),'');
+ delete overrides.hold;
+ await page.keyboard.press('Escape');
+ // revert reasons from the engine are shown in plain words (R02 HeldTokens / NotOwnBuy, Slippage)
+ const decoded=await page.evaluate(async()=>{const W=await import('/chain/wallet.js?v=11');return [
+  W.walletErrorText({message:'execution reverted',data:'0xb12fb612'+'0'.repeat(56)+'6553f100'}),
+  W.walletErrorText({message:'Internal JSON-RPC error.',cause:{data:{data:'0xda7512ac'}}}),
+  W.walletErrorText({message:'execution reverted: custom error 0x2746152a'+'0'.repeat(128)})]});
+ ok('C engine reverts decoded',/cannot be transferred yet/.test(decoded[0])&&/your own wallet/.test(decoded[1])&&/slippage limit/.test(decoded[2]),decoded.join(' | '));
  // sell in a halt: queued notice
  overrides.session='HALTED';
  await page.click('[data-action="sell"]');await page.waitForFunction(()=>/Proceeds after spread/.test(document.querySelector('#sell-summary')?.innerText||''),null,{timeout:8_000}).catch(()=>{});
@@ -303,6 +317,42 @@ await section('D',async()=>{
  ok('D demo 390px',(await width(page))===WIDTH,'');
  ok('D demo console clean',errors.length===0,errors.join(' | '));
  await context.close();
+});
+
+// ---- G. token address box (todo 34): hidden until launch.json holds a valid address
+await section('G',async()=>{
+ const ADDR='0x'+'ab12cd34ef'.repeat(4);
+ const shipped=JSON.parse(await readFile('dist/launch.json','utf8'));
+ ok('G shipped launch.json has no address',shipped.tokenAddress==='','');
+ for(const [name,body,shown] of [['shipped (empty)',null,false],['invalid address',{tokenAddress:'0x1234',tokenSymbol:'LMNS'},false],['valid address',{tokenAddress:ADDR,tokenSymbol:'LMNS',buyUrl:'https://example.org/buy'},true]]){
+  for(const route of ['/','/dashboard']){
+   const {page,context,errors}=await newPage();
+   if(body)await context.route('**/launch.json*',r=>r.fulfill({status:200,contentType:'application/json',body:JSON.stringify(body)}));
+   await page.goto(base+route,{waitUntil:'load'});await settle(page);await page.waitForTimeout(500);
+   const count=await page.locator('#token-bar').count();
+   ok(`G ${name} ${route}: box ${shown?'shown':'hidden'}`,count===(shown?1:0),'count='+count);
+   if(shown){
+    const box=await page.locator('#token-bar').boundingBox();
+    ok(`G ${route} fits 390 px`,box&&box.x>=0&&box.x+box.width<=WIDTH&&(await width(page))===WIDTH,JSON.stringify(box));
+    const href=await page.locator('#token-bar .tb-explorer').getAttribute('href');
+    ok(`G ${route} Explorer opens the token on Blockscout`,href==='https://robinhoodchain.blockscout.com/token/'+ADDR,href);
+    await page.evaluate(()=>{window.__copied=null;Object.defineProperty(navigator,'clipboard',{value:{writeText:t=>{window.__copied=t;return Promise.resolve()}},configurable:true})});
+    await page.click('#token-bar button:text("Copy")');
+    ok(`G ${route} Copy copies the full address`,(await page.evaluate(()=>window.__copied))===ADDR,'');
+    await page.click('#token-bar .tb-close');
+    ok(`G ${route} close hides the box`,(await page.locator('#token-bar').count())===0,'');
+   }
+   ok(`G ${name} ${route} console clean`,errors.length===0,errors.join(' | ').slice(0,300));
+   await context.close();
+  }
+ }
+ const wide=await browser.newContext({viewport:{width:1440,height:900}});
+ await wide.route('**/launch.json*',r=>r.fulfill({status:200,contentType:'application/json',body:JSON.stringify({tokenAddress:ADDR,tokenSymbol:'LMNS'})}));
+ const wp=await wide.newPage();const werr=[];wp.on('pageerror',e=>werr.push(e.message));
+ await wp.goto(base+'/',{waitUntil:'load'});await wp.waitForSelector('#token-bar',{timeout:10_000}).catch(()=>{});
+ ok('G desktop shows the full address',(await wp.locator('#token-bar .tb-full').isVisible().catch(()=>false)),'');
+ ok('G desktop no page errors',werr.length===0,werr.join(' | '));
+ await wide.close();
 });
 
 await browser.close();await mock.close();site.close();

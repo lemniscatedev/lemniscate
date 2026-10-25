@@ -27,6 +27,8 @@ for(const route of routes){
  const title=TITLES[route];
  if(title){html=html.replace(/<title>[^<]*<\/title>/,`<title>${esc(title)}</title>`).replace(/(<meta (?:property="og:title"|name="twitter:title") content=")[^"]*"/g,`$1${esc(title)}"`)}
  if(!html.includes('src="/config.js'))html=html.replace(/<head>/,'<head><script src="/config.js?v=10"></script>');
+ // Token address box (todo 34): hidden until dist/launch.json holds an address.
+ if(!html.includes('/token-bar.js'))html=html.replace('</body>','<script src="/token-bar.js?v=1" defer></script></body>');
  // Cache-busting versions of the files todo 18 changed.
  for(const f of ['/dashboard.css','/lemniscate.js','/assets/asset-loader.js','/assets/asset-plan.js'])html=html.split(f+'?v=9').join(f+'?v=10');
  if(siteUrl){

@@ -48,6 +48,8 @@ The dashboard is wired to the Lemniscate API and the visitor's wallet. Nothing f
 - **Demo:** `/dashboard?demo=1` uses `dist/chain/demo.js` (illustrative prices, same response shapes) and is labelled "Demo, not real funds".
 - **Browser storage keys:** `lemniscate.prefs.v2` (slippage, deadline, optional smart account override), `lemniscate.receipts.v2` (this browser's own sends, shown as pending until the service lists them), `lemniscate.policy-draft.v1` (the unsent policy form only), `lemniscate.region.v1`, `lemniscate.wallet.v1`. The old `lemniscate.workspace.v1` is no longer read.
 
+**Token address box:** `dist/token-bar.js` + `dist/token-bar.css` (script tag stamped on every route). Hidden until `dist/launch.json` has `tokenAddress` (0x + 40 hex); then shows Copy and Explorer (and Buy if `buyUrl` is https). At launch only `launch.json` changes. Note: this repo has no `vercel.json`/CSP; if one is added, allow the same-origin `/launch.json` fetch (connect-src 'self').
+
 Tests: `npm run check` (routes, syntax, copy lint), `npm run lint:copy`, `npm run test:browser` (Playwright: all 18 routes and every dashboard tab at 390 px, console errors, offline/unreachable states, and buy/sell/Shield/pool flows against `scripts/mock-api.mjs` with a fake EIP-6963 wallet). `npm run mock-api` starts the mock alone (`MOCK_SESSION`, `MOCK_EARNINGS`, `MOCK_SPLIT` set states).
 
 Copy fixes inside generated native modules and CMS content live in `scripts/apply-copy-fixes.mjs` (idempotent; it uses `scripts/cms-codec.mjs` to keep the CMS length prefixes valid). Run it, then `npm run build`. `npm run stamp` rewrites every page head from `siteUrl` (canonical, og:url, og:image) and must be re-run after changing it.

@@ -3,7 +3,7 @@
 // Option trades use the API intents (unsigned calldata) and are signed in the user's wallet; nothing here holds keys.
 import {createApi,plainError,SESSION_LABEL,SESSION_NOTE,BLOCK_REASON} from '/chain/api.js?v=10';
 import {createDemoApi} from '/chain/demo.js?v=10';
-import * as W from '/chain/wallet.js?v=10';
+import * as W from '/chain/wallet.js?v=11';
 import {regionStatus,declare,regionList} from '/chain/region.js?v=10';
 import {call,toRaw,fromRaw,decodeUint,decodeBool,isAddress} from '/chain/abi.js?v=10';
 
@@ -496,7 +496,7 @@ function review(){
  const row=currentRow(),opt=optionAt(row,side==='call'),q=quoteState.result;if(!opt||!q)return;
  const isCall=side==='call',max=num(q.display.usdg)*(1+prefs.slippageBps/10_000);
  const label=`${selected} ${isCall?'Up':'Down'} · ${speed==='WEEKLY'?'Weekly':'Daily'} · ${money(num(row.strike))}`;
- const d=modal('Review your option',`<span class="lm-eyebrow">${esc(label)}</span><div class="dash-cost-first"><strong>${esc(q.display.displayCost.replace(/^costs/,'Costs'))}</strong><span>${pays(selected,isCall,q.display.breakeven)}</span></div><div class="dash-modal-row"><span>Option units</span><strong>${esc(units)}</strong></div><div class="dash-modal-row"><span>Quoted amount</span><strong>${money(num(q.display.usdg))}</strong></div><div class="dash-modal-row"><span>Includes notional fee</span><strong>${money(num(q.display.feeUsdg))}</strong></div><div class="dash-modal-row"><span>Most you can pay (slippage ${fmt(prefs.slippageBps/100,1)}%)</span><strong>${money(max)}</strong></div><div class="dash-modal-total"><small>Maximum buyer loss</small><strong>${money(max)}</strong></div>${notice(sessionNote(selected))}<p>There is no expiry. The continuing holding cost reduces effective units. Your option can lose its entire purchase amount.</p>`,button('Go back','modal-cancel','ghost')+button('Open position','confirm-buy','gold'));
+ const d=modal('Review your option',`<span class="lm-eyebrow">${esc(label)}</span><div class="dash-cost-first"><strong>${esc(q.display.displayCost.replace(/^costs/,'Costs'))}</strong><span>${pays(selected,isCall,q.display.breakeven)}</span></div><div class="dash-modal-row"><span>Option units</span><strong>${esc(units)}</strong></div><div class="dash-modal-row"><span>Quoted amount</span><strong>${money(num(q.display.usdg))}</strong></div><div class="dash-modal-row"><span>Includes notional fee</span><strong>${money(num(q.display.feeUsdg))}</strong></div><div class="dash-modal-row"><span>Most you can pay (slippage ${fmt(prefs.slippageBps/100,1)}%)</span><strong>${money(max)}</strong></div><div class="dash-modal-total"><small>Maximum buyer loss</small><strong>${money(max)}</strong></div>${notice(sessionNote(selected))}<p>The tokens this purchase gives you cannot be transferred for 30 minutes after it, and selling them in that time is priced at the less favourable of the current price and the purchase price. Options are bought for your own wallet only.</p><p>There is no expiry. The continuing holding cost reduces effective units. Your option can lose its entire purchase amount.</p>`,button('Go back','modal-cancel','ghost')+button('Open position','confirm-buy','gold'));
  d.querySelector('[data-action="modal-cancel"]').onclick=closeModal;
  d.querySelector('[data-action="confirm-buy"]').onclick=()=>runIntent('buy',{series:opt.id,units},label,selected);
 }
@@ -508,6 +508,9 @@ function reviewShield(){
  d.querySelector('[data-action="modal-cancel"]').onclick=closeModal;
  d.querySelector('[data-action="confirm-shield"]').onclick=()=>runIntent('shield',{name,tokenUnits:u,strikePctBelowBps:bps},label,name);
 }
+// R02 (decision 54): the hold binds only the tokens a recent purchase gave this wallet; they are priced at the less
+// favourable of the current price and the purchase price, and cannot be transferred, until it ends. Selling stays open.
+function holdText(h){const until=new Date(h.until);const at=isNaN(until)?'the hold ends':until.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});return `${h.tokens?esc(h.tokens)+' of these tokens were':'These tokens were'} bought less than 30 minutes ago. Until ${at} they are priced at the less favourable of the current price and your purchase price (${money(num(h.buyPrice))}) and cannot be transferred.`}
 function sell(seriesId){
  const p=data.positions?.positions?.find(x=>x.seriesId===seriesId);if(!p)return;
  const max=(Math.floor(num(p.units)*1e6)/1e6).toFixed(6).replace(/\.?0+$/,'');
@@ -516,8 +519,8 @@ function sell(seriesId){
  let current=null,timer=null;
  const update=()=>{clearTimeout(timer);const v=d.querySelector('#sell-units').value.trim();const okNum=/^\d{1,12}(\.\d{1,18})?$/.test(v)&&num(v)>0&&num(v)<=num(max);const confirm=d.querySelector('[data-action="confirm-sell"]');confirm.disabled=true;
   if(!okNum){d.querySelector('#sell-summary').innerHTML='<p class="dash-error">Enter an amount within your remaining units.</p>';return}
-  timer=setTimeout(async()=>{try{const q=await api.quote({series:seriesId,units:v,side:'sell'});current={v,q};const s=q.display.session;
-   d.querySelector('#sell-summary').innerHTML=`<div class="dash-modal-total"><small>Proceeds after spread and fee</small><strong>${money(num(q.display.usdg))}</strong></div>${line('Least you accept (slippage '+fmt(prefs.slippageBps/100,1)+'%)',q.sellQueued?'Set at the fill':money(num(q.display.usdg)*(1-prefs.slippageBps/10_000)))}${q.sellQueued?notice(SESSION_NOTE.HALTED,'warn'):s==='CLOSED'||s==='UNKNOWN'||s==='EXTENDED'?notice(SESSION_NOTE[s]):''}`;confirm.disabled=false}
+  timer=setTimeout(async()=>{try{const who=owner();const q=await api.quote({series:seriesId,units:v,side:'sell',...(who?{account:who}:{})});current={v,q};const s=q.display.session;
+   d.querySelector('#sell-summary').innerHTML=`<div class="dash-modal-total"><small>Proceeds after spread and fee</small><strong>${money(num(q.display.usdg))}</strong></div>${line('Least you accept (slippage '+fmt(prefs.slippageBps/100,1)+'%)',q.sellQueued?'Set at the fill':money(num(q.display.usdg)*(1-prefs.slippageBps/10_000)))}${q.sellQueued?notice(SESSION_NOTE.HALTED,'warn'):s==='CLOSED'||s==='UNKNOWN'||s==='EXTENDED'?notice(SESSION_NOTE[s]):''}${q.hold?.applied?notice(holdText(q.hold)):''}`;confirm.disabled=false}
    catch(error){d.querySelector('#sell-summary').innerHTML=`<p class="dash-error">${esc(plainError(error))}</p>`}},250)};
  d.querySelector('#sell-units').addEventListener('input',update);update();
  d.querySelector('[data-action="modal-cancel"]').onclick=closeModal;

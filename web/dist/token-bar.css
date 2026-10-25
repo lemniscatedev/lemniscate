@@ -1,0 +1,13 @@
+/* The token contract address bar: hidden until launch.json has a tokenAddress.
+   Desktop: a small pill in the bottom-right corner. Phones: a slim one-line strip along the bottom edge. */
+#token-bar{position:fixed;right:16px;bottom:calc(16px + env(safe-area-inset-bottom));z-index:800;display:flex;flex-wrap:nowrap;align-items:center;gap:8px;width:max-content;max-width:calc(100vw - 32px);padding:6px 6px 6px 14px;background:#fffdf8;color:var(--lm-navy,#28324c);border:1px solid var(--lm-navy,#28324c);border-radius:999px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.2;box-shadow:0 4px 16px #28324c20;box-sizing:border-box}
+#token-bar>*{flex-shrink:0;white-space:nowrap}
+#token-bar code{font-family:inherit;font-weight:600}
+#token-bar .tb-short{display:none}
+#token-bar button,#token-bar a{font:inherit;color:inherit;background:transparent;border:1px solid currentColor;border-radius:999px;padding:4px 9px;cursor:pointer;text-decoration:none}
+#token-bar button:hover,#token-bar a:hover{background:var(--lm-cream,#fdf5e5)}
+#token-bar .tb-close{border:0;padding:4px 6px;font-size:14px;line-height:1}
+@media(max-width:900px){#token-bar .tb-full{display:none}#token-bar .tb-short{display:inline}}
+@media(max-width:600px){#token-bar{left:8px;right:8px;bottom:calc(8px + env(safe-area-inset-bottom));width:auto;max-width:none;justify-content:space-between;gap:6px;padding:4px 4px 4px 10px;font-size:11px}#token-bar button,#token-bar a{padding:3px 7px}}
+@media(max-width:380px){#token-bar .tb-sym,#token-bar .tb-explorer{display:none}}
+@media print{#token-bar{display:none}}

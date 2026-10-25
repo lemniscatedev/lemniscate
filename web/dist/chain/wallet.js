@@ -108,7 +108,21 @@ export function disconnect(){
  state={address:null,provider:null,kind:null,name:null,chainId:null};remember(null);emit();
 }
 
+// Engine reverts a user can act on, by 4-byte selector (IOptionEngine): R02 HeldTokens(uint64) and NotOwnBuy(), Slippage.
+const REVERTS={
+ '0xb12fb612':'These tokens were bought less than 30 minutes ago and cannot be transferred yet. Selling them is open now.',
+ '0xda7512ac':'Options can be bought for your own wallet only. Buy them, then transfer once the 30-minute hold after the purchase has ended.',
+ '0x2746152a':'The price moved past your slippage limit, so nothing was traded. Review the new quote and try again.',
+};
+function revertSelector(error){
+ const seen=new Set();const stack=[error];
+ while(stack.length){const e=stack.pop();if(!e||seen.has(e))continue;seen.add(e);
+  if(typeof e==='string'){const m=e.match(/0x[0-9a-fA-F]{8}/g);if(m)for(const x of m)if(REVERTS[x.toLowerCase()])return x.toLowerCase();continue}
+  if(typeof e==='object'){for(const k of ['data','message','shortMessage','details','cause','error'])if(k in e)stack.push(e[k])}}
+ return null;
+}
 export function walletErrorText(error){
+ const revert=revertSelector(error);if(revert)return REVERTS[revert];
  const code=error?.code??error?.cause?.code;
  if(code===4001||/denied|rejected/i.test(error?.message||''))return 'You declined the request in your wallet. Nothing was sent.';
  if(code===-32002)return 'Your wallet already has a request open. Finish it there first.';
