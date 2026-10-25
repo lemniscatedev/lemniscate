@@ -17,8 +17,8 @@ pytest -q
 | Realized vol | EWMA of 5-minute regular-hours log returns (half-life 1 day Daily, 5 days Weekly) plus a separate overnight close-to-open variance term, annualised over 252 days. Extended-hours prints are dropped and flagged | `bars.py`, `ewma.py`, `realized.py` |
 | Base and floor | `max(sigma_RV * 1.15, floor)`; floors 30% (NVDA, TSLA, SPY, QQQ, AAPL) and 45% (other names) | `surface.py` |
 | Skew | `sigma(K) = base * (1 + 1.2*max(0,-ln(K/S)) + 0.4*max(0, ln(K/S)))`. The coefficients ride in `skewK` as `(round(k_put*1e4) << 32) \| round(k_call*1e4)`; the engine applies them per strike | `surface.py` |
-| Earnings | If a confirmed report is within 2 tau: `sigma_eff^2 = sigma^2 + E^2/tau`, E = median absolute 1-day move over the last 8 reports. Buy block `report - 60 min` to `report + 30 min`; Daily speed blocks the whole report day (New York time) | `earnings.py`, `engine.py` |
-| Weekend | When the latest session is CLOSED: `sigma_eff^2 = sigma^2 + G^2/tau`, G = 90th percentile of absolute Friday close to Monday open moves | `surface.py` |
+| Earnings | Inside the ramp before a confirmed report (weeks; the value of every strike out to 20 % may not outgrow funding, `surface.ramp_length_s`): `sigma_eff^2 = sigma^2 R^w`, `R = 1 + E^2/(tau sigma^2)`, E = median absolute 1-day move over the last 8 reports. Buy block `report - 60 min` to `report + 30 min`; Daily speed blocks the whole report day (New York time) | `earnings.py`, `engine.py` |
+| Weekend | During the NYSE CLOSED run, on the same value-drift schedule from its first second (small for Weekly): `sigma_eff^2 = sigma^2 R^w`, `R = 1 + G^2/(tau sigma^2)`, G = 90th percentile of absolute Friday close to Monday open moves | `surface.py` |
 | Step guard | Never posts outside +-25% of the last post (the contract's rule, mirrored). A larger target is reached in steps and the post is flagged `ramped:target->posted` | `guard.py` |
 | Signing | EIP-712 `Post`, domain `LemniscateVolOracle` v1. Reproduces `contracts/test/vectors/volpost-eip712.json` byte for byte | `signer.py` |
 

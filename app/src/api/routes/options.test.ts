@@ -8,6 +8,7 @@ import { ADDR, testDeployment, b32 } from "../../indexer/test-support";
 import { applyMigrations, createTestDatabase, testDatabaseUrl, type TestDatabase } from "../../testing/db";
 import { createApiApp } from "../app";
 import { TtlCache } from "../cache";
+import { QUEUED_EXTRA_BAND_BPS } from "./quote";
 import { QUOTE_PARAMS, quoteUnits } from "../quote/model";
 import type { ApiDependencies } from "../types";
 
@@ -283,8 +284,32 @@ suite("option API over indexed data", () => {
     expect(halted.status).toBe(200);
     const queued = await halted.json() as any;
     expect(queued.queued).toBe(true);
-    expect(queued.minProceedsUsdg).toBe("0");
+    // R06: the ticket carries a floor derived from the indexed price (the default 50 bps plus the queued band), never 0.
+    expect(BigInt(queued.minProceedsUsdg)).toBeGreaterThan(0n);
+    expect(BigInt(queued.minProceedsUsdg)).toBe((BigInt(queued.quote.usdg) * BigInt(10_000 - 50 - QUEUED_EXTRA_BAND_BPS)) / 10_000n);
+    expect(queued.queuedBandBps).toBe(50 + QUEUED_EXTRA_BAND_BPS);
     expect(queued.note).toContain("queue");
+    expect(queued.note).toContain("minimum");
+    // PROPERTY: every sell intent, in every session, carries a minimum above 0 that is at most the quote, and a queued one
+    // is never above the quote times the band, whatever slippage the caller picks and however many units it sells.
+    for (const session of ["REGULAR", "EXTENDED", "CLOSED", "HALTED"] as const) {
+      await setTick(session);
+      fresh();
+      for (const slippageBps of [0, 1, 50, 500, 1_000]) {
+        for (const units of ["0.5", "3", "9"]) {
+          const r = await post("/v1/intent/sell", { series: id(2), units, account: ALICE, slippageBps });
+          expect(r.status).toBe(200);
+          const b = await r.json() as any;
+          expect(BigInt(b.minProceedsUsdg)).toBeGreaterThan(0n);
+          expect(BigInt(b.minProceedsUsdg)).toBeLessThanOrEqual(BigInt(b.quote.usdg));
+          if (session === "HALTED") expect(BigInt(b.minProceedsUsdg)).toBeLessThanOrEqual(BigInt(b.quote.usdg) * BigInt(10_000 - slippageBps - QUEUED_EXTRA_BAND_BPS) / 10_000n);
+          const decoded = decodeFunctionData({ abi: OptionEngineAbi, data: b.data });
+          expect(decoded.args![2]).toBe(BigInt(b.minProceedsUsdg));
+        }
+      }
+    }
+    await setTick("HALTED");
+    fresh();
     await setTick("REGULAR");
     fresh();
   });

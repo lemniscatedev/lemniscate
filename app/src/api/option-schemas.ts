@@ -177,6 +177,8 @@ export const intentResponseSchema = z.object({
   display: z.object({ usdg: decimal, displayCost: z.string(), breakeven: decimal }),
   /** A sell during a halt: the order queues and fills at the first fresh price. */
   queued: z.boolean(),
+  /** A queued sell: the total slippage band of its minimum, bps under the last indexed price (the user's plus a wider queued band). */
+  queuedBandBps: z.number().int().nullable().optional(),
   note: z.string().nullable(),
   /** Sells: the account's open hold, if any (decision 30). */
   hold: holdSchema.nullable().optional(),

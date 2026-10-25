@@ -171,4 +171,26 @@ describe("keeper transaction queue on the fork (todo 23)", () => {
     await queue.submit(transaction);
     expect(parseTransaction(h.sent[0]!).chainId).toBe(31337);
   });
+
+  test("R14/R19: a simulation that reverts with a custom error reports the error's name, as a geth-shaped node's data decodes", async () => {
+    const { encodeErrorResult } = await import("viem");
+    const { OptionEngineAbi } = await import("../abi");
+    const { hedgeRevertOf } = await import("../hedger/service");
+    const shaped = (data: Hex) => Object.assign(new Error("Execution reverted for an unknown reason."), { name: "EstimateGasExecutionError",
+      cause: Object.assign(new Error("execution reverted"), { code: 3, data }) });
+    const h = harness();
+    const failWith = (error: Error) => { (h.client.txClient as unknown as { estimateGas: () => Promise<bigint> }).estimateGas = async () => { throw error; }; };
+    const queue = createTransactionQueue(h.client, { dryRun: false, logger: createLogger("silent"), receiptTimeoutMs: 0 });
+    failWith(shaped(encodeErrorResult({ abi: OptionEngineAbi, errorName: "Slippage", args: [100n, 200n] })));
+    await expect(queue.submit(transaction)).rejects.toThrow("Slippage(100, 200)");
+    // the pool's hedger bounds are library errors, absent from the pool ABI: still named, and recognised by the hedger
+    const { toFunctionSelector } = await import("viem");
+    failWith(shaped(toFunctionSelector("HedgerFrozen()")));
+    const error = await queue.submit(transaction).catch((e: unknown) => e);
+    expect((error as Error).message).toContain("HedgerFrozen()");
+    expect(hedgeRevertOf(error)).toBe("HedgerFrozen");
+    // and a raw viem-shaped error that never went through the queue is recognised the same way
+    expect(hedgeRevertOf(shaped(toFunctionSelector("HedgerFrozen()")))).toBe("HedgerFrozen");
+    expect(h.sent.length).toBe(0); // nothing was broadcast
+  });
 });

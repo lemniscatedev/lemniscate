@@ -73,13 +73,17 @@ def test_earnings_bump_and_block_window_for_both_speeds():
     assert "earnings_bump" in daily.flags
 
 
-def test_report_outside_2tau_adds_nothing():
+def test_report_outside_the_ramp_adds_nothing():
+    """R01: the ramp is as long as the value-drift bound needs (weeks, not 2 tau). Past its start nothing is added."""
     st = store_with_ticks(bar_vol=0.0001)
-    st.earnings_rows = [EarningsRow("NVDA", date(2026, 10, 20), "post", s) for s in (SOURCE_A, SOURCE_B)]
+    st.earnings_rows = [EarningsRow("NVDA", date(2027, 1, 20), "post", s) for s in (SOURCE_A, SOURCE_B)]
     daily = plan_post("NVDA", 0, NOW, st, History(), 3600, True)
     weekly = plan_post("NVDA", 1, NOW, st, History(), 3600, True)
     assert daily.post.event_bump_bps == 0 and daily.post.buy_block_to == 0
-    assert weekly.post.event_bump_bps > 0  # 7 days is inside 2 * 7 days
+    assert weekly.post.event_bump_bps == 0 and weekly.post.buy_block_to == 0
+    st.earnings_rows = [EarningsRow("NVDA", date(2026, 10, 20), "post", s) for s in (SOURCE_A, SOURCE_B)]
+    near = plan_post("NVDA", 1, NOW, st, History(), 3600, True)
+    assert near.post.event_bump_bps > 0  # a week out is inside the ramp
 
 
 def test_disagreeing_sources_block_buys_for_24h():

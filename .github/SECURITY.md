@@ -437,6 +437,63 @@ Accepted risks of these follow-ups:
 - Market-wide events (retirement, halt latch, settlement) appear in the activity of accounts that hold the series or name now; an account
   that sold before the event does not see it.
 
+## Service fixes from the round 2 review (lane b2, services only)
+
+Each has a regression test that fails without it and a property or fuzz test of the general rule (finding numbers refer to the private review):
+
+- **Vol-engine ramp (R01).** The earnings ramp now bounds the drift of the option's VALUE, not only of sigma: the weight follows
+  `dw/dt = 2 share / (tau eps ln R)` where eps is the largest d ln(time value) / d ln sigma over strikes out to 20 % from spot, so at
+  every grid strike (ITM, ATM and OTM, calls and puts, Daily and Weekly) a buyer's value, after what funding takes of the units,
+  never rises over the ramp. The ramp is therefore weeks long (about 2 weeks Daily and 2 to 3 weeks Weekly at 50 % sigma and a 7 % move;
+  up to 4 to 7 weeks at the 30 % floor) and starts slowly. The weekend ramp uses the same schedule from the first second of the closed run
+  and is cut off at the run's end, so for Weekly it is small (a 48-hour run is a fraction of tau); it had paid about +30 % on a 5 % OTM
+  Weekly option bought before the run. The two ramps can run together, so their drift shares add up to 0.9 of funding. Property tests
+  (`vol-engine/tests/test_ramp_property.py`, `test_exploit_f05.py`) buy at every step and sell at every later step.
+- **Halt latch (R05).** `PriceGuard.poke` is the only writer of `haltedSince` and only in a REGULAR or EXTENDED session, and the price
+  upkeep skipped every stock that did not read live. It now pokes a stock that reads HALTED in session with no latch, once, so the
+  CLOSED-price refusal and the settle clock start with only the operator's keeper running (property test over random session
+  patterns and stop times in `prices.test.ts`).
+- **Queued sells keep a floor (R06).** The sell intent used `minProceeds = 0` whenever the indexed snapshot said HALTED, so a
+  permissionless `fillQueued` could be lined up with a pushed TWAP at the settle time or a resumption. The intent now sets the floor from
+  the indexed quote minus the caller's slippage plus a wider queued band (1,500 bps), shows it in `queuedBandBps` and the note, and
+  refuses to queue a position worth nothing at the indexed price. Property test: every sell intent in every session returns a
+  minimum above 0 and no higher than the quote.
+- **Sponsorship is booked as a reservation (R11).** A grant was counted for the whole UTC day from the moment the API signed, whether
+  or not the operation was ever sent, so signatures nobody used could exhaust the day's global exit budget for free. A booking now
+  expires when its paymaster signature can no longer be used (validity plus a minute) and becomes a spend only when
+  `/v1/userop/send` relays that operation (matched by its hash). The per-account, per-owner and per-network limits count spends and
+  live reservations, so a flood spends the flooder's own limits; the global limit counts spends only. The money stays bounded by the
+  paymaster's own on-chain daily caps, and an operation sent to a bundler without our relay is not counted by the API (the
+  chain caps still apply).
+- **The account-abstraction read budget is partitioned (R12).** One 5 reads-per-second bucket let one client keep every `?format=userop`
+  build at 503. Each client (IPv4 or IPv6 /64) now has a 1 read-per-second share with a burst under half the shared one, 40 % of the
+  rate is reserved for sells of smart accounts a read has shown to have a stored owner, `?format=userop` builds are limited to 30 a
+  minute per client, and cache entries that never expire (deployed accounts) are kept apart from throw-away keys, so a flood cannot evict
+  them. Tests: one client at the route limit leaves another's sell build served; under any number of flooding clients a warm sell is
+  always served.
+- **The funding grid is bounded (R13).** The 5-minute grid accrued every live series worth at least a dollar, so deep-ITM series held
+  for $1 each billed the keeper about 59 million gas a day apiece. The grid now samples only non-archived series with at least $100 of
+  outstanding value (`KEEPER_ACCRUE_GRID_MIN_VALUE_USDG`), at most 450 per slot, the most valuable first (`KEEPER_ACCRUE_GRID_MAX_SERIES`),
+  with an alert when more qualify; everything else stays on the hourly catch-up.
+- **Hedger reverts are named (R19).** The keeper simulates with raw calldata, and a node reports a custom-error revert as `execution
+  reverted` plus data, so no message ever carried `HedgerFrozen`, `HedgeLossBudget` or `PerpEquityCap` and the back-off and the alert never
+  fired in production. The transaction queue now decodes the revert data (against every contract's errors, with the PoolHedging library
+  errors added) and puts the error's name and arguments in the message; the hedger reads the decoded name. Tested against a real viem
+  client talking to a geth-shaped JSON-RPC server.
+
+- **A seller's failing tickets cannot hold a series (R14).** A queued sell that failed for any reason that is not a transient fault
+  used to write off its whole series for the pass, and a Slippage revert was never recognised from a real node's error text, so six
+  cheap tickets at the head of a series stopped the keeper from filling the honest ones behind them. Revert reasons are now decoded from
+  the revert data; every failure backs the ticket off alone (doubling to 6 hours); a seller has at most 4 tickets of a series tried per
+  pass, 2 once one of them has failed; and a stock whose feed is HALTED and unsettled is left out of the pass (read from the chain, not
+  guessed from an error), so its tickets take no slots.
+
+- **Retired series are not re-sent for ever (R15).** `accrueMany` skips a series off the engine's live list without moving its
+  `lastAccrual`, and the hourly list was built from the whole registry, so every retired dust series was sent again on every 5-minute
+  run (about 288 no-op transactions a day per 45 series). Held series that are off the live list now go to a single `engine.accrue`
+  once per dust cadence (a day), and the job counts as accrued only what it sent to `accrueMany`. A property test over random books
+  checks that a second run with nothing changed sends nothing and that a retired series costs at most two single accruals a day.
+
 ## Audit history
 
 None yet. Internal review, fuzzing, stateful invariants and mutation tests are documented in [contracts/INVARIANTS.md](../contracts/INVARIANTS.md).

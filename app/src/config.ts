@@ -52,6 +52,10 @@ const envSchema = z.object({
   KEEPER_RELIST_NORM_WAD: z.string().regex(/^\d+$/).default("1000000000000000"),
   // Series per engine.accrueMany transaction (a failing batch is split in half and retried). At most 45 (about half a block, decision 32).
   KEEPER_ACCRUE_BATCH: z.coerce.number().int().min(1).max(45).default(40),
+  // R13: the 5-minute funding grid samples only non-archived series with at least this much outstanding value, at most this many per slot
+  // (the most valuable first); the rest are covered by the hourly catch-up.
+  KEEPER_ACCRUE_GRID_MIN_VALUE_USDG: z.coerce.number().min(0).default(100),
+  KEEPER_ACCRUE_GRID_MAX_SERIES: z.coerce.number().int().min(0).max(5000).default(450),
   // USDG (whole) the buy-burn job offers LmnsBuyBurn.buyAndBurn per call (the contract also caps it, decision 43).
   KEEPER_BUY_BURN_MAX_USDG: z.coerce.number().min(1).max(1_000_000).default(1_000),
   // The lister sends at most this many listing/archive transactions per run; the rest follows on the next run.
@@ -100,6 +104,10 @@ const envSchema = z.object({
   SPONSOR_EXIT_GLOBAL_DAILY: z.coerce.number().int().min(0).default(1000),
   // Chain reads the account-abstraction routes may make per second in total (F32); beyond it they answer 503.
   AA_RPC_CALLS_PER_SECOND: z.coerce.number().min(1).default(5),
+  // R12: the part of that budget one client (IPv4 or IPv6 /64) may use, reads per second; 40 % of the total is kept for sells of known accounts.
+  AA_RPC_CLIENT_CALLS_PER_SECOND: z.coerce.number().min(0.1).default(1),
+  // R12: ?format=userop builds per client per minute (the plain intent keeps its own, higher limit).
+  API_USEROP_BUILD_PER_MINUTE: z.coerce.number().int().min(1).default(30),
   // Dedicated node for those reads (empty = RPC_URL_OVERRIDE, then the public RPC). Keep it apart from the keeper's.
   AA_RPC_URL: z.string().default(""),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),

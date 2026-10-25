@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 
 from .bars import ET, EXTENDED, DayBars, build_regular_series, et_day
-from .calendar import closed_run_progress
+from .calendar import closed_run_elapsed_s
 from .config import (
     BPS,
     MAX_BUY_BLOCK_S,
@@ -26,7 +26,7 @@ from .realized import realized_vol
 from .sender import Sender, SignedPost
 from .signer import Post, sign_post
 from .store import Intent, Store
-from .surface import add_event_variance, earnings_move, earnings_weight, pack_skew_k, ramp_length_s, sigma_base, weekend_move
+from .surface import WEEKEND_DRIFT_SHARE, add_event_variance, earnings_move, earnings_weight, pack_skew_k, ramp_length_s, sigma_base, weekend_move
 
 log = logging.getLogger("vol_engine")
 
@@ -126,20 +126,25 @@ def plan_post(name: str, speed: int, now: datetime, store: Store, history: Histo
         e, e_flags = earnings_move(name, history.moves.get(name, []))
         length = ramp_length_s(sigma, e, tau)
         if hi >= now_s and report_ts - now_s <= length:
-            w = earnings_weight(report_ts, now_s, length)  # F05: ramps in from 0, `length` (>= 2 tau) before the report
+            w = earnings_weight(report_ts, now_s, sigma, e, tau)  # F05/R01: ramps in from 0, `length` before the report, value drift under funding
             flags += e_flags + ["earnings_bump"]
             sigma = add_event_variance(sigma, e, tau, w)
             block_from, block_to = lo, hi
 
-    # Weekend (R6): the CLOSED run (Fri 20:00 ET to Sun 20:00 ET, longer around holidays) ramps in linearly across the run
-    # itself, from 0 to 1 (F05b); a closure the calendar does not know is full weight, as before.
-    progress = closed_run_progress(now)
-    if progress is None and newest.session == "CLOSED":
-        progress = 1.0
-    if progress:
-        g, g_flags = weekend_move(name, history.weekend.get(name, []))
+    # Weekend (R6): the CLOSED run (Fri 20:00 ET to Sun 20:00 ET, longer around holidays) ramps in from its first second on
+    # the same value-drift schedule as an earnings report (F05b, R01): only as far as funding allows within the run, so a
+    # buyer from before the run cannot sell into it at a profit at any strike. A closure the calendar does not know is full
+    # weight, as before (nobody can buy into it).
+    elapsed = closed_run_elapsed_s(now)
+    g, g_flags = weekend_move(name, history.weekend.get(name, []))
+    weekend_w: float | None = None
+    if elapsed is not None:
+        weekend_w = earnings_weight(ramp_length_s(sigma, g, tau, WEEKEND_DRIFT_SHARE), elapsed, sigma, g, tau, WEEKEND_DRIFT_SHARE)
+    elif newest.session == "CLOSED":
+        weekend_w = 1.0
+    if weekend_w:
         flags += g_flags + ["weekend_bump"]
-        sigma = add_event_variance(sigma, g, tau, progress)
+        sigma = add_event_variance(sigma, g, tau, weekend_w)
 
     floor_bps = round(floor_for(name) * BPS)
     target = round(sigma * BPS)

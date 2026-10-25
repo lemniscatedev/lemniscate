@@ -8,6 +8,7 @@ import { createSponsorshipGate, type SponsorshipGate } from "../sponsorship";
 import { createAaServices } from "../../aa/service";
 import { AaConfigError } from "../../aa/config";
 import { BundlerError, toRpcUserOp, type Op } from "../../aa/bundler";
+import { withAaCaller } from "../../aa/chain";
 import { AaError, buildUserOp, callsForIntent, hashOf, type AaServices, type IntentLike } from "../../aa/userop";
 import { PAYMASTER_DATA_LENGTH } from "../../aa/paymaster";
 import { KERNEL_V33_IMPLEMENTATION } from "../../aa/counterfactual";
@@ -95,6 +96,7 @@ export function registerIntentUserOp(app: OpenAPIHono, deps: ApiDependencies): v
         // F32: its own node when one is configured, so account-abstraction reads never compete with the keeper's.
         rpcUrl: deps.config.AA_RPC_URL || deps.config.RPC_URL_OVERRIDE || deps.config.PUBLIC_RPC_URL,
         ...(deps.config.AA_RPC_CALLS_PER_SECOND ? { rpcCallsPerSecond: deps.config.AA_RPC_CALLS_PER_SECOND } : {}),
+        ...(deps.config.AA_RPC_CLIENT_CALLS_PER_SECOND ? { rpcClientCallsPerSecond: deps.config.AA_RPC_CLIENT_CALLS_PER_SECOND } : {}),
         engine: contracts.engine as Address, usdg: contracts.usdg as Address, agentRouter: contracts.agentRouter as Address | undefined,
       });
       return cached;
@@ -121,6 +123,15 @@ export function registerIntentUserOp(app: OpenAPIHono, deps: ApiDependencies): v
   };
 
   // --- ?format=userop on the intent routes ------------------------------------------------------------------
+  // R12: building an operation costs chain reads, so it has a lower per-client limit than the plain intent (120 a minute).
+  const buildLimiter = rateLimit({
+    limit: deps.config.API_RATE_LIMIT_PER_MINUTE === 0 ? 0 : (deps.config.API_USEROP_BUILD_PER_MINUTE ?? 30),
+    windowMs: 60_000, clientIpHeader: deps.config.API_CLIENT_IP_HEADER, walletKeys: walletsFromBody(["account", "owner"]),
+  });
+  app.use("/v1/intent/*", async (context, next) => {
+    if (context.req.method !== "POST" || context.req.query("format") !== "userop") return next();
+    return buildLimiter(context, next);
+  });
   app.use("/v1/intent/*", async (context, next) => {
     if (context.req.method !== "POST" || context.req.query("format") !== "userop") return next();
     context.header("Cache-Control", "no-store");
@@ -143,47 +154,53 @@ export function registerIntentUserOp(app: OpenAPIHono, deps: ApiDependencies): v
     let ticket: number | undefined;
     const gate = { gate: undefined as SponsorshipGate | undefined };
     try {
-      const svc = services();
-      const plain = await context.res.clone().json() as Record<string, unknown>;
-      // F25/F31: sponsorship is decided by policy before anything is signed. A denial is not an error: the same operation
-      // comes back unsponsored and the user pays gas (or uses the plain transaction).
-      let sponsorship: { requested: boolean; granted: boolean; reason?: string; message?: string } = { requested: extra.data.sponsor && svc.sponsor !== null, granted: false };
-      if (sponsorship.requested) {
-        gate.gate = gateFor(svc);
-        const decision = await gate.gate.evaluate({
-          kind: intent.kind, account: extra.data.account, owner: extra.data.owner,
-          ipKey: rateLimitKey(clientIp(context, deps.config.API_CLIENT_IP_HEADER ?? "")), plain,
+      // R12: the reads below are charged to this client's own share of the AA read budget, and a sell may use the reserved lane.
+      const callerKey = rateLimitKey(clientIp(context, deps.config.API_CLIENT_IP_HEADER ?? ""));
+      await withAaCaller({ client: callerKey, sell: intent.kind === "sell" }, async () => {
+        const svc = services();
+        const plain = await context.res.clone().json() as Record<string, unknown>;
+        // F25/F31: sponsorship is decided by policy before anything is signed. A denial is not an error: the same operation
+        // comes back unsponsored and the user pays gas (or uses the plain transaction).
+        let sponsorship: { requested: boolean; granted: boolean; reason?: string; message?: string } = { requested: extra.data.sponsor && svc.sponsor !== null, granted: false };
+        if (sponsorship.requested) {
+          gate.gate = gateFor(svc);
+          const decision = await gate.gate.evaluate({
+            kind: intent.kind, account: extra.data.account, owner: extra.data.owner,
+            ipKey: rateLimitKey(clientIp(context, deps.config.API_CLIENT_IP_HEADER ?? "")), plain,
+            ...(svc.sponsor ? { validitySeconds: svc.config.paymaster?.validitySeconds ?? 300 } : {}),
+          });
+          if (decision.granted) { ticket = decision.ticket; sponsorship = { requested: true, granted: true }; }
+          else sponsorship = { requested: true, granted: false, reason: decision.reason, message: decision.message };
+        }
+        const built = await buildUserOp(svc, {
+          account: extra.data.account, owner: extra.data.owner, calls: callsForIntent(intent), sponsor: ticket !== undefined,
+          nonceLane: extra.data.nonceLane, accountIndex: extra.data.accountIndex,
         });
-        if (decision.granted) { ticket = decision.ticket; sponsorship = { requested: true, granted: true }; }
-        else sponsorship = { requested: true, granted: false, reason: decision.reason, message: decision.message };
-      }
-      const built = await buildUserOp(svc, {
-        account: extra.data.account, owner: extra.data.owner, calls: callsForIntent(intent), sponsor: ticket !== undefined,
-        nonceLane: extra.data.nonceLane, accountIndex: extra.data.accountIndex,
+        if (ticket !== undefined && gate.gate) await gate.gate.attach(ticket, built.userOpHash);
+        context.res = Response.json({
+          format: "userop" as const,
+          kind: intent.kind,
+          entryPoint: built.entryPoint, chainId: built.chainId,
+          userOp: toRpcUserOp(built.userOp),
+          userOpHash: built.userOpHash,
+          sponsored: built.sponsored,
+          sponsorship,
+          deploysAccount: built.deploysAccount,
+          gasEstimated: built.estimated,
+          maxCostWei: built.maxCostWei.toString(),
+          validUntil: built.validUntil,
+          calls: callsForIntent(intent).map((call) => ({ to: call.to, value: call.value.toString(), data: call.data })),
+          signing: {
+            scheme: "kernel-v3-ecdsa-root",
+            method: "personal_sign",
+            message: built.userOpHash,
+            note: "Sign the 32-byte userOpHash (EIP-191 personal_sign over the raw bytes) with the account owner key, put the 65-byte result in userOp.signature, then POST {userOp} to /v1/userop/send.",
+          },
+          submit: { method: "POST", path: "/v1/userop/send" },
+          // The plain transaction for the same action: always valid, no smart account needed.
+          fallback: plain,
+        }, { status: 200, headers: { "Cache-Control": "no-store" } });
       });
-      context.res = Response.json({
-        format: "userop" as const,
-        kind: intent.kind,
-        entryPoint: built.entryPoint, chainId: built.chainId,
-        userOp: toRpcUserOp(built.userOp),
-        userOpHash: built.userOpHash,
-        sponsored: built.sponsored,
-        sponsorship,
-        deploysAccount: built.deploysAccount,
-        gasEstimated: built.estimated,
-        maxCostWei: built.maxCostWei.toString(),
-        validUntil: built.validUntil,
-        calls: callsForIntent(intent).map((call) => ({ to: call.to, value: call.value.toString(), data: call.data })),
-        signing: {
-          scheme: "kernel-v3-ecdsa-root",
-          method: "personal_sign",
-          message: built.userOpHash,
-          note: "Sign the 32-byte userOpHash (EIP-191 personal_sign over the raw bytes) with the account owner key, put the 65-byte result in userOp.signature, then POST {userOp} to /v1/userop/send.",
-        },
-        submit: { method: "POST", path: "/v1/userop/send" },
-        // The plain transaction for the same action: always valid, no smart account needed.
-        fallback: plain,
-      }, { status: 200, headers: { "Cache-Control": "no-store" } });
     } catch (error) {
       if (ticket !== undefined && gate.gate) await gate.gate.release(ticket);
       const { body, status } = respondError(error);
@@ -224,7 +241,10 @@ export function registerIntentUserOp(app: OpenAPIHono, deps: ApiDependencies): v
       const svc = services();
       const op = fromRpc(parsed.data.userOp);
       const bundlerHash = await svc.bundler.sendUserOperation(op, svc.config.entryPoint);
-      return context.json({ userOpHash: hashOf(op, svc), bundlerHash, status: "submitted" as const }, 200);
+      const userOpHash = hashOf(op, svc);
+      // R11: relaying a sponsored operation turns its reservation into a spend of the global budget.
+      if (op.paymaster) await gateFor(svc).markSubmitted(userOpHash);
+      return context.json({ userOpHash, bundlerHash, status: "submitted" as const }, 200);
     } catch (error) {
       const { body, status } = respondError(error);
       return context.json(body, status);

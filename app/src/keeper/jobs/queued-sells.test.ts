@@ -1,9 +1,19 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { encodeErrorResult } from "viem";
+import { OptionEngineAbi } from "../../abi";
 import { applyMigrations, createTestDatabase, testDatabaseUrl, type TestDatabase } from "../../testing/db";
 import { A, FakeChain } from "../test-support";
 import { createQueuedSellsJob } from "./queued-sells";
 
 const suite = testDatabaseUrl() ? describe : describe.skip;
+
+/** What a geth or Nitro node returns for a custom-error revert once viem has wrapped it: no name and no selector in any
+ * message (viem says "Execution reverted for an unknown reason"), the error's data on the cause. */
+function nitroRevert(errorName: "Slippage" | "QueueNotFillable", args: readonly bigint[]): Error {
+  const data = encodeErrorResult({ abi: OptionEngineAbi, errorName, args: args as never });
+  const rpc = Object.assign(new Error("execution reverted"), { code: 3, data });
+  return Object.assign(new Error("Execution reverted for an unknown reason.\n\nDetails: execution reverted"), { name: "EstimateGasExecutionError", cause: rpc, shortMessage: "Execution reverted for an unknown reason." });
+}
 
 suite("queued-sells keeper job", () => {
   let db: TestDatabase;
@@ -74,7 +84,7 @@ suite("queued-sells keeper job", () => {
     const first = await job();
     expect(fills(chain)).toContain(301); // round-robin: the live name is served on the very first pass
     expect(first.filled).toBe(1);
-    expect(first.attempted).toBeLessThanOrEqual(2); // one revert on the halted name ends its turn for the pass
+    expect(first.attempted).toBeLessThanOrEqual(25); // R14: a revert is no proof about the series; the pass is still bounded
   });
 
   test("F29/F36: tickets in back-off are excluded in SQL, so they cannot fill the read window", async () => {
@@ -152,7 +162,7 @@ suite("queued-sells keeper job", () => {
       const { OptionEngineAbi } = await import("../../abi");
       const ticket = Number((decodeFunctionData({ abi: OptionEngineAbi, data: t.data }).args as readonly unknown[])[0]);
       tried.push(ticket);
-      if (ticket === 1 && slipping) throw new Error('The contract function "fillQueued" reverted with the following signature: Slippage(uint256 got, uint256 limit) (9, 10)');
+      if (ticket === 1 && slipping) throw nitroRevert("Slippage", [9n, 10n]);
       void sent;
       return base.submit(t);
     } };
@@ -177,5 +187,91 @@ suite("queued-sells keeper job", () => {
     await job();
     expect(tried).toEqual([1]);
     expect(fills(chain)).toContain(1);
+  });
+
+  describe("R14 one seller's failing tickets cannot hold a series", () => {
+    /** Tickets in `bad` revert the way a real node reports Slippage; the rest fill. Every ticket belongs to a seller. */
+    function nitroHarness(bad: Set<number>) {
+      const chain = new FakeChain();
+      const base = chain.tx();
+      const attempts: number[] = [];
+      const tx = { submit: async (t: Parameters<typeof base.submit>[0]) => {
+        const { decodeFunctionData } = await import("viem");
+        const ticket = Number((decodeFunctionData({ abi: OptionEngineAbi, data: t.data }).args as readonly unknown[])[0]);
+        attempts.push(ticket);
+        if (bad.has(ticket)) throw nitroRevert("Slippage", [1n, 2n ** 128n - 1n]);
+        const result = await base.submit(t);
+        await db.sql`update queued_sells set status = 'filled' where ticket = ${String(ticket)}`;
+        return result;
+      } };
+      return { chain, attempts, context: chain.context({ sql: db.sql, tx }, { KEEPER_QUEUED_DUST_USDG: 0.01, KEEPER_QUEUED_ALERT_MINUTES: 60 }) };
+    }
+    const addFor = async (ticket: number, seriesId: string, seller: string) => {
+      await db.sql.unsafe(`insert into queued_sells (ticket, series_id, seller, recipient, tokens, queued_at, queued_block, queued_tx, queued_log)
+        values (${ticket}, '${seriesId}', '${seller}', '${seller}', 5, now(), 1, '0x', ${ticket})`);
+    };
+
+    test("PoC: six attacker tickets at the head of a series, each reverting Slippage as a real node reports it, do not stop the honest tickets behind them", async () => {
+      await addSeries("a");
+      for (let t = 1; t <= 6; t++) await addFor(t, "a", "0xbad");
+      for (let t = 7; t <= 9; t++) await addFor(t, "a", "0x600d");
+      const { chain, context, attempts } = nitroHarness(new Set([1, 2, 3, 4, 5, 6]));
+      const job = createQueuedSellsJob(context, 25);
+      const first = await job();
+      expect(first.belowMinimum).toBe(4); // the Slippage is recognised from the revert data; one seller gets 4 tickets of a series per pass
+      expect(fills(chain).sort()).toEqual([7, 8, 9]); // and nothing is written off: the honest tickets fill on the first pass
+      expect(attempts.filter((t) => t <= 6).length).toBe(4);
+    });
+
+    test("PROPERTY: any number of failing tickets from up to five sellers delays an honest ticket on the series by at most two passes", async () => {
+      let seed = 777;
+      const rnd = (n: number) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+      for (let trial = 0; trial < 12; trial++) {
+        await db.sql`truncate queued_sells, series, norm_history`;
+        await addSeries("a");
+        const sellers = 1 + rnd(5);
+        const bad = new Set<number>();
+        let next = 1;
+        for (let s = 0; s < sellers; s++) {
+          const count = 1 + rnd(120);
+          for (let k = 0; k < count; k++) { await addFor(next, "a", `0xbad${s}`); bad.add(next); next++; }
+        }
+        const honest = next;
+        await addFor(honest, "a", "0x600d");
+        const { chain, context, attempts } = nitroHarness(bad);
+        const job = createQueuedSellsJob(context, 25);
+        let pass = 0;
+        let perPassAttempts: number[] = [];
+        while (!fills(chain).includes(honest) && pass < 12) {
+          attempts.length = 0;
+          await job();
+          perPassAttempts = attempts.slice();
+          pass++;
+          chain.nowSeconds += 120n; // two minutes: inside the ten-minute back-off
+          // a seller already flagged has at most two tickets tried on this series per pass
+          if (pass > 1) expect(perPassAttempts.length).toBeLessThanOrEqual(25);
+        }
+        // pass 1 tries the first 25 tickets by rank; from then on each bad seller has at most two tickets per pass
+        expect(fills(chain)).toContain(honest);
+        expect(pass).toBeLessThanOrEqual(2); // up to five sellers use 4 slots each of a 25-ticket pass, the honest ticket is next
+      }
+    });
+
+    test("a stock whose feed is HALTED (not settled) has its tickets left out of the pass altogether, and they do not take slots", async () => {
+      await addSeries("halted"); await addSeries("live");
+      for (let t = 1; t <= 40; t++) await addFor(t, "halted", "0x600d");
+      await addFor(41, "live", "0x600d");
+      const chain = new FakeChain();
+      chain.prices.set(A.nvda, { s: 100n * 10n ** 18n, session: 4, fresh: false, buysPaused: true, updatedAt: 1n });
+      const base = chain.tx();
+      const tx = { submit: async (t: Parameters<typeof base.submit>[0]) => base.submit(t) };
+      const context = chain.context({ sql: db.sql, tx }, {});
+      // both series are on the same stock (nvda), so use a second stock for the live one
+      await db.sql`update series set stock_token = ${A.spy} where id = 'live'`;
+      chain.prices.set(A.spy, { s: 100n * 10n ** 18n, session: 0, fresh: true, buysPaused: false, updatedAt: 1n });
+      const result = await createQueuedSellsJob(context, 5)();
+      expect(result.attempted).toBe(1);
+      expect(fills(chain)).toEqual([41]);
+    });
   });
 });

@@ -73,6 +73,16 @@ suite("F25/F31 sponsorship policy", () => {
     return { ...t, deps, app, call, signed: () => signed };
   }
 
+  /** Relay a built operation the way a client does (the owner's signature is not checked by the fake bundler). */
+  const relay = async (t: ReturnType<typeof build>, json: Record<string, any>) => {
+    const response = await t.app.request("/v1/userop/send", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ userOp: { ...json.userOp, signature: `0x${"11".repeat(65)}` } }),
+    });
+    return response.status;
+  };
+  const spends = async () => (await db.sql`select count(*)::int as n from sponsorship_grants where submitted_at is not null`)[0]!.n as number;
+
   const fund = (t: ReturnType<typeof build>, account: Address, usdg: number) => t.state.balances.set(`${USDG.toLowerCase()}:${account.toLowerCase()}`, BigInt(Math.round(usdg * 1e6)));
   const hold = (account: Address, tokens: bigint) => db.sql`insert into balances (token, account, balance, updated_block) values (${TOKEN}, ${account.toLowerCase()}, ${(Number(tokens) / 1e18).toString()}, 1)`;
   const registerAccount = (t: ReturnType<typeof build>, account: Address, owner: Address) => { t.state.deployed.add(account.toLowerCase()); t.state.owners.set(account.toLowerCase(), owner.toLowerCase() as Address); };
@@ -140,7 +150,7 @@ suite("F25/F31 sponsorship policy", () => {
     fund(t, ACCOUNT, 500);
     const results: (string | undefined)[] = [];
     for (let i = 0; i < 4; i++) results.push((await t.call("buy", { account: ACCOUNT }, `192.0.2.${i + 1}`)).json.sponsorship.reason);
-    expect(results).toEqual([undefined, undefined, "QUOTA_ACCOUNT", "QUOTA_ACCOUNT"]);
+    expect(results).toEqual([undefined, undefined, "QUOTA_ACCOUNT", "QUOTA_ACCOUNT"]); // live reservations count against the actor
     // the same owner with a second account: one slot left, then the owner quota
     const second = addr(0x50001); const third = addr(0x50002);
     for (const a of [second, third]) { registerAccount(t, a, OWNER); fund(t, a, 500); }
@@ -188,7 +198,11 @@ suite("F25/F31 sponsorship policy", () => {
     const approved = OWNER.toLowerCase();
     await db.sql`insert into invite_redemptions (address, code_hash) values (${approved}, 'h')`;
     fund(t, ACCOUNT, 500);
+    const first = await t.call("buy", { account: ACCOUNT });
+    expect(first.json.sponsored).toBe(true);
+    // R11: the global budget is spent when the operation is relayed, not when it is built
     expect((await t.call("buy", { account: ACCOUNT })).json.sponsored).toBe(true);
+    expect(await relay(t, first.json)).toBe(200);
     expect((await t.call("buy", { account: ACCOUNT })).json.sponsorship.reason).toBe("QUOTA_GLOBAL");
     const holder = addr(0x60001);
     registerAccount(t, holder, addr(0x60002)); // not invited
@@ -221,11 +235,93 @@ suite("F25/F31 sponsorship policy", () => {
   });
 
   test("concurrent requests cannot both take the last slot", async () => {
-    const t = build({ limits: { SPONSOR_ENTRY_GLOBAL_DAILY: 5, SPONSOR_ENTRY_PER_ACCOUNT_DAILY: 100, SPONSOR_ENTRY_PER_OWNER_DAILY: 100, SPONSOR_ENTRY_PER_IP_DAILY: 100 } });
+    const t = build({ limits: { SPONSOR_ENTRY_PER_ACCOUNT_DAILY: 5, SPONSOR_ENTRY_PER_OWNER_DAILY: 100, SPONSOR_ENTRY_PER_IP_DAILY: 100 } });
     fund(t, ACCOUNT, 5000);
     const results = await Promise.all(Array.from({ length: 30 }, (_, i) => t.call("buy", { account: ACCOUNT }, `203.0.113.${i + 1}`)));
     expect(results.filter((r) => r.json.sponsored).length).toBe(5);
     expect((await db.sql`select count(*)::int as n from sponsorship_grants`)[0]!.n).toBe(5);
+  });
+
+  test("R11 PoC: 1,000 sponsored sell builds that are never submitted leave the next honest exit sponsored", async () => {
+    const t = build();
+    const tokens = String(WAD);
+    for (let i = 0; i < 1000; i++) {
+      const account = addr(0x70000 + i);
+      registerAccount(t, account, addr(0x80000 + i));
+      await hold(account, WAD);
+      const { json } = await t.call("sell", { account, tokens }, `2001:db8:${(i % 4000).toString(16)}::1`);
+      expect(json.sponsored).toBe(true); // the attacker is signed for ...
+    }
+    expect(await spends()).toBe(0); // ... and has spent nothing
+    const holder = addr(0x90001);
+    registerAccount(t, holder, addr(0x90002));
+    await hold(holder, WAD);
+    const honest = await t.call("sell", { account: holder, tokens }, "198.51.100.7");
+    expect(honest.json.sponsored).toBe(true);
+    expect(honest.json.sponsorship).toEqual({ requested: true, granted: true });
+    expect(await relay(t, honest.json)).toBe(200);
+    expect(await spends()).toBe(1);
+  });
+
+  test("R11: rebuilding the same operation over and over costs the flooder his own limits, not the global budget", async () => {
+    const t = build({ limits: { SPONSOR_EXIT_PER_ACCOUNT_DAILY: 3, SPONSOR_EXIT_PER_IP_DAILY: 1000, SPONSOR_EXIT_PER_OWNER_DAILY: 1000, SPONSOR_EXIT_GLOBAL_DAILY: 5 } });
+    await hold(ACCOUNT, WAD);
+    const reasons: (string | undefined)[] = [];
+    for (let i = 0; i < 10; i++) reasons.push((await t.call("sell", { account: ACCOUNT, tokens: String(WAD) })).json.sponsorship.reason);
+    expect(reasons.filter((r) => r === undefined).length).toBe(3);
+    expect(reasons.filter((r) => r === "QUOTA_ACCOUNT").length).toBe(7);
+    const other = addr(0xa0001);
+    registerAccount(t, other, addr(0xa0002));
+    await hold(other, WAD);
+    expect((await t.call("sell", { account: other, tokens: String(WAD) }, "192.0.2.77")).json.sponsored).toBe(true);
+  });
+
+  test("R11: a reservation stops counting when the signature can no longer be used, and is kept once the operation was relayed", async () => {
+    const t = build({ limits: { SPONSOR_ENTRY_PER_ACCOUNT_DAILY: 1 } });
+    fund(t, ACCOUNT, 500);
+    const first = await t.call("buy", { account: ACCOUNT });
+    expect(first.json.sponsored).toBe(true);
+    expect((await t.call("buy", { account: ACCOUNT })).json.sponsorship.reason).toBe("QUOTA_ACCOUNT");
+    await db.sql`update sponsorship_grants set expires_at = now() - interval '1 second'`;
+    const again = await t.call("buy", { account: ACCOUNT });
+    expect(again.json.sponsored).toBe(true);
+    expect(await relay(t, again.json)).toBe(200);
+    await db.sql`update sponsorship_grants set expires_at = now() - interval '1 second'`;
+    expect((await t.call("buy", { account: ACCOUNT })).json.sponsorship.reason).toBe("QUOTA_ACCOUNT"); // a spend counts all day
+  });
+
+  test("R11 PROPERTY: over random builds, relays and expiries the global budget is consumed by relayed operations only", async () => {
+    let seed = 99;
+    const rnd = (n: number) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+    for (let trial = 0; trial < 6; trial++) {
+      await db.sql`truncate sponsorship_grants`;
+      const limit = 3 + rnd(4);
+      const t = build({ limits: { SPONSOR_EXIT_GLOBAL_DAILY: limit, SPONSOR_EXIT_PER_ACCOUNT_DAILY: 50, SPONSOR_EXIT_PER_OWNER_DAILY: 50, SPONSOR_EXIT_PER_IP_DAILY: 500 } });
+      const open: Record<string, any>[] = [];
+      let relayed = 0;
+      for (let step = 0; step < 60; step++) {
+        const action = rnd(3);
+        if (action < 2) {
+          const account = addr(0xb0000 + trial * 1000 + step);
+          registerAccount(t, account, addr(0xc0000 + trial * 1000 + step));
+          await hold(account, WAD);
+          const { json } = await t.call("sell", { account, tokens: String(WAD) }, `203.0.113.${(step % 200) + 1}`);
+          if (json.sponsored) open.push(json);
+          else expect(json.sponsorship.reason).toBe("QUOTA_GLOBAL");
+          // Builds alone never use the budget: the denial only ever appears when `limit` operations were relayed.
+          if (json.sponsorship.reason === "QUOTA_GLOBAL") expect(relayed).toBeGreaterThanOrEqual(limit);
+        } else if (open.length) {
+          const json = open.splice(rnd(open.length), 1)[0]!;
+          if (await relay(t, json) === 200) relayed++;
+        }
+        expect(await spends()).toBe(relayed);
+      }
+      const probe = addr(0xd0000 + trial);
+      registerAccount(t, probe, addr(0xd1000 + trial));
+      await hold(probe, WAD);
+      const last = await t.call("sell", { account: probe, tokens: String(WAD) }, "192.0.2.250");
+      expect(last.json.sponsored).toBe(relayed < limit);
+    }
   });
 
   test("a denied request still gets a usable unsponsored operation", async () => {

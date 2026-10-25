@@ -53,6 +53,8 @@ export class FakeChain {
   guards = { minTradeUsdg: 1_000_000n, holdSeconds: 1800, haltSettleDelay: 7 * 86_400 };
   /** PriceGuard.haltedSince per stock (unix seconds) and engine.settlePrice per stock (ORC-4). */
   haltedSince = new Map<Address, bigint>();
+  /** MarketHours.kindAt(now): 0 REGULAR, 1 EXTENDED, 2 CLOSED, 3 UNKNOWN (R05: the halt latch only writes in session). */
+  kind = 0;
   /** ERC-20 balanceOf answers by `${token}:${holder}`. */
   erc20Balances = new Map<string, bigint>();
   settlePrices = new Map<Address, bigint>();
@@ -105,6 +107,7 @@ export class FakeChain {
       const g = this.lastGood.get(args[0] as Address);
       return [g?.s ?? 0n, g?.at ?? 0n];
     }
+    if (functionName === "kindAt") return this.kind;
     if (functionName === "haltedSince") return this.haltedSince.get(args[0] as Address) ?? 0n;
     if (functionName === "settlePrice") return this.settlePrices.get(args[0] as Address) ?? 0n;
     if (functionName === "read" || functionName === "readLite") {
@@ -170,7 +173,11 @@ export class FakeChain {
           this.addSeries({ stock, isCall, strike, tauSeconds: tau, listedAt: this.nowSeconds, buyable: this.listDefaultBuyable });
         } else if (name === "setBuyable") this.series.get(args[0] as Hex)!.buyable = args[1] as boolean;
         else if (name === "archive") { const s = this.series.get(args[0] as Hex)!; s.archived = true; s.buyable = false; }
-        else if (name === "accrueMany") for (const id of args[0] as Hex[]) this.series.get(id)!.lastAccrual = this.nowSeconds;
+        else if (name === "accrueMany") {
+          // EngineOpsLib.accrueMany skips a series that is not on the live list: lastAccrual does not move for it.
+          for (const id of args[0] as Hex[]) { const s = this.series.get(id)!; if (this.isLive(s)) s.lastAccrual = this.nowSeconds; }
+        }
+        else if (name === "accrue") this.series.get(args[0] as Hex)!.lastAccrual = this.nowSeconds;
         else if (name === "settleHalted") {
           const stock = args[0] as Address;
           const since = this.haltedSince.get(stock) ?? 0n;
@@ -193,6 +200,9 @@ export class FakeChain {
         else if (name === "poke") {
           const price = this.prices.get(args[0] as Address);
           if (price && price.fresh && price.session <= 1) this.lastGood.set(args[0] as Address, { s: price.s, at: price.updatedAt });
+          // PriceGuard.poke: a HALTED reading in a REGULAR or EXTENDED session latches haltedSince once; a live one clears it.
+          else if (price && price.session === 4 && this.kind <= 1 && (this.haltedSince.get(args[0] as Address) ?? 0n) === 0n) this.haltedSince.set(args[0] as Address, this.nowSeconds);
+          if (price && price.fresh && price.session <= 1) this.haltedSince.delete(args[0] as Address);
         }
         return { simulated: false, hash: keccak256(t.data), receipt: { status: "success", blockNumber: BigInt(this.sent.length) } };
       },

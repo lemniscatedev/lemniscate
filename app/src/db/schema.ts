@@ -792,8 +792,13 @@ export const sponsorshipGrants = pgTable(
     ipKey: text("ip_key").notNull(),
     notionalUsdg: numeric("notional_usdg", { precision: 38, scale: 6 }).notNull().default("0"),
     createdAt: at("created_at").notNull().defaultNow(),
+    /** R11: a booking is a reservation until the signed operation is relayed; it stops counting here if it never is. */
+    expiresAt: at("expires_at").notNull().default(sql`now() + interval '6 minutes'`),
+    userOpHash: text("user_op_hash"),
+    submittedAt: at("submitted_at"),
   },
   (table) => [
+    index("sponsorship_grants_user_op_idx").on(table.userOpHash),
     index("sponsorship_grants_day_grp_idx").on(table.day, table.grp),
     index("sponsorship_grants_day_account_idx").on(table.day, table.account),
     index("sponsorship_grants_day_owner_idx").on(table.day, table.owner),

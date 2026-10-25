@@ -127,6 +127,13 @@
       "when": 1790780000016,
       "tag": "0017_engine_safety_events",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1790780000017,
+      "tag": "0018_sponsorship_reservations",
+      "breakpoints": true
     }
   ]
 }

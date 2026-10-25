@@ -3,6 +3,7 @@ import type { Logger } from "pino";
 import type { ServiceClients } from "../chain/clients";
 import { robinhoodChain } from "../chain/chain";
 import { safeErrorSummary } from "../log";
+import { withDecodedRevert } from "../chain/revert";
 
 export interface KeeperTransaction {
   to: Address;
@@ -155,10 +156,11 @@ export function createTransactionQueue(clients: ServiceClients, options: Transac
     await reconcile(account.address);
 
     // estimateGas is the simulation: do not precede it with a redundant eth_call.
+    // R14/R19: a revert is reported with the contract error's name (decoded from the node's revert data).
     const estimate = await clients.txClient.estimateGas({
       account: account.address, to: transaction.to, data: transaction.data,
       value: transaction.value ?? 0n,
-    });
+    }).catch((error: unknown) => { throw withDecodedRevert(error); });
     if (options.dryRun) {
       options.logger.info({ label: transaction.label, gas: estimate.toString() }, "Keeper dry-run simulated");
       return { simulated: true };

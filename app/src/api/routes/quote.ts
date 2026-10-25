@@ -18,6 +18,8 @@ import { trimDecimal } from "../quote/rows";
 import type { MarketInputs } from "../quote/model";
 
 const WAD = 10n ** 18n;
+/** R06: extra slippage, on top of the user's, that a queued sell's minimum leaves for the price moving while it waits. */
+export const QUEUED_EXTRA_BAND_BPS = 1_500;
 const UINT128_MAX = (1n << 128n) - 1n;
 const SESSION_INDEX: Record<SessionName, number> = { REGULAR: 0, EXTENDED: 1, CLOSED: 2, UNKNOWN: 3, HALTED: 4 };
 
@@ -187,7 +189,14 @@ export function registerQuoteRoutes(app: OpenAPIHono, deps: ApiDependencies): vo
     const held = await heldTokens(deps, series.token, body.account);
     if (held !== null && tokens > held && tokens <= held + held / 1_000n) tokens = held;
     const queued = quote.sellQueued;
-    const minProceeds = queued ? 0n : (quote.usdg * BigInt(10_000 - body.slippageBps)) / 10_000n;
+    // R06: a queued sell carries a floor too. permissionless fillQueued (and settleHalted) can be timed by anyone, and the
+    // ticket's minProceeds is the only thing that bounds what it pays. The floor comes from the indexed price (the quote at
+    // the last indexed S, worse-of the indexed trade TWAP) minus the user's slippage plus a wider queued band, and is never 0.
+    const bandBps = queued ? Math.min(body.slippageBps + QUEUED_EXTRA_BAND_BPS, 9_999) : body.slippageBps;
+    const minProceeds = (quote.usdg * BigInt(10_000 - bandBps)) / 10_000n;
+    if (queued && minProceeds <= 0n) {
+      return context.json({ error: "BAD_REQUEST", message: "This position is worth too little at the last indexed price to queue a sell with a minimum." }, 422);
+    }
     const deadline = Math.floor(now.getTime() / 1_000) + body.deadlineSeconds;
     const data = encodeFunctionData({
       abi: OptionEngineAbi, functionName: "sell",
@@ -195,7 +204,7 @@ export function registerQuoteRoutes(app: OpenAPIHono, deps: ApiDependencies): vo
     });
     const halt = haltNotice(ctx);
     const note = queued
-      ? `The price feed is halted. This sell joins a queue and fills at the first fresh price; no minimum is set because the fill price is not known yet.${halt ? ` If the feed is still halted at ${halt.settleableAt}, the name can be settled at its last good price and queued sells fill at that price.` : ""}`
+      ? `The price feed is halted. This sell joins a queue and fills at the first fresh price or, after a long halt, at the last good price. Your minimum is ${usdgText(minProceeds)} USDG: ${bandBps / 100}% under the last indexed price (your ${body.slippageBps / 100}% plus ${QUEUED_EXTRA_BAND_BPS / 100}% for the moves while it waits); the sell does not fill below it and you can cancel the queued sell.${halt ? ` If the feed is still halted at ${halt.settleableAt}, the name can be settled at its last good price and queued sells fill at that price.` : ""}`
       : quote.session === "CLOSED" || quote.session === "UNKNOWN"
         ? "The market is closed. This sell is priced at the last close with a wider spread."
         : quote.holdApplied && hold ? holdNote(hold.until) : null;
@@ -203,7 +212,7 @@ export function registerQuoteRoutes(app: OpenAPIHono, deps: ApiDependencies): vo
       kind: "sell" as const, to: engine, data, value: "0" as const, approvals: [],
       minProceedsUsdg: minProceeds.toString(), deadline, series: series.id, tokens: tokens.toString(), quote: rawQuote(quote),
       display: { usdg: usdgText(quote.usdg), displayCost: displayCost(quote.dailyCostUsdg), breakeven: wadText(quote.breakevenWad) },
-      queued, note, hold: holdView(hold, quote), halt,
+      queued, queuedBandBps: queued ? bandBps : null, note, hold: holdView(hold, quote), halt,
     }, 200);
   });
 

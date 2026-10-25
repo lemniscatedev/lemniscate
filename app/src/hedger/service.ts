@@ -1,5 +1,6 @@
 import { formatUnits, type Address } from "viem";
 import type { Logger } from "pino";
+import { revertNameOf } from "../chain/revert";
 import { decideRehedge, type HoldReason, type TradeReason } from "./policy";
 import { netDeltaFromBook, type BookSnapshot } from "./netdelta";
 import { abs, toWei, type HedgerSettings, type IHedgeVenue } from "./types";
@@ -38,6 +39,10 @@ export const HEDGE_HALT_RETRY_MS = 3_600_000;
 
 /** Which bound a failed pool call hit, if any (matched by error name in the revert message). */
 export function hedgeRevertOf(error: unknown): HedgeRevert | null {
+  // R19: a node reports a custom-error revert as `execution reverted` plus data, so the name comes from the decoded data first
+  // (tx.submit decodes it; a raw viem error is decoded here); the message match stays for errors that already carry the name.
+  const named = revertNameOf(error);
+  if (named && (HEDGE_REVERTS as readonly string[]).includes(named)) return named as HedgeRevert;
   const message = error instanceof Error ? `${error.message} ${(error as { shortMessage?: string }).shortMessage ?? ""}` : String(error);
   return HEDGE_REVERTS.find((name) => new RegExp(`\\b${name}\\b`).test(message)) ?? null;
 }

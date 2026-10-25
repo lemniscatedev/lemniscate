@@ -18,6 +18,11 @@ import type { ApiDependencies } from "./types";
  *     account holds the option tokens it sells and the proceeds are at least SPONSOR_MIN_SELL_USDG.
  *  3. Quotas, per UTC day, booked in the database before signing: per account, per owner, per IPv4/IPv6 /64 and globally,
  *     with exits in their own group so entries can never use up the budget that lets holders sell.
+ *     R11: a booking is a RESERVATION, not a spend. It lives as long as the paymaster signature can still be used (the
+ *     validity window plus a minute) and becomes a spend when the signed operation is relayed through /v1/userop/send. The
+ *     per-account, per-owner and per-network limits count spends and live reservations (so a flood costs the flooder his
+ *     own limits); the GLOBAL limit counts spends only, so nobody can use up the day's budget by asking for signatures
+ *     he never submits. What stays bounded by the chain is the money: the paymaster's own daily caps.
  * Any failure to read what the policy needs denies sponsorship (fail closed). A denial is not an error for the user: the
  * route then returns the same operation unsponsored (they pay gas), and the plain transaction is always available.
  */
@@ -36,6 +41,8 @@ export interface SponsorshipInput {
   readonly ipKey: string;
   /** The plain intent the route built: maxCostUsdg / tokens / series / quote. */
   readonly plain: Record<string, unknown>;
+  /** How long the signature stays usable, seconds (the paymaster validity); the reservation lasts a minute longer. */
+  readonly validitySeconds?: number;
 }
 
 export type SponsorshipDecision =
@@ -46,6 +53,10 @@ export interface SponsorshipGate {
   evaluate(input: SponsorshipInput): Promise<SponsorshipDecision>;
   /** Gives the quota back when the operation could not be built after all. */
   release(ticket: number): Promise<void>;
+  /** Ties the reservation to the operation it was signed for, so that relaying that operation can turn it into a spend. */
+  attach(ticket: number, userOpHash: string): Promise<void>;
+  /** The operation with this hash was relayed: its reservation becomes a spend (global budget). Returns the rows changed. */
+  markSubmitted(userOpHash: string): Promise<number>;
 }
 
 const MESSAGES: Record<DenialReason, string> = {
@@ -68,6 +79,8 @@ const micro = (value: unknown): bigint | null => (typeof value === "string" && /
 const usdgToNumber = (value: bigint): number => Number(value) / 1_000_000;
 /** Serialises quota check + booking across API instances. */
 const QUOTA_LOCK = 7_203_015;
+/** PAYMASTER_VALIDITY_SECONDS default, used when the caller does not say. */
+const DEFAULT_VALIDITY_SECONDS = 300;
 
 export interface SponsorshipLimits {
   readonly minNotionalUsdg: number;
@@ -155,21 +168,24 @@ export function createSponsorshipGate(options: SponsorshipGateOptions): Sponsors
         // 3. Quotas, booked atomically so concurrent requests cannot both take the last slot.
         return await sql.begin(async (tx) => {
           await tx`select pg_advisory_xact_lock(${QUOTA_LOCK})`;
+          // R11: spends (submitted) and live reservations count against an actor; only spends count against the global budget.
           const rows = await tx`
             select count(*) filter (where account = ${account})::int as per_account,
                    count(*) filter (where owner = ${owner ?? null})::int as per_owner,
                    count(*) filter (where ip_key = ${input.ipKey})::int as per_ip,
-                   count(*)::int as total
-            from sponsorship_grants where day = ((now() at time zone 'utc')::date) and grp = ${group}` as unknown as
+                   count(*) filter (where submitted_at is not null)::int as total
+            from sponsorship_grants
+            where day = ((now() at time zone 'utc')::date) and grp = ${group} and (submitted_at is not null or expires_at > now())` as unknown as
             { per_account: number; per_owner: number; per_ip: number; total: number }[];
           const used = rows[0]!;
           if (used.total >= quota.global) return deny("QUOTA_GLOBAL");
           if (used.per_ip >= quota.ip) return deny("QUOTA_NETWORK");
           if (used.per_account >= quota.account) return deny("QUOTA_ACCOUNT");
           if (owner && used.per_owner >= quota.owner) return deny("QUOTA_OWNER");
+          const ttl = Math.max(60, Math.floor(input.validitySeconds ?? DEFAULT_VALIDITY_SECONDS)) + 60;
           const inserted = await tx`
-            insert into sponsorship_grants (grp, kind, account, owner, ip_key, notional_usdg)
-            values (${group}, ${input.kind}, ${account}, ${owner ?? null}, ${input.ipKey}, ${usdgToNumber(notional)})
+            insert into sponsorship_grants (grp, kind, account, owner, ip_key, notional_usdg, expires_at)
+            values (${group}, ${input.kind}, ${account}, ${owner ?? null}, ${input.ipKey}, ${usdgToNumber(notional)}, now() + ${ttl} * interval '1 second')
             returning id` as unknown as { id: string | number }[];
           return { granted: true as const, ticket: Number(inserted[0]!.id) };
         });
@@ -180,7 +196,17 @@ export function createSponsorshipGate(options: SponsorshipGateOptions): Sponsors
       }
     },
     async release(ticket) {
-      try { await sql`delete from sponsorship_grants where id = ${ticket}`; } catch { /* the quota stays used; the day rolls over */ }
+      try { await sql`delete from sponsorship_grants where id = ${ticket} and submitted_at is null`; } catch { /* the reservation expires on its own */ }
+    },
+    async attach(ticket, userOpHash) {
+      try { await sql`update sponsorship_grants set user_op_hash = ${userOpHash.toLowerCase()} where id = ${ticket}`; } catch { /* the reservation expires on its own */ }
+    },
+    async markSubmitted(userOpHash) {
+      try {
+        const rows = await sql`update sponsorship_grants set submitted_at = now()
+          where user_op_hash = ${userOpHash.toLowerCase()} and submitted_at is null returning id`;
+        return rows.length;
+      } catch { return 0; }
     },
   };
 }

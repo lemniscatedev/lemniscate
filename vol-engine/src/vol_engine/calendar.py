@@ -60,3 +60,15 @@ def closed_run_progress(now: datetime) -> float | None:
     if not (start <= here < end):
         return None
     return (here - start) / (end - start)
+
+
+def closed_run_elapsed_s(now: datetime) -> float | None:
+    """Seconds since the CLOSED run that contains `now` began; None when `now` is not inside one."""
+    run = closed_run(now)
+    if run is None:
+        return None
+    start, end = run
+    here = now.astimezone(ET)
+    if not (start <= here < end):
+        return None
+    return (here - start).total_seconds()

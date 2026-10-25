@@ -12,6 +12,10 @@ const BOUNDARY_MIN_ELAPSED_SECONDS = 30n;
 export const ACCRUE_BATCH_MAX = 45;
 const accrueBatch = (configured: number): number => Math.max(1, Math.min(ACCRUE_BATCH_MAX, Math.floor(configured) || ACCRUE_BATCH_MAX));
 
+/** R15: a series the engine retired as dust (supply left, off the live list) is accrued one by one, not through accrueMany, which
+ * skips it without touching lastAccrual and would be sent the same id on every run for ever. */
+const RETIRED_LABEL = "accrue:retired";
+
 /** A series retireDust kept (its refreshed value was real) is not sent to retireDust again for this long. */
 const RETIRE_RETRY_SECONDS = 3600n;
 const HELD_QUEUE = /nonce .* (is held|is unresolved|remains held)|local signer is not configured|existing pending transaction/i;
@@ -99,9 +103,12 @@ async function latestMarks(context: KeeperContext, ids: readonly Hex[]): Promise
   return marks;
 }
 
-/** Funding sampling grid (review F11/F34, decision 35): every live, non-dust series of a name in REGULAR or EXTENDED is
- * accrued once per slot, whatever its lastAccrual, so a holder who accrues at prints of their choosing cannot suppress
- * the keeper's samples. */
+/** Funding sampling grid (review F11/F34, decision 35): every live series of a name in REGULAR or EXTENDED that is worth
+ * sampling is accrued once per slot, whatever its lastAccrual, so a holder who accrues at prints of their choosing cannot
+ * suppress the keeper's samples. R13: "worth sampling" is bounded. Archived series (beyond the archive moneyness), series
+ * under KEEPER_ACCRUE_GRID_MIN_VALUE_USDG of outstanding value and anything past KEEPER_ACCRUE_GRID_MAX_SERIES per slot
+ * (the most valuable are kept) are left to the hourly catch-up, so positions an attacker holds for a dollar each cannot bill
+ * the keeper's gas at the grid rate. */
 export const ACCRUE_GRID_SECONDS = 300n;
 /** The next run is timed this long after the next grid boundary (the first price read after it). */
 const GRID_SETTLE_MS = 5_000;
@@ -130,6 +137,8 @@ async function liveSessionStocks(context: KeeperContext, stocks: readonly Addres
 export function createAccrueJob(context: KeeperContext) {
   const reader = createSeriesReader(context);
   const retireTried = new Map<Hex, bigint>();
+  /** R15: when each retired series was last sent to engine.accrue. */
+  const retiredTried = new Map<Hex, bigint>();
   let lastGridSlot: bigint | undefined;
   return async (force = false): Promise<Record<string, unknown>> => {
     const metadata = await context.metadata();
@@ -142,9 +151,9 @@ export function createAccrueJob(context: KeeperContext) {
     // PriceGuard's last good price first: it is what sells use once the session closes (keepLastGoodPrices).
     const prices = await keepLastGoodPrices(context).catch((error: unknown) => {
       context.logger.warn({ err: safeErrorSummary(error) }, "PriceGuard last-good-price upkeep failed");
-      return { poked: [], failed: [String((error as Error).message)] };
+      return { poked: [], latched: [], failed: [String((error as Error).message)] };
     });
-    const pokes = prices.poked.length;
+    const pokes = prices.poked.length + prices.latched.length;
     const risk = await readLiveRisk(context).catch((error: unknown) => {
       context.logger.warn({ err: safeErrorSummary(error) }, "Engine live list unreadable; no dust retirement or grid sample this run");
       return undefined;
@@ -154,23 +163,53 @@ export function createAccrueJob(context: KeeperContext) {
       : { dust: new Set<Hex>(), sent: 0 };
     const retireSent = retire.sent;
 
-    // F11 grid sample: once per slot, every live non-dust series of a name in session.
+    const all = await reader.readAll();
+
+    // F11 grid sample: once per slot, the live series of a name in session that are worth sampling (R13).
     let grid: Hex[] = [];
+    let gridSkipped = 0;
     if (risk && slot !== lastGridSlot) {
-      const candidates = risk.live.filter((entry) => !retire.dust.has(entry.id));
+      const archived = new Set(all.filter((series) => series.archived).map((series) => series.id));
+      const minValue = BigInt(Math.round(Number(context.config.KEEPER_ACCRUE_GRID_MIN_VALUE_USDG ?? 100) * 1e6)) * 10n ** 12n;
+      const candidates = risk.live.filter((entry) => !retire.dust.has(entry.id) && !archived.has(entry.id) && entry.value >= minValue);
       const inSession = await liveSessionStocks(context, [...new Set(candidates.map((entry) => entry.stock))]).catch((error: unknown) => {
         context.logger.warn({ err: safeErrorSummary(error) }, "PriceGuard sessions unreadable; no grid sample this run");
         return new Set<string>();
       });
-      grid = candidates.filter((entry) => inSession.has(entry.stock.toLowerCase())).map((entry) => entry.id);
+      const sampled = candidates.filter((entry) => inSession.has(entry.stock.toLowerCase()))
+        .sort((a, b) => (a.value === b.value ? 0 : a.value > b.value ? -1 : 1));
+      const budget = Math.max(0, Math.floor(Number(context.config.KEEPER_ACCRUE_GRID_MAX_SERIES ?? 450)));
+      gridSkipped = Math.max(0, sampled.length - budget);
+      grid = sampled.slice(0, budget).map((entry) => entry.id);
+      if (gridSkipped > 0) context.logger.warn({ sampled: sampled.length, budget, skipped: gridSkipped },
+        "ALERT: more series qualify for the 5-minute funding grid than its per-slot budget; the least valuable are left to the hourly catch-up");
     }
 
-    const all = await reader.readAll();
-    const hourly = await hourlyDue(context, all, nowSeconds, threshold, retire.dust);
+    const liveIds = risk ? new Set<Hex>(risk.live.map((entry) => entry.id)) : undefined;
+    const hourly = await hourlyDue(context, all, nowSeconds, threshold, retire.dust, liveIds);
     const ids = [...new Set<Hex>([...grid, ...hourly.due])];
-    const base = { series: all.length, pokes, retireSent, deferredDust: hourly.deferredDust, gridSampled: grid.length, retryAfterMs };
+    // R15: retired series (supply left, off the live list) are accrued singly at the daily dust cadence.
+    const dustAfterSeconds = BigInt(context.config.KEEPER_ACCRUE_DUST_MAX_AGE_SECONDS ?? 86_400);
+    for (const [id, at] of retiredTried) if (nowSeconds - at >= dustAfterSeconds) retiredTried.delete(id);
+    const retiredDue = hourly.retired.filter((series) => nowSeconds - series.lastAccrual >= dustAfterSeconds && !retiredTried.has(series.id));
+    let retiredSent = 0;
+    for (const series of retiredDue) {
+      retiredTried.set(series.id, nowSeconds);
+      try {
+        await context.tx.submit({
+          label: RETIRED_LABEL, to: context.deployment.contracts.engine as Address,
+          data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "accrue", args: [series.id] }),
+        });
+        retiredSent++;
+      } catch (error) {
+        const summary = safeErrorSummary(error);
+        if (HELD_QUEUE.test(summary.message)) throw error;
+        context.logger.warn({ id: series.id, err: summary }, "Accrual of a retired series failed; it is retried after a day");
+      }
+    }
+    const base = { series: all.length, pokes, retireSent, retiredSent, deferredDust: hourly.deferredDust, gridSampled: grid.length, gridSkipped, retryAfterMs };
     if (risk && slot !== lastGridSlot && !ids.length) lastGridSlot = slot;
-    if (!ids.length) return { ...base, due: 0, accrued: 0, idle: true };
+    if (!ids.length) return { ...base, due: 0, accrued: 0, idle: retiredSent === 0 };
 
     const result = await accrueInBatches(context, ids, context.config.KEEPER_ACCRUE_BATCH);
     if (risk) lastGridSlot = slot;
@@ -190,16 +229,21 @@ export function createAccrueJob(context: KeeperContext) {
 /** The hourly part: held series whose last accrual is at least `threshold` old, with F28 dust deferred to daily. */
 async function hourlyDue(
   context: KeeperContext, all: readonly ChainSeries[], nowSeconds: bigint, threshold: bigint, engineDust: ReadonlySet<Hex>,
-): Promise<{ due: Hex[]; deferredDust: number }> {
+  liveIds?: ReadonlySet<Hex>,
+): Promise<{ due: Hex[]; deferredDust: number; retired: ChainSeries[] }> {
   // Dust on the engine's live list is skipped by accrueMany anyway: never pay to send it.
   const aged = all.filter((series) => nowSeconds - series.lastAccrual >= threshold && !engineDust.has(series.id));
-  if (!aged.length) return { due: [], deferredDust: 0 };
+  if (!aged.length) return { due: [], deferredDust: 0, retired: [] };
   // Only series somebody holds can change: a zero-supply series has nothing to shrink.
   const supplies = await chunkedMulticall(context, aged.map((series: ChainSeries) => ({
     address: series.token, abi: OptionTokenAbi, functionName: "totalSupply",
   }))) as bigint[];
-  const held = aged.filter((_, index) => BigInt(supplies[index]!) > 0n);
-  if (!held.length) return { due: [], deferredDust: 0 };
+  const heldAll = aged.filter((_, index) => BigInt(supplies[index]!) > 0n);
+  // R15: held but off the engine's live list = retired. accrueMany skips it without moving lastAccrual, so it would be due on
+  // every run for ever; it goes to the daily single accrual instead.
+  const retired = liveIds ? heldAll.filter((series) => !liveIds.has(series.id)) : [];
+  const held = liveIds ? heldAll.filter((series) => liveIds.has(series.id)) : heldAll;
+  if (!held.length) return { due: [], deferredDust: 0, retired };
 
   // F28: dust (outstanding value under KEEPER_ACCRUE_DUST_USDG) is accrued lazily, not hourly. Trades accrue first anyway,
   // so the only cost of waiting is a book value that lags by at most the dust threshold per series. Unknown value = not dust.
@@ -217,5 +261,5 @@ async function hourlyDue(
     deferredDust++;
     return false;
   });
-  return { due: due.map((series) => series.id), deferredDust };
+  return { due: due.map((series) => series.id), deferredDust, retired };
 }

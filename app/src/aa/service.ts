@@ -13,6 +13,8 @@ export interface ServiceOptions {
   readonly env?: Record<string, string | undefined>;
   /** Cap on the chain reads this service may make per second in total (F32). */
   readonly rpcCallsPerSecond?: number;
+  /** One client's share of it (R12). */
+  readonly rpcClientCallsPerSecond?: number;
 }
 
 /** Wires the production services: viem chain reads, an HTTP bundler (any v0.7 bundler) and the sponsor, if configured. */
@@ -20,7 +22,10 @@ export function createAaServices(options: ServiceOptions): AaServices {
   const config: AaConfig = loadAaConfig(options.env);
   return {
     config,
-    chain: createViemAaChain(options.rpcUrl, options.rpcCallsPerSecond ? { callsPerSecond: options.rpcCallsPerSecond, burst: Math.max(10, options.rpcCallsPerSecond * 2) } : {}),
+    chain: createViemAaChain(options.rpcUrl, {
+      ...(options.rpcCallsPerSecond ? { callsPerSecond: options.rpcCallsPerSecond, burst: Math.max(14, options.rpcCallsPerSecond * 2 + 4) } : {}),
+      ...(options.rpcClientCallsPerSecond ? { clientCallsPerSecond: options.rpcClientCallsPerSecond } : {}),
+    }),
     bundler: createHttpBundler({ url: config.bundlerUrl, timeoutMs: config.bundlerTimeoutMs }),
     sponsor: config.paymaster
       ? createSponsor({ ...config.paymaster, signerKey: config.paymaster.signerKey, chainId: config.chainId })
