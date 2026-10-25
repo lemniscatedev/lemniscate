@@ -36,6 +36,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => 
 const scheduler = createScheduler(sql, logger);
 const tx = createTransactionQueue(clients, {
   dryRun: config.KEEPER_DRY_RUN, logger,
+  gasLimit: { multiplierBps: config.KEEPER_GAS_MULTIPLIER_BPS, headroom: BigInt(config.KEEPER_GAS_HEADROOM), cap: BigInt(config.KEEPER_GAS_CAP) },
   onHash: async (transaction, hash) => {
     const job = transaction.label.split(":")[0]!;
     await sql`insert into keeper_status (job,last_tx) values (${job},${hash})

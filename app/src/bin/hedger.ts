@@ -33,6 +33,7 @@ if (!release) { logger.fatal("Another hedger instance holds the lock; exiting");
 
 const tx = createTransactionQueue(clients, {
   dryRun: false, logger,
+  gasLimit: { multiplierBps: config.KEEPER_GAS_MULTIPLIER_BPS, headroom: BigInt(config.KEEPER_GAS_HEADROOM), cap: BigInt(config.KEEPER_GAS_CAP) },
   onHash: async (transaction, hash) => {
     await sql`insert into keeper_status (job,last_tx) values ('hedger',${hash}) on conflict (job) do update set last_tx=excluded.last_tx`;
     logger.info({ label: transaction.label, hash }, "Hedger transaction submitted");

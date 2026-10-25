@@ -18,8 +18,31 @@ export interface TransactionResult {
   receipt?: TransactionReceipt;
 }
 
+/** Gas-limit policy (28-merge): the estimate is taken against the latest block, but the transaction runs in a later block
+ * with a later timestamp. After a time jump (a weekend, a stalled keeper, a fork warp) engine.accrue does more work than
+ * it did in the estimated block, and the fork run saw estimate x 1.2 run out of gas (real cost ~865k). The limit is the
+ * larger of estimate x multiplier and estimate + headroom, capped (unused gas is refunded, so a generous limit costs
+ * nothing but the balance check). An estimate above the cap keeps the old estimate x 1.2. */
+export interface GasLimitPolicy {
+  multiplierBps: number;
+  headroom: bigint;
+  cap: bigint;
+}
+
+export const DEFAULT_GAS_LIMIT_POLICY: GasLimitPolicy = { multiplierBps: 15_000, headroom: 500_000n, cap: 32_000_000n };
+
+export function keeperGasLimit(estimate: bigint, policy: GasLimitPolicy = DEFAULT_GAS_LIMIT_POLICY): bigint {
+  const floor = (estimate * 120n + 99n) / 100n;
+  const scaled = (estimate * BigInt(policy.multiplierBps) + 9_999n) / 10_000n;
+  const padded = estimate + policy.headroom;
+  let limit = scaled > padded ? scaled : padded;
+  if (limit > policy.cap) limit = policy.cap;
+  return limit > floor ? limit : floor;
+}
+
 export interface TransactionQueueOptions {
   dryRun: boolean;
+  gasLimit?: GasLimitPolicy;
   logger: Logger;
   onHash?: (transaction: KeeperTransaction, hash: Hex) => Promise<void>;
   receiptTimeoutMs?: number;
@@ -185,7 +208,7 @@ export function createTransactionQueue(clients: ServiceClients, options: Transac
       const serializedTransaction = await account.signTransaction({
         chainId: clients.chainId ?? robinhoodChain.id, type: "legacy", nonce,
         to: transaction.to, data: transaction.data, value: transaction.value ?? 0n,
-        gas: (estimate * 120n + 99n) / 100n, gasPrice: price,
+        gas: keeperGasLimit(estimate, options.gasLimit), gasPrice: price,
       });
       const hash = keccak256(serializedTransaction);
       let outcome: BroadcastOutcome = "accepted";

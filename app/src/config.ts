@@ -51,6 +51,11 @@ const envSchema = z.object({
   // set it when the contracts move the norm floor (F06) so the keeper relists before funding stops.
   KEEPER_RELIST_NORM_WAD: z.string().regex(/^\d+$/).default("1000000000000000"),
   // Series per engine.accrueMany transaction (a failing batch is split in half and retried). At most 45 (about half a block, decision 32).
+  // 28-merge: transaction gas limit = max(estimate x MULTIPLIER_BPS / 10,000, estimate + HEADROOM), capped at CAP (never below
+  // estimate x 1.2): an estimate taken right after a time jump can be under the real cost in the next block. Unused gas is refunded.
+  KEEPER_GAS_MULTIPLIER_BPS: z.coerce.number().int().min(12_000).max(40_000).default(15_000),
+  KEEPER_GAS_HEADROOM: z.coerce.number().int().min(0).max(5_000_000).default(500_000),
+  KEEPER_GAS_CAP: z.coerce.number().int().min(1_000_000).max(64_000_000).default(32_000_000),
   KEEPER_ACCRUE_BATCH: z.coerce.number().int().min(1).max(45).default(40),
   // R13: the 5-minute funding grid samples only non-archived series with at least this much outstanding value, at most this many per slot
   // (the most valuable first); the rest are covered by the hourly catch-up.

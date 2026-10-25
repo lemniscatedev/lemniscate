@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { parseTransaction, keccak256, type Hex, type TransactionReceipt } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { classifyBroadcastError, createTransactionQueue } from "./tx";
+import { classifyBroadcastError, createTransactionQueue, keeperGasLimit } from "./tx";
 import type { ServiceClients } from "../chain/clients";
 import { createLogger } from "../log";
 
@@ -9,7 +9,7 @@ import { createLogger } from "../log";
 const account = privateKeyToAccount(generatePrivateKey());
 const transaction = { to: account.address, data: "0x" as Hex, label: "test" };
 
-function harness(mode: "confirmed" | "missing" | "estimate-fails" = "confirmed") {
+function harness(mode: "confirmed" | "missing" | "estimate-fails" = "confirmed", estimateGas = 21000n) {
   const sent: Hex[] = [];
   const receipts = new Map<Hex, TransactionReceipt>();
   let estimates = 0;
@@ -17,7 +17,7 @@ function harness(mode: "confirmed" | "missing" | "estimate-fails" = "confirmed")
   const nonces = { latest: 7, pending: 7 };
   const client = {
     txClient: {
-      estimateGas: async () => { estimates++; if (mode === "estimate-fails") throw new Error("simulation reverted"); return 21000n; },
+      estimateGas: async () => { estimates++; if (mode === "estimate-fails") throw new Error("simulation reverted"); return estimateGas; },
       getTransactionCount: async ({ blockTag }: { blockTag: "latest" | "pending" }) => nonces[blockTag],
       getGasPrice: async () => 10n,
       getBlock: async () => ({ baseFeePerGas: 1n }),
@@ -40,12 +40,40 @@ function harness(mode: "confirmed" | "missing" | "estimate-fails" = "confirmed")
 }
 
 describe("keeper transaction queue", () => {
+  test("28-merge: an estimate taken right after a time jump still leaves enough gas for the real accrue (~865k)", async () => {
+    // Fork run 27e: engine.accrue estimated in the warped block came in under its real cost in the next block, and
+    // estimate x 1.2 ran out of gas. The limit keeps a multiplier plus an absolute headroom, under a cap.
+    const h = harness("confirmed", 640_000n);
+    const queue = createTransactionQueue(h.client, { dryRun: false, logger: createLogger("silent"), receiptTimeoutMs: 0 });
+    await queue.submit(transaction);
+    const gas = parseTransaction(h.sent[0]!).gas!;
+    expect(gas).toBeGreaterThanOrEqual(865_000n);
+    expect(gas).toBe(1_140_000n); // max(640k x 1.5, 640k + 500k)
+  });
+
+  test("28-merge: the gas limit stays under the cap unless the old estimate x 1.2 is above it", () => {
+    expect(keeperGasLimit(21_000n)).toBe(521_000n);
+    expect(keeperGasLimit(10_000_000n)).toBe(15_000_000n);
+    expect(keeperGasLimit(25_000_000n)).toBe(32_000_000n); // capped
+    expect(keeperGasLimit(31_000_000n)).toBe(37_200_000n); // never below the old estimate x 1.2
+    expect(keeperGasLimit(40_000_000n)).toBe(48_000_000n); // above the cap: the old estimate x 1.2, the node decides
+    expect(keeperGasLimit(900_000n, { multiplierBps: 15_000, headroom: 0n, cap: 1_100_000n })).toBe(1_100_000n);
+    // Property: for any estimate, the limit is at least the estimate x 1.2 and at least min(estimate + headroom, cap).
+    for (let i = 0; i < 2000; i++) {
+      const est = BigInt(Math.floor(Math.random() * 60_000_000)) + 21_000n;
+      const limit = keeperGasLimit(est);
+      expect(limit >= (est * 120n + 99n) / 100n).toBe(true);
+      expect(limit >= (est + 500_000n < 32_000_000n ? est + 500_000n : 32_000_000n)).toBe(true);
+      expect(limit <= ((est * 120n + 99n) / 100n > 32_000_000n ? (est * 120n + 99n) / 100n : 32_000_000n)).toBe(true);
+    }
+  });
+
   test("concurrent jobs consume distinct sequential nonces and estimate once each", async () => {
     const h = harness();
     const queue = createTransactionQueue(h.client, { dryRun: false, logger: createLogger("silent"), receiptTimeoutMs: 0 });
     await Promise.all([queue.submit(transaction), queue.submit(transaction)]);
     expect(h.sent.map((raw) => parseTransaction(raw).nonce)).toEqual([7, 8]);
-    expect(h.sent.map((raw) => parseTransaction(raw).gas)).toEqual([25200n, 25200n]);
+    expect(h.sent.map((raw) => parseTransaction(raw).gas)).toEqual([521000n, 521000n]);
     expect(h.estimates()).toBe(2);
   });
 
