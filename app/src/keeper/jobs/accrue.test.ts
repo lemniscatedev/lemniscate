@@ -69,6 +69,8 @@ describe("accrual", () => {
   });
 
   describe("F28 dust positions are accrued lazily", () => {
+    // These pin the dust cadence to a day (KEEPER_ACCRUE_DUST_MAX_AGE_SECONDS); the default is hourly since 28-merge (decision 57).
+    const DAILY = { KEEPER_ACCRUE_DUST_MAX_AGE_SECONDS: 86_400 };
     const marksSql = (chain: FakeChain, mark: number | undefined) => Object.assign(
       async () => (mark === undefined ? [] : chain.order.map((id) => ({ series_id: id, v_mark: String(mark) }))), { begin: async () => undefined });
 
@@ -77,21 +79,21 @@ describe("accrual", () => {
       const real = chain.addSeries({ stock: A.nvda, isCall: true, strike: 100n * WAD, tauSeconds: 86_400, supply: 50n * WAD, lastAccrual: chain.nowSeconds - 3700n });
       const dust = [1, 2, 3].map((i) => chain.addSeries({
         stock: A.nvda, isCall: true, strike: BigInt(100 + i) * WAD, tauSeconds: 86_400, supply: 1n, lastAccrual: chain.nowSeconds - 3700n }));
-      const job = createAccrueJob(chain.context({ sql: marksSql(chain, 2) }));
+      const job = createAccrueJob(chain.context({ sql: marksSql(chain, 2) }, DAILY));
       const first = await job();
       expect(first).toMatchObject({ due: 1, accrued: 1, deferredDust: 3 });
       expect(chain.sent.flatMap((tx) => tx.args[0] as string[])).toEqual([real.id]);
       for (const d of dust) expect(chain.series.get(d.id)!.lastAccrual).toBe(chain.nowSeconds - 3700n);
       // A day later the dust is accrued too (bookValue lags by at most the dust threshold per series).
       chain.nowSeconds += 86_400n;
-      const day = await createAccrueJob(chain.context({ sql: marksSql(chain, 2) }))();
+      const day = await createAccrueJob(chain.context({ sql: marksSql(chain, 2) }, DAILY))();
       expect(day.accrued).toBe(4);
     });
 
     test("a session-boundary force does not drag dust into the hourly loop either", async () => {
       const chain = new FakeChain();
       chain.addSeries({ stock: A.nvda, isCall: true, strike: 100n * WAD, tauSeconds: 86_400, supply: 1n, lastAccrual: chain.nowSeconds - 120n });
-      const result = await createAccrueJob(chain.context({ sql: marksSql(chain, 2) }))(true);
+      const result = await createAccrueJob(chain.context({ sql: marksSql(chain, 2) }, DAILY))(true);
       expect(result).toMatchObject({ idle: true });
       expect(chain.sent).toEqual([]);
     });
@@ -108,7 +110,7 @@ describe("accrual", () => {
       let accrued = 0;
       for (let hour = 0; hour < 24; hour++) {
         chain.nowSeconds += 3600n;
-        accrued += Number((await createAccrueJob(chain.context({ sql: marksSql(chain, 2) }))()).accrued ?? 0);
+        accrued += Number((await createAccrueJob(chain.context({ sql: marksSql(chain, 2) }, DAILY))()).accrued ?? 0);
       }
       expect(accrued).toBe(100);
     });
@@ -265,30 +267,64 @@ describe("F11/F34 fixed 5-minute accrual grid (decision 35)", () => {
     });
   });
 
-  describe("R15 retired series are not re-sent to accrueMany for ever", () => {
+  describe("R15 + R07 (28-merge): retired series go to accrueMany in an hourly dust pass, never re-sent in vain", () => {
     const manyIds = (chain: FakeChain) => chain.sent.filter((tx) => tx.name === "accrueMany").flatMap((tx) => tx.args[0] as string[]);
     const singles = (chain: FakeChain) => chain.sent.filter((tx) => tx.name === "accrue").map((tx) => tx.args[0] as string);
 
-    test("PoC: retired dust series (supply left, off the live list) are never in an accrueMany batch, and get one single accrual a day", async () => {
+    test("PoC: retired dust series (supply left, off the live list) are accrued through accrueMany once an hour, never singly, never every run", async () => {
       const chain = new FakeChain();
       chain.nowSeconds = 1_800_000_000n - (1_800_000_000n % 300n) + 10n;
       chain.prices.set(A.nvda, { s: 214n * WAD, session: 0, fresh: true, buysPaused: false, updatedAt: chain.nowSeconds - 30n });
       const retired = [1, 2, 3].map((i) => chain.addSeries({ stock: A.nvda, isCall: true, strike: BigInt(300 + i) * WAD, tauSeconds: 86_400, supply: 1n,
-        live: false, lastAccrual: chain.nowSeconds - 3n * 86_400n }).id);
+        live: false, riskValue: WAD / 100n, lastAccrual: chain.nowSeconds - 3n * 86_400n }).id);
       const real = chain.addSeries({ stock: A.nvda, isCall: true, strike: 214n * WAD, tauSeconds: 86_400, supply: 50n * WAD, riskValue: 400n * WAD,
         lastAccrual: chain.nowSeconds }).id;
       const job = createAccrueJob(chain.context());
       let reportedAccrued = 0;
-      for (let step = 0; step < 288; step++) { const r = await job(); reportedAccrued += Number(r.accrued); chain.nowSeconds += 300n; }
-      for (const id of retired) {
-        expect(manyIds(chain).filter((x) => x === id).length).toBe(0); // the old job sent each of them about 288 times
-        expect(singles(chain).filter((x) => x === id).length).toBe(1); // one single accrual, then not again within the day
+      let maxAge = 0n;
+      for (let step = 0; step < 288; step++) {
+        const r = await job(); reportedAccrued += Number(r.accrued ?? 0);
+        for (const id of retired) { const age = chain.nowSeconds - chain.series.get(id as `0x${string}`)!.lastAccrual; if (age > maxAge) maxAge = age; }
+        chain.nowSeconds += 300n;
       }
+      for (const id of retired) {
+        const n = manyIds(chain).filter((x) => x === id).length;
+        expect(n).toBeGreaterThanOrEqual(22); // the R07 contract fix accrues them there: an hourly dust pass (decision 57)
+        expect(n).toBeLessThanOrEqual(25); // the old R15 job sent each of them about 288 times
+        expect(singles(chain).filter((x) => x === id).length).toBe(0);
+      }
+      expect(maxAge).toBeLessThanOrEqual(3600n + 300n); // every retired series is re-marked within the dust cadence + one run
       expect(manyIds(chain).filter((x) => x === real).length).toBeGreaterThanOrEqual(285);
-      expect(reportedAccrued).toBe(manyIds(chain).length); // `accrued` counts the live ones that were really accrued
+      expect(reportedAccrued).toBe(manyIds(chain).length);
     });
 
-    test("PROPERTY: with no price change, a second run sends nothing for series whose state a transaction cannot change; over a day each retired series costs at most two single accruals", async () => {
+    test("the dust pass sends every dust-tier series together, so the dust tier's NAV-mark pass completes in one run", async () => {
+      const chain = new FakeChain();
+      chain.prices.set(A.nvda, { s: 214n * WAD, session: 3, fresh: true, buysPaused: false, updatedAt: chain.nowSeconds - 30n });
+      const old = chain.addSeries({ stock: A.nvda, isCall: true, strike: 301n * WAD, tauSeconds: 86_400, supply: 1n, live: false, riskValue: WAD / 100n,
+        lastAccrual: chain.nowSeconds - 3700n }).id;
+      const recent = chain.addSeries({ stock: A.nvda, isCall: true, strike: 302n * WAD, tauSeconds: 86_400, supply: 1n, live: false, riskValue: WAD / 100n,
+        lastAccrual: chain.nowSeconds - 900n }).id; // retired a quarter of an hour ago
+      const r = await createAccrueJob(chain.context())();
+      expect(manyIds(chain).sort()).toEqual([old, recent].sort());
+      expect(r.dustPass).toBe(2);
+    });
+
+    test("a retired series worth the minimum again is re-listed by the dust pass and joins the 5-minute grid", async () => {
+      const chain = new FakeChain();
+      chain.nowSeconds = 1_800_000_000n - (1_800_000_000n % 300n) + 10n;
+      chain.prices.set(A.nvda, { s: 214n * WAD, session: 0, fresh: true, buysPaused: false, updatedAt: chain.nowSeconds - 30n });
+      const back = chain.addSeries({ stock: A.nvda, isCall: true, strike: 210n * WAD, tauSeconds: 86_400, supply: 50n * WAD, live: false,
+        riskValue: 400n * WAD, lastAccrual: chain.nowSeconds - 3700n }).id; // back in the money since its retirement
+      const job = createAccrueJob(chain.context());
+      await job();
+      expect(chain.series.get(back as `0x${string}`)!.live).toBe(true);
+      chain.nowSeconds += 300n;
+      await job();
+      expect(manyIds(chain).filter((x) => x === back).length).toBe(2); // dust pass, then the grid
+    });
+
+    test("PROPERTY: with no price change a second run sends nothing; over a day every held series is accrued within its cadence and a retired one at most 25 times", async () => {
       let seed = 2718;
       const rnd = (n: number) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
       for (let trial = 0; trial < 20; trial++) {
@@ -296,23 +332,28 @@ describe("F11/F34 fixed 5-minute accrual grid (decision 35)", () => {
         chain.nowSeconds = 1_800_000_000n - (1_800_000_000n % 300n) + 10n;
         chain.prices.set(A.nvda, { s: 214n * WAD, session: 3, fresh: true, buysPaused: false, updatedAt: chain.nowSeconds - 30n }); // CLOSED-like: no grid
         const retired: string[] = [];
+        const held: string[] = [];
         for (let i = 0; i < 1 + rnd(40); i++) {
           const kind = rnd(3);
           const series = chain.addSeries({ stock: A.nvda, isCall: i % 2 === 0, strike: BigInt(100 + i) * WAD, tauSeconds: 86_400,
             supply: kind === 2 ? 0n : BigInt(1 + rnd(5)) * WAD, live: kind === 0, riskValue: kind === 0 ? BigInt(10 + rnd(500)) * WAD : WAD / 100n,
             lastAccrual: chain.nowSeconds - BigInt(rnd(5) * 86_400 + 3_700) });
           if (kind === 1) retired.push(series.id);
+          if (kind !== 2) held.push(series.id);
         }
         const job = createAccrueJob(chain.context());
         await job();
         const sent = chain.sent.length;
         await job(); // same instant, nothing changed
         expect(chain.sent.length).toBe(sent);
-        for (let step = 0; step < 288; step++) { chain.nowSeconds += 300n; await job(); }
-        for (const id of retired) {
-          expect(manyIds(chain)).not.toContain(id);
-          expect(singles(chain).filter((x) => x === id).length).toBeLessThanOrEqual(2);
+        let worst = 0n;
+        for (let step = 0; step < 288; step++) {
+          chain.nowSeconds += 300n; await job();
+          for (const id of held) { const age = chain.nowSeconds - chain.series.get(id as `0x${string}`)!.lastAccrual; if (age > worst) worst = age; }
         }
+        expect(worst).toBeLessThanOrEqual(3600n + 300n);
+        expect(singles(chain).length).toBe(0);
+        for (const id of retired) expect(manyIds(chain).filter((x) => x === id).length).toBeLessThanOrEqual(25);
       }
     });
   });

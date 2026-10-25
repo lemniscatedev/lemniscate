@@ -12,9 +12,10 @@ const BOUNDARY_MIN_ELAPSED_SECONDS = 30n;
 export const ACCRUE_BATCH_MAX = 45;
 const accrueBatch = (configured: number): number => Math.max(1, Math.min(ACCRUE_BATCH_MAX, Math.floor(configured) || ACCRUE_BATCH_MAX));
 
-/** R15: a series the engine retired as dust (supply left, off the live list) is accrued one by one, not through accrueMany, which
- * skips it without touching lastAccrual and would be sent the same id on every run for ever. */
-const RETIRED_LABEL = "accrue:retired";
+/** R15 + R07 (decision 57): the engine's accrueMany accrues retired dust series (supply left, off the live list) and re-lists
+ * one worth the minimum again, so they go to accrueMany in the dust pass. When the pass is due, every dust-tier series not
+ * accrued in the last grid slot is sent with it, so the dust tier's NAV-mark pass completes in one keeper run. */
+const DUST_PASS_MIN_AGE_SECONDS = 300n;
 
 /** A series retireDust kept (its refreshed value was real) is not sent to retireDust again for this long. */
 const RETIRE_RETRY_SECONDS = 3600n;
@@ -137,8 +138,6 @@ async function liveSessionStocks(context: KeeperContext, stocks: readonly Addres
 export function createAccrueJob(context: KeeperContext) {
   const reader = createSeriesReader(context);
   const retireTried = new Map<Hex, bigint>();
-  /** R15: when each retired series was last sent to engine.accrue. */
-  const retiredTried = new Map<Hex, bigint>();
   let lastGridSlot: bigint | undefined;
   return async (force = false): Promise<Record<string, unknown>> => {
     const metadata = await context.metadata();
@@ -188,28 +187,10 @@ export function createAccrueJob(context: KeeperContext) {
     const liveIds = risk ? new Set<Hex>(risk.live.map((entry) => entry.id)) : undefined;
     const hourly = await hourlyDue(context, all, nowSeconds, threshold, retire.dust, liveIds);
     const ids = [...new Set<Hex>([...grid, ...hourly.due])];
-    // R15: retired series (supply left, off the live list) are accrued singly at the daily dust cadence.
-    const dustAfterSeconds = BigInt(context.config.KEEPER_ACCRUE_DUST_MAX_AGE_SECONDS ?? 86_400);
-    for (const [id, at] of retiredTried) if (nowSeconds - at >= dustAfterSeconds) retiredTried.delete(id);
-    const retiredDue = hourly.retired.filter((series) => nowSeconds - series.lastAccrual >= dustAfterSeconds && !retiredTried.has(series.id));
-    let retiredSent = 0;
-    for (const series of retiredDue) {
-      retiredTried.set(series.id, nowSeconds);
-      try {
-        await context.tx.submit({
-          label: RETIRED_LABEL, to: context.deployment.contracts.engine as Address,
-          data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "accrue", args: [series.id] }),
-        });
-        retiredSent++;
-      } catch (error) {
-        const summary = safeErrorSummary(error);
-        if (HELD_QUEUE.test(summary.message)) throw error;
-        context.logger.warn({ id: series.id, err: summary }, "Accrual of a retired series failed; it is retried after a day");
-      }
-    }
-    const base = { series: all.length, pokes, retireSent, retiredSent, deferredDust: hourly.deferredDust, gridSampled: grid.length, gridSkipped, retryAfterMs };
+    const base = { series: all.length, pokes, retireSent, retired: hourly.retired, dustPass: hourly.dustPass, deferredDust: hourly.deferredDust,
+      gridSampled: grid.length, gridSkipped, retryAfterMs };
     if (risk && slot !== lastGridSlot && !ids.length) lastGridSlot = slot;
-    if (!ids.length) return { ...base, due: 0, accrued: 0, idle: retiredSent === 0 };
+    if (!ids.length) return { ...base, due: 0, accrued: 0, idle: true };
 
     const result = await accrueInBatches(context, ids, context.config.KEEPER_ACCRUE_BATCH);
     if (risk) lastGridSlot = slot;
@@ -226,40 +207,47 @@ export function createAccrueJob(context: KeeperContext) {
   };
 }
 
-/** The hourly part: held series whose last accrual is at least `threshold` old, with F28 dust deferred to daily. */
+/** The hourly part: held series whose last accrual is at least `threshold` old, plus the dust pass. Dust-tier series (retired
+ * by the engine, dust on its live list, or F28 dust by indexed value) are accrued together once the oldest of them is
+ * KEEPER_ACCRUE_DUST_MAX_AGE_SECONDS old (hourly by default, decision 57): the engine's accrueMany accrues retired series and
+ * re-lists those worth the minimum again (R07), and a dust pass that re-marks the whole tier resets its NAV-mark envelope. */
 async function hourlyDue(
   context: KeeperContext, all: readonly ChainSeries[], nowSeconds: bigint, threshold: bigint, engineDust: ReadonlySet<Hex>,
   liveIds?: ReadonlySet<Hex>,
-): Promise<{ due: Hex[]; deferredDust: number; retired: ChainSeries[] }> {
-  // Dust on the engine's live list is skipped by accrueMany anyway: never pay to send it.
-  const aged = all.filter((series) => nowSeconds - series.lastAccrual >= threshold && !engineDust.has(series.id));
-  if (!aged.length) return { due: [], deferredDust: 0, retired: [] };
+): Promise<{ due: Hex[]; deferredDust: number; retired: number; dustPass: number }> {
+  const minAge = threshold < DUST_PASS_MIN_AGE_SECONDS ? threshold : DUST_PASS_MIN_AGE_SECONDS;
+  const aged = all.filter((series) => nowSeconds - series.lastAccrual >= minAge);
+  if (!aged.length) return { due: [], deferredDust: 0, retired: 0, dustPass: 0 };
   // Only series somebody holds can change: a zero-supply series has nothing to shrink.
   const supplies = await chunkedMulticall(context, aged.map((series: ChainSeries) => ({
     address: series.token, abi: OptionTokenAbi, functionName: "totalSupply",
   }))) as bigint[];
-  const heldAll = aged.filter((_, index) => BigInt(supplies[index]!) > 0n);
-  // R15: held but off the engine's live list = retired. accrueMany skips it without moving lastAccrual, so it would be due on
-  // every run for ever; it goes to the daily single accrual instead.
-  const retired = liveIds ? heldAll.filter((series) => !liveIds.has(series.id)) : [];
-  const held = liveIds ? heldAll.filter((series) => liveIds.has(series.id)) : heldAll;
-  if (!held.length) return { due: [], deferredDust: 0, retired };
-
-  // F28: dust (outstanding value under KEEPER_ACCRUE_DUST_USDG) is accrued lazily, not hourly. Trades accrue first anyway,
-  // so the only cost of waiting is a book value that lags by at most the dust threshold per series. Unknown value = not dust.
   const supplyOf = new Map(aged.map((series, index) => [series.id, BigInt(supplies[index]!)]));
-  const marks = await latestMarks(context, held.map((series) => series.id));
-  const dustAfter = BigInt(context.config.KEEPER_ACCRUE_DUST_MAX_AGE_SECONDS ?? 86_400);
+  const held = aged.filter((series) => supplyOf.get(series.id)! > 0n);
+  if (!held.length) return { due: [], deferredDust: 0, retired: 0, dustPass: 0 };
+
+  // Held but off the engine's live list = retired (R07): dust tier. Dust on the live list (retireDust is retiring it) too.
+  const retired = liveIds ? held.filter((series) => !liveIds.has(series.id)) : [];
+  const retiredIds = new Set(retired.map((series) => series.id));
+  // F28: dust by indexed value (outstanding value under KEEPER_ACCRUE_DUST_USDG). Unknown value = not dust.
+  const marks = await latestMarks(context, held.filter((series) => !retiredIds.has(series.id) && !engineDust.has(series.id)).map((series) => series.id));
   const dustLimit = Number(context.config.KEEPER_ACCRUE_DUST_USDG ?? 1);
-  let deferredDust = 0;
-  const due = held.filter((series) => {
+  const isIndexedDust = (series: ChainSeries): boolean => {
     const mark = marks.get(series.id);
-    if (mark === undefined || !(dustLimit > 0)) return true;
-    const value = (Number(supplyOf.get(series.id)!) / 1e18) * (Number(series.norm) / 1e18) * mark;
-    if (value >= dustLimit) return true;
-    if (nowSeconds - series.lastAccrual >= dustAfter) return true;
-    deferredDust++;
-    return false;
-  });
-  return { due: due.map((series) => series.id), deferredDust, retired };
+    if (mark === undefined || !(dustLimit > 0)) return false;
+    return (Number(supplyOf.get(series.id)!) / 1e18) * (Number(series.norm) / 1e18) * mark < dustLimit;
+  };
+  const dustTier = held.filter((series) => retiredIds.has(series.id) || engineDust.has(series.id) || isIndexedDust(series));
+  const dustIds = new Set(dustTier.map((series) => series.id));
+  const regular = held.filter((series) => !dustIds.has(series.id) && nowSeconds - series.lastAccrual >= threshold);
+
+  const dustAfter = BigInt(context.config.KEEPER_ACCRUE_DUST_MAX_AGE_SECONDS ?? 3_600);
+  const passDue = dustTier.some((series) => nowSeconds - series.lastAccrual >= dustAfter);
+  const pass = passDue ? dustTier : [];
+  return {
+    due: [...regular, ...pass].map((series) => series.id),
+    deferredDust: passDue ? 0 : dustTier.length,
+    retired: retired.length,
+    dustPass: pass.length,
+  };
 }

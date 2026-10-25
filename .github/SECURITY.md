@@ -490,11 +490,16 @@ Each has a regression test that fails without it and a property or fuzz test of 
   pass, 2 once one of them has failed; and a stock whose feed is HALTED and unsettled is left out of the pass (read from the chain, not
   guessed from an error), so its tickets take no slots.
 
-- **Retired series are not re-sent for ever (R15).** `accrueMany` skips a series off the engine's live list without moving its
-  `lastAccrual`, and the hourly list was built from the whole registry, so every retired dust series was sent again on every 5-minute
-  run (about 288 no-op transactions a day per 45 series). Held series that are off the live list now go to a single `engine.accrue`
-  once per dust cadence (a day), and the job counts as accrued only what it sent to `accrueMany`. A property test over random books
-  checks that a second run with nothing changed sends nothing and that a retired series costs at most two single accruals a day.
+- **Retired series are accrued in an hourly dust pass, never re-sent in vain (R15, reconciled with the contracts' R07 fix).**
+  `accrueMany` used to skip a series off the engine's live list without moving its `lastAccrual`, and the hourly list was built from
+  the whole registry, so every retired dust series was sent again on every 5-minute run (about 288 no-op transactions a day per 45
+  series). The engine now accrues retired series in `accrueMany` and re-lists one worth the minimum again, so the keeper sends every
+  dust-tier series (retired, dust on the live list, or under `KEEPER_ACCRUE_DUST_USDG` by indexed value) together in one dust pass
+  once the oldest is `KEEPER_ACCRUE_DUST_MAX_AGE_SECONDS` old (default one hour; at most a week). The pass re-marks the whole dust
+  tier (its NAV envelope resets) and bounds how long a series that regained value waits for the 5-minute grid. Its cost is
+  ceil(N / batch) transactions an hour for N dust series, about 7 million gas a day per series at the hourly default; raise the age
+  to trade gas for a looser dust-tier claim bound. Property test: a second run with nothing changed sends nothing, and over a day
+  every held series is accrued within the cadence and a retired one at most 25 times.
 
 ## Contract protections added by the round-2 review (2026-10-25, lane A)
 

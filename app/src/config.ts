@@ -39,10 +39,12 @@ const envSchema = z.object({
   KEEPER_DRY_RUN: z.enum(["0", "1"]).default("0").transform((value) => value === "1"),
   // Accrue a series once its last accrual is this old and somebody holds it. Spec: at least hourly, so 3600 is the cap.
   KEEPER_ACCRUE_MAX_AGE_SECONDS: z.coerce.number().int().min(300).max(3600).default(3600),
-  // F28: a series whose outstanding value (supply x norm x v_mark) is below this many USDG is "dust": it is accrued at most once per
-  // KEEPER_ACCRUE_DUST_MAX_AGE_SECONDS instead of hourly, so a 1-wei position cannot bill the keeper an hourly accrual forever.
+  // F28: a series whose outstanding value (supply x norm x v_mark) is below this many USDG is "dust", like a series the engine retired
+  // (R07). Dust is accrued in one dust pass (every dust series together, through accrueMany) once the oldest is
+  // KEEPER_ACCRUE_DUST_MAX_AGE_SECONDS old: hourly by default (decision 57: the pass bounds the dust tier's NAV envelope and how long a
+  // retired series that regained value waits to be re-listed); up to a week to save gas (ceil(N / batch) transactions per pass).
   KEEPER_ACCRUE_DUST_USDG: z.coerce.number().min(0).default(1),
-  KEEPER_ACCRUE_DUST_MAX_AGE_SECONDS: z.coerce.number().int().min(3600).max(7 * 86_400).default(86_400),
+  KEEPER_ACCRUE_DUST_MAX_AGE_SECONDS: z.coerce.number().int().min(3600).max(7 * 86_400).default(3_600),
   // F29/F36: queued sells worth less than this (USDG) are filled last, at most one per pass; an open ticket older than the alert age
   // (minutes) is logged as a warning every pass.
   KEEPER_QUEUED_DUST_USDG: z.coerce.number().min(0).default(0.01),

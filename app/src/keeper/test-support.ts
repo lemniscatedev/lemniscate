@@ -174,8 +174,14 @@ export class FakeChain {
         } else if (name === "setBuyable") this.series.get(args[0] as Hex)!.buyable = args[1] as boolean;
         else if (name === "archive") { const s = this.series.get(args[0] as Hex)!; s.archived = true; s.buyable = false; }
         else if (name === "accrueMany") {
-          // EngineOpsLib.accrueMany skips a series that is not on the live list: lastAccrual does not move for it.
-          for (const id of args[0] as Hex[]) { const s = this.series.get(id)!; if (this.isLive(s)) s.lastAccrual = this.nowSeconds; }
+          // EngineOpsLib.accrueMany (review R07): accrues every series with tokens outstanding, retired dust included, and
+          // re-lists a retired one that is worth the minimum trade again. A series with no supply is skipped.
+          for (const id of args[0] as Hex[]) {
+            const s = this.series.get(id)!;
+            if (s.supply === 0n && !this.isLive(s)) continue;
+            s.lastAccrual = this.nowSeconds;
+            if (!this.isLive(s) && (s.riskValue ?? 10n * WAD) >= this.guards.minTradeUsdg * 10n ** 12n) s.live = true;
+          }
         }
         else if (name === "accrue") this.series.get(args[0] as Hex)!.lastAccrual = this.nowSeconds;
         else if (name === "settleHalted") {
