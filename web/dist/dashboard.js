@@ -155,8 +155,11 @@ function modeBanner(){
  return '';
 }
 // Local fork profile (config.fork.js): a visible badge, and a louder one while the dev wallet is connected.
+// Testnet profile (config.testnet.js, chain 46630): a badge so test tokens are never mistaken for real money.
 function forkBadge(){
- if(DEMO||Number(CFG.chainId)!==31337)return '';
+ if(DEMO)return '';
+ if(Number(CFG.chainId)===46630)return `<span class="dash-fork-label testnet" title="Robinhood Chain testnet (chain 46630). Test tokens only, not real money.">Testnet · chain 46630</span>`;
+ if(Number(CFG.chainId)!==31337)return '';
  const dev=W.wallet().kind==='dev';
  return `<span class="dash-fork-label${dev?' dev':''}" title="Local anvil fork of Robinhood Chain (chain 31337). Not a real network.">${dev?'Dev wallet · local fork':'Local fork · chain 31337'}</span>`;
 }

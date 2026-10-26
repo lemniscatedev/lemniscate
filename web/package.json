@@ -6,15 +6,17 @@
   "scripts": {
     "dev": "node serve.mjs",
     "start": "node serve.mjs",
-    "check": "node --check dist/lemniscate.js && node --check dist/dashboard.js && node --check dist/config.js && node --check dist/token-bar.js && node --check dist/config.fork.js && for f in dist/chain/*.js; do node --check $f || exit 1; done && node --check dist/assets/asset-loader.js && node --check serve.mjs && node scripts/verify-site.mjs && npm run lint:copy",
+    "check": "node --check dist/lemniscate.js && node --check dist/dashboard.js && node --check dist/config.js && node --check dist/token-bar.js && node --check dist/config.fork.js && node --check dist/config.testnet.js && for f in dist/chain/*.js; do node --check $f || exit 1; done && node --check dist/assets/asset-loader.js && node --check serve.mjs && node scripts/verify-site.mjs && npm run lint:copy",
     "build": "node build-runtime.mjs && node scripts/stamp-html.mjs && npm run check",
     "stamp": "node scripts/stamp-html.mjs",
     "lint:copy": "node scripts/lint-copy.mjs",
     "mock-api": "node scripts/mock-api.mjs",
     "test:browser": "node scripts/browser-check.mjs",
     "fork": "LM_PROFILE=fork node serve.mjs",
+    "testnet": "LM_PROFILE=testnet node serve.mjs",
     "test:fork": "node scripts/fork-check.mjs",
-    "test": "node --test scripts/lane-proof.test.mjs"
+    "test:testnet": "node scripts/testnet-check.mjs",
+    "test": "node --test scripts/lane-proof.test.mjs scripts/profiles.test.mjs"
   },
   "engines": {
     "node": ">=18"
