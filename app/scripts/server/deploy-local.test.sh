@@ -28,14 +28,16 @@ run() { # name want_zero pattern envspec args...
     printf 'FAIL %s (rc=%s, wanted %s, pattern "%s")\n%s\n' "$name" "$rc" "$want" "$pat" "$out"; fail=$((fail + 1))
   else printf 'ok   %s\n' "$name"; fi
 }
-run "refuses with neither flag nor env"        nz "LEMNISCATE_ALLOW_REAL_DEPLOY=1 is not set" "" --local --check
-run "refuses with env but no arming file var"  nz "arming file" "LEMNISCATE_ALLOW_REAL_DEPLOY=1" --local --check
-run "refuses with env but file missing"        nz "arming file" "LEMNISCATE_ALLOW_REAL_DEPLOY=1 LEMNISCATE_ALLOW_FILE=$T/nope" --local --check
-run "refuses with file but no env"             nz "LEMNISCATE_ALLOW_REAL_DEPLOY=1 is not set" "LEMNISCATE_ALLOW_FILE=$T/armed" --local --check
-run "refuses env=0"                            nz "LEMNISCATE_ALLOW_REAL_DEPLOY=1 is not set" "LEMNISCATE_ALLOW_REAL_DEPLOY=0 LEMNISCATE_ALLOW_FILE=$T/armed" --local --check
+D=(--local --repo "$T" --ref "$SHA")
+run "refuses with neither flag nor env"        nz "LEMNISCATE_ALLOW_REAL_DEPLOY=1 is not set" "" "${D[@]}"
+run "refuses with env but no arming file var"  nz "arming file" "LEMNISCATE_ALLOW_REAL_DEPLOY=1" "${D[@]}"
+run "refuses with env but file missing"        nz "arming file" "LEMNISCATE_ALLOW_REAL_DEPLOY=1 LEMNISCATE_ALLOW_FILE=$T/nope" "${D[@]}"
+run "refuses with file but no env"             nz "LEMNISCATE_ALLOW_REAL_DEPLOY=1 is not set" "LEMNISCATE_ALLOW_FILE=$T/armed" "${D[@]}"
+run "refuses env=0"                            nz "LEMNISCATE_ALLOW_REAL_DEPLOY=1 is not set" "LEMNISCATE_ALLOW_REAL_DEPLOY=0 LEMNISCATE_ALLOW_FILE=$T/armed" "${D[@]}"
 run "refuses a deploy with neither"            nz "real-deploy guard" "" --local --repo "$T" --ref "$SHA"
 ARM="LEMNISCATE_ALLOW_REAL_DEPLOY=1 LEMNISCATE_ALLOW_FILE=$T/armed"
 run "armed: refuses a host"                    nz "takes no host" "$ARM" --local somehost --check
+run "--check refuses a host too"               nz "takes no host" "" --local somehost --check
 run "armed: refuses --provision"               nz "cannot --provision" "$ARM" --local --provision
 run "armed: deploy needs --repo"               nz "needs --repo" "$ARM" --local --ref "$SHA"
 run "armed: refuses a branch name as ref"      nz "40-hex" "$ARM" --local --repo "$T" --ref main
@@ -93,6 +95,39 @@ if [[ "$(id -u)" != 0 && ! -e /opt/lemniscate ]]; then
   check "SWITCHED=1 is set right before the link moves"                grep -B1 -A0 'point "releases/\$rel"$' "$DEPLOY" -q
   check "  (the line before point is SWITCHED=1)"                      [ "$(grep -B1 '^  point "releases/\$rel"$' "$DEPLOY" | head -1 | tr -d ' ')" == SWITCHED=1 ]
 fi
+
+# ---- review MUST-FIX 2: --local --check is read-only (no arming file) and works from the pinned copy, which is not a checkout
+mkdir -p "$T/pinned" "$T/fakeroot/opt/lemniscate/releases"
+cp "$DEPLOY" "$T/pinned/deploy.sh"
+printf '#!/bin/bash\n# test stand-in for the server script: <base> <mode> [rel sha]\necho "server $2 base=$1"; [[ "$2" == check ]] && exit 0; exit 1\n' >"$T/fakeserver"; chmod +x "$T/fakeserver"
+out="$(cd /; env -i PATH="$PATH" HOME="$HOME" DEPLOY_SH_TEST_ROOT="$T/fakeroot" DEPLOY_SH_TEST_SERVER="$T/fakeserver" bash "$T/pinned/deploy.sh" --local --check 2>&1)"; rc=$?
+check "--local --check from a copy outside any checkout, no arming env: exit 0" [ "$rc" == 0 ]
+check "  ... it reached the server check" grep -q "server check" <<<"$out"
+if [[ "$(id -u)" != 0 ]]; then
+  run "--check without arming goes to the server script (not refused by the guard)" 1 "connect as root" "" --local --check
+fi
+out="$(DEPLOY_SH_TEST_ROOT="$T/fakeroot" DEPLOY_SH_TEST_SERVER="$T/nope" bash "$DEPLOY" --local --check 2>&1)"; rc=$?
+check "the test seam needs an executable stand-in" [ "$rc" != 0 ]
+
+# ---- review MUST-FIX 6: only .healthy releases are rolled back to or kept; failed / half-built ones are removed
+B="$T/rel"; mkdir -p "$B/releases"
+for r in 20261101T000000Z-aaaa 20261102T000000Z-bbbb 20261103T000000Z-cccc 20261104T000000Z-dddd 20261105T000000Z-eeee \
+         20261106T000000Z-ffff 20261107T000000Z-gggg 20261108T000000Z-hhhh; do mkdir "$B/releases/$r"; done
+for r in aaaa bbbb cccc dddd eeee hhhh; do for d in "$B"/releases/*-"$r"; do touch "$d/.healthy"; done; done   # ffff failed, gggg half-built
+ln -s releases/20261108T000000Z-hhhh "$B/current"
+touch "$B/releases/20261106T000000Z-ffff" "$B/releases/20261107T000000Z-gggg"   # newest by mtime: the old wrapper picked these
+fns() { DEPLOY_SH_SOURCE_ONLY=1 bash -c '. "$1"; shift; "$@"' _ "$DEPLOY" "$@"; }
+check "previous_healthy_release skips failed and half-built dirs" [ "$(fns previous_healthy_release "$B")" == 20261105T000000Z-eeee ]
+mkdir "$B/releases/20261109T000000Z-iiii"
+check "abandon_release removes a staged dir that never went live" bash -c 'DEPLOY_SH_SOURCE_ONLY=1; . "$1"; abandon_release "$2" 20261109T000000Z-iiii; [ ! -e "$2/releases/20261109T000000Z-iiii" ]' _ "$DEPLOY" "$B"
+check "abandon_release never removes the current release" bash -c 'DEPLOY_SH_SOURCE_ONLY=1; . "$1"; abandon_release "$2" 20261108T000000Z-hhhh; [ -d "$2/releases/20261108T000000Z-hhhh" ]' _ "$DEPLOY" "$B"
+fns prune_releases "$B" 5 20261105T000000Z-eeee
+check "prune: failed and half-built gone, 5 healthy kept (current + previous + 3 newest others)" \
+  [ "$(ls -1 "$B/releases" | tr '\n' ' ')" == "20261102T000000Z-bbbb 20261103T000000Z-cccc 20261104T000000Z-dddd 20261105T000000Z-eeee 20261108T000000Z-hhhh " ]
+check "the server script marks a healthy release and prunes with the shared functions" bash -c 'grep -q "touch \"\$R/.healthy\"" "$1" && grep -q "prune_releases \"\$BASE\" 5" "$1" && grep -q "abandon_release /opt/lemniscate \"\$rel\"" "$1"' _ "$DEPLOY"
+check "the server script is sent with the shared functions ahead of it" bash -c 'DEPLOY_SH_SOURCE_ONLY=1; . "$1"; out="$(remote_script)"; grep -q "^previous_healthy_release()" <<<"$out"' _ "$DEPLOY"
+check "a migration lock timeout (exit 75 from migrate.ts) puts the link back and exits 75" bash -c 'grep -q "ExecMainStatus --value lemniscate-migrate.service" "$1"' _ "$DEPLOY"
+
 n=$((n + 1))
 if [[ -e "$T/ssh-called" ]]; then printf 'FAIL ssh was called:\n%s\n' "$(cat "$T/ssh-called")"; fail=$((fail + 1)); else echo "ok   ssh never called"; fi
 if ((fail)); then printf '%s of %s failed\n' "$fail" "$n"; exit 1; fi

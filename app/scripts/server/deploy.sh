@@ -39,9 +39,14 @@
 # lem-* service users). Network steps (eth_chainId, bun install, pip) are retried with backoff (DEPLOY_RETRY_WAITS,
 # seconds, default "10 30": three tries).
 #
+# A release dir is named <UTC time>-<sha12>, so name order is age order. A deploy that passed every check writes
+# <release>/.healthy; a deploy that stopped before the switch removes its staged dir. Rollback (by hand or
+# lemniscate-release-rollback) and the prune pick only .healthy releases, by name (previous_healthy_release, prune_releases).
+# --local --check is read-only and needs no arming file.
+#
 # Exit codes: 0 deployed and healthy (or --check healthy); 75 nothing was switched (a failure before the link moved:
-# commit or 4663.json missing, upload, preflight, bun install, key preflight, virtualenv; the running release is
-# untouched, safe to try again later); 1 a failure after the switch (migrations, an unhealthy service: the link went
+# commit or 4663.json missing, upload, preflight, bun install, key preflight, virtualenv, or migrations that kept
+# hitting a lock timeout; the running release is untouched, safe to try again later); 1 a failure after the switch (migrations, an unhealthy service: the link went
 # back to the previous release), an unhealthy --check, or a refused command line; 2 usage.
 #
 # Env (all optional):
@@ -50,6 +55,8 @@
 #   LEMNISCATE_PUBLIC_API_URL   e.g. https://api.<your-domain>: also checked from this machine after the deploy
 #   LEMNISCATE_ALLOW_REAL_DEPLOY, LEMNISCATE_ALLOW_FILE   the --local arming guard (see above)
 #   DEPLOY_RETRY_WAITS        waits between tries of a network step (default "10 30")
+#   DEPLOY_SH_TEST_ROOT, DEPLOY_SH_TEST_SERVER   tests only, refused as root: a fake root for /opt/lemniscate and a stand-in
+#                             for the server script (the release runner's sandbox runs the real argument handling this way)
 #   API_DOMAIN, MCP_DOMAIN, ACME_EMAIL, DB_NAME, SWAP_SIZE, TIMESCALE_CODENAME: passed to provision.sh by --provision
 set -euo pipefail
 umask 022
@@ -57,7 +64,7 @@ umask 022
 # Nothing was switched: the caller (the release runner) may try again later; it never rolls back on this code.
 EX_NOT_SWITCHED=75
 
-usage() { sed -n '2,53p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { printf 'deploy: %s\n' "$*" >&2; exit 1; }
 # a failure before anything on the server was switched
 die_unswitched() { printf 'deploy: %s (nothing switched)\n' "$*" >&2; exit "$EX_NOT_SWITCHED"; }
@@ -89,10 +96,48 @@ stage_release() {
   chmod -R go-w,a+rX "$dir"
 }
 
+# ---------------------------------------------------------------- release dirs (shared by this script, the server script,
+# the release runner's rollback wrapper and the tests: defined once, eval'ed here and sent ahead of the server script)
+RELEASE_FNS="$(cat <<'FNS'
+current_release() { local l; l="$(readlink "$1/current" 2>/dev/null)" || return 0; basename "$l"; }
+# previous_healthy_release <base>: the newest .healthy release older (by name) than the current one; empty if none
+previous_healthy_release() {
+  local base="$1" cur r out=""
+  cur="$(current_release "$base")"
+  while IFS= read -r r; do
+    [[ -n "$r" && "$r" != "$cur" && -e "$base/releases/$r/.healthy" ]] || continue
+    if [[ -z "$cur" || "$r" < "$cur" ]]; then out="$r"; fi
+  done < <(ls -1 "$base/releases" 2>/dev/null | LC_ALL=C sort)
+  printf '%s' "$out"
+}
+# abandon_release <base> <rel>: a staged release that never went live is removed (never the current one)
+abandon_release() {
+  local base="$1" rel="$2"
+  [[ -n "$rel" && -d "$base/releases/$rel" && "$rel" != "$(current_release "$base")" ]] || return 0
+  rm -rf "${base:?}/releases/$rel"
+}
+# prune_releases <base> <keep> [<previous rel>]: removes every release without .healthy (failed or half-built) and keeps
+# <keep> healthy ones in all: the current one, the given previous one and the newest others
+prune_releases() {
+  local base="$1" keep="$2" prev="${3:-}" cur r healthy=()
+  cur="$(current_release "$base")"
+  while IFS= read -r r; do
+    [[ -n "$r" && "$r" != "$cur" && "$r" != "$prev" ]] || continue
+    if [[ -e "$base/releases/$r/.healthy" ]]; then healthy+=("$r"); else rm -rf "${base:?}/releases/$r"; fi
+  done < <(ls -1 "$base/releases" 2>/dev/null | LC_ALL=C sort)
+  local n="${#healthy[@]}" i
+  for ((i = 0; i < n - (keep - 2); i++)); do rm -rf "${base:?}/releases/${healthy[$i]}"; done
+  return 0
+}
+FNS
+)"
+eval "$RELEASE_FNS"
+
 # ---------------------------------------------------------------- the script that runs on the server (as root)
 # Wrapped in main() and called with stdin from /dev/null, so no command inside can swallow the rest of the script
 # that bash -s is still reading from stdin.
 remote_script() {
+  printf '%s\n' "$RELEASE_FNS"
   cat <<'REMOTE'
 main() {
   set -euo pipefail
@@ -102,7 +147,7 @@ main() {
   # caller may simply try again later). From the switch on, a failure exits 1 (the link was put back; see below).
   SWITCHED=0
   if [[ "$mode" == deploy ]]; then
-    trap 'rc=$?; if [[ "$rc" != 0 && "$SWITCHED" == 0 ]]; then printf "deploy (server): stopped before the switch (exit %s): nothing switched, %s/current is unchanged\n" "$rc" /opt/lemniscate >&2; exit 75; fi' EXIT
+    trap 'rc=$?; if [[ "$rc" != 0 && "$SWITCHED" == 0 ]]; then abandon_release /opt/lemniscate "$rel"; printf "deploy (server): stopped before the switch (exit %s): nothing switched, %s/current is unchanged\n" "$rc" /opt/lemniscate >&2; exit 75; fi' EXIT
   fi
   local BASE=/opt/lemniscate ENVF=/etc/lemniscate/lemniscate.env KEYS=/etc/lemniscate/keys
   # Start order. Required services always; mcp only when it is already enabled.
@@ -282,6 +327,14 @@ main() {
   # ---- units, ownership, dependencies
   bash "$R/app/scripts/server/provision.sh" --units-only
   printf '%s\n' "$sha" >"$R/REVISION"
+  # registry outages (review 17): reuse the running release's node_modules when the lockfile and package.json are unchanged;
+  # bun install below then only verifies it
+  local live_dir=""
+  [[ -L "$BASE/current" ]] && live_dir="$(readlink -f "$BASE/current")"
+  if [[ -n "$live_dir" && -d "$live_dir/app/node_modules" ]] && cmp -s "$live_dir/app/bun.lock" "$R/app/bun.lock" \
+    && cmp -s "$live_dir/app/package.json" "$R/app/package.json"; then
+    cp -a "$live_dir/app/node_modules" "$R/app/node_modules" && log "reused node_modules of the running release (bun.lock unchanged)"
+  fi
   chown -R lemniscate:lemniscate "$R"
   # The service users (not the owner of the files) run the code: readable and traversable by them, writable by nobody else.
   chmod -R go-w,a+rX "$R"
@@ -304,12 +357,18 @@ main() {
   local prev=""
   [[ -L "$BASE/current" ]] && prev="$(readlink "$BASE/current")"
   point() { ln -sfn "$1" "$BASE/current.new" && mv -T "$BASE/current.new" "$BASE/current"; }
+  # the release running now was healthy when it was deployed (releases from before .healthy existed get it here)
+  [[ -n "$prev" && -d "$BASE/$prev" && ! -e "$BASE/$prev/.healthy" ]] && touch "$BASE/$prev/.healthy"
   SWITCHED=1
   point "releases/$rel"
   log "current -> releases/$rel; migrating"
   if ! systemctl start lemniscate-migrate.service; then
     journalctl -u lemniscate-migrate.service -n 30 --no-pager -o cat | sed 's/^/  | /'
     [[ -z "$prev" ]] || point "$prev"
+    if [[ -n "$prev" && "$(systemctl show -p ExecMainStatus --value lemniscate-migrate.service 2>/dev/null)" == 75 ]]; then
+      SWITCHED=0   # the migrator gave up on a lock timeout and rolled back: nothing changed, current is back
+      die "migrations kept hitting a lock timeout under load (nothing applied): current is back on $prev; try again later"
+    fi
     die "migrations failed: current is back on ${prev:-nothing}; services were not restarted"
   fi
 
@@ -341,14 +400,9 @@ main() {
   systemctl is-active --quiet caddy || log "WARNING: caddy is not running"
   print_keeper
 
-  # ---- keep the 5 newest releases (never the current or the previous one)
-  local keep_cur keep_prev d
-  keep_cur="$(readlink -f "$BASE/current")"
-  keep_prev=""
-  [[ -n "$prev" ]] && keep_prev="$(cd "$BASE" && readlink -f "$prev" || true)"
-  while IFS= read -r d; do
-    [[ -n "$d" && "$d" != "$keep_cur" && "$d" != "$keep_prev" ]] && rm -rf "$d"
-  done < <(ls -1dt "$BASE"/releases/*/ 2>/dev/null | sed 's#/$##' | tail -n +6)
+  # ---- mark it healthy; keep the 5 newest healthy releases, drop failed / half-built ones (never current or previous)
+  touch "$R/.healthy"
+  prune_releases "$BASE" 5 "$(basename "${prev:-none}")"
 
   log "release $rel ($sha) live and healthy"
 }
@@ -377,7 +431,9 @@ while [[ $# -gt 0 ]]; do
     *) [[ -z "$HOST" ]] || die "one host only"; HOST="$1"; shift ;;
   esac
 done
-if [[ "$LOCAL" == 1 ]]; then
+if [[ "$LOCAL" == 1 && "$MODE" == check ]]; then
+  [[ -z "$HOST" ]] || die "--local takes no host"   # read-only: no arming needed
+elif [[ "$LOCAL" == 1 ]]; then
   # Real-deploy guard: first thing, before any other check, so a refused run touches nothing.
   [[ "${LEMNISCATE_ALLOW_REAL_DEPLOY:-}" == 1 ]] || die "--local refused: LEMNISCATE_ALLOW_REAL_DEPLOY=1 is not set (the real-deploy guard)"
   [[ -n "${LEMNISCATE_ALLOW_FILE:-}" && -f "$LEMNISCATE_ALLOW_FILE" ]] \
@@ -400,12 +456,14 @@ done
 [[ "$LOCAL" == 1 ]] || command -v ssh >/dev/null || die "ssh not found"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ "$LOCAL" == 1 && -n "$REPO" ]]; then
-  ROOT="$(cd "$REPO" && pwd)"
-else
-  ROOT="$(git -C "$HERE" rev-parse --show-toplevel)"
+# tests only: a fake root and a stand-in server script (never as root, so never on a real server)
+TEST_ROOT=""
+if [[ -n "${DEPLOY_SH_TEST_ROOT:-}" ]]; then
+  [[ "$(id -u)" != 0 ]] || die "DEPLOY_SH_TEST_ROOT is for tests only and is refused as root"
+  [[ -x "${DEPLOY_SH_TEST_SERVER:-}" ]] || die "DEPLOY_SH_TEST_ROOT needs an executable DEPLOY_SH_TEST_SERVER"
+  TEST_ROOT="$DEPLOY_SH_TEST_ROOT"
 fi
-APP="$ROOT/app"
+BASE_DIR="$TEST_ROOT/opt/lemniscate"
 
 # ---------------------------------------------------------------- ssh (one shared connection)
 SSH_EXTRA=()
@@ -423,7 +481,8 @@ ssh_() {
 }
 
 run_remote() {
-  if [[ "$LOCAL" == 1 ]]; then remote_script | bash -s -- "$@"; else remote_script | ssh_ bash -s -- "$@"; fi
+  if [[ -n "$TEST_ROOT" ]]; then "$DEPLOY_SH_TEST_SERVER" "$BASE_DIR" "$@"
+  elif [[ "$LOCAL" == 1 ]]; then remote_script | bash -s -- "$@"; else remote_script | ssh_ bash -s -- "$@"; fi
 }
 
 # ---------------------------------------------------------------- --check
@@ -431,6 +490,15 @@ if [[ "$MODE" == check ]]; then
   run_remote check
   exit 0
 fi
+
+# the commit's git dir: --repo (any git dir, bare is fine) for --local; this checkout otherwise. Resolved only now, after
+# --check, so --check works from the pinned copy outside any checkout (/usr/local/lib/lemniscate-release/deploy.sh).
+if [[ "$LOCAL" == 1 ]]; then
+  ROOT="$(cd "$REPO" && pwd)"
+else
+  ROOT="$(git -C "$HERE" rev-parse --show-toplevel)"
+fi
+APP="$ROOT/app"
 
 SHA="$(git -C "$ROOT" rev-parse --verify "${REF}^{commit}")" || die_unswitched "no commit $REF"
 if [[ "$LOCAL" == 0 && -n "$(git -C "$ROOT" status --porcelain)" ]]; then
@@ -463,8 +531,8 @@ if grep -Eq '"forkProof"' "$DEP_SRC/4663.json"; then die_unswitched "$DEP_SRC/46
 REL="$(date -u +%Y%m%dT%H%M%SZ)-${SHA:0:12}"
 if [[ "$LOCAL" == 1 ]]; then
   log "deploying ${SHA:0:12} on this server as release $REL"
-  [[ -d /opt/lemniscate/releases ]] || die_unswitched "not provisioned: /opt/lemniscate/releases is missing"
-  stage_release "$ROOT" "$SHA" "/opt/lemniscate/releases/$REL" "$DEP_SRC" || die_unswitched "could not write the release dir /opt/lemniscate/releases/$REL"
+  [[ -d "$BASE_DIR/releases" ]] || die_unswitched "not provisioned: $BASE_DIR/releases is missing"
+  stage_release "$ROOT" "$SHA" "$BASE_DIR/releases/$REL" "$DEP_SRC" || { abandon_release "$BASE_DIR" "$REL"; die_unswitched "could not write the release dir $BASE_DIR/releases/$REL"; }
 else
   log "deploying ${SHA:0:12} to $HOST as release $REL"
   git -C "$ROOT" archive --format=tar "$SHA" app vol-engine LICENSE README.md | gzip -c \
