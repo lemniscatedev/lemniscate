@@ -5,6 +5,13 @@
 #   app/scripts/server/deploy.sh --ref <ref> <host>      deploy a commit, tag or branch
 #   app/scripts/server/deploy.sh --provision <host>      first time: copy app/scripts/server up and run provision.sh
 #   app/scripts/server/deploy.sh --check <host>          health-check every service, change nothing
+#   app/scripts/server/deploy.sh --local --repo <git dir> --ref <40-hex sha>   deploy ON this server (release runner), no ssh
+#   app/scripts/server/deploy.sh --local --check          health-check this server, change nothing
+#
+# --local runs the same steps and the same automatic return to the previous release, on the machine it is started on
+# (it must be the root of a provisioned server). It is the real-deploy path, so it refuses unless BOTH
+# LEMNISCATE_ALLOW_REAL_DEPLOY=1 is set (by the runner's service) and the file named by LEMNISCATE_ALLOW_FILE exists
+# (created only when the launch is armed). --ref must be a full 40-hex sha; --repo is a git dir (bare is fine).
 #
 # <host> is a host name, an ~/.ssh/config alias or user@host (without "user@" the user is root). Nothing about the
 # server (address, SSH key, password) is stored here: the host comes from the command line and the key from
@@ -31,35 +38,59 @@
 #   SSH_OPTS                  extra ssh options, e.g. "-i ~/.ssh/<key> -p 22"
 #   LEMNISCATE_DEPLOYMENTS_SRC  folder holding 4663.json (default: app/deployments of this checkout)
 #   LEMNISCATE_PUBLIC_API_URL   e.g. https://api.<your-domain>: also checked from this machine after the deploy
+#   LEMNISCATE_ALLOW_REAL_DEPLOY, LEMNISCATE_ALLOW_FILE   the --local arming guard (see above)
 #   API_DOMAIN, MCP_DOMAIN, ACME_EMAIL, DB_NAME, SWAP_SIZE, TIMESCALE_CODENAME: passed to provision.sh by --provision
 set -euo pipefail
 
-usage() { sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { printf 'deploy: %s\n' "$*" >&2; exit 1; }
 log() { printf '[deploy %s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 
 MODE=deploy
 REF=HEAD
 HOST=""
+LOCAL=0
+REPO=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ref) [[ $# -ge 2 ]] || die "--ref needs a value"; REF="$2"; shift 2 ;;
     --provision) MODE=provision; shift ;;
     --check) MODE=check; shift ;;
+    --local) LOCAL=1; shift ;;
+    --repo) [[ $# -ge 2 ]] || die "--repo needs a value"; REPO="$2"; shift 2 ;;
     -h | --help) usage; exit 0 ;;
     -*) die "unknown option $1 (try --help)" ;;
     *) [[ -z "$HOST" ]] || die "one host only"; HOST="$1"; shift ;;
   esac
 done
-[[ -n "$HOST" ]] || { usage >&2; exit 2; }
-[[ "$HOST" =~ ^([A-Za-z0-9._-]+@)?[A-Za-z0-9._:-]+$ ]] || die "'$HOST' does not look like a host or user@host"
+if [[ "$LOCAL" == 1 ]]; then
+  # Real-deploy guard: first thing, before any other check, so a refused run touches nothing.
+  [[ "${LEMNISCATE_ALLOW_REAL_DEPLOY:-}" == 1 ]] || die "--local refused: LEMNISCATE_ALLOW_REAL_DEPLOY=1 is not set (the real-deploy guard)"
+  [[ -n "${LEMNISCATE_ALLOW_FILE:-}" && -f "$LEMNISCATE_ALLOW_FILE" ]] \
+    || die "--local refused: the arming file named by LEMNISCATE_ALLOW_FILE is missing (the real-deploy guard)"
+  [[ -z "$HOST" ]] || die "--local takes no host"
+  [[ "$MODE" != provision ]] || die "--local cannot --provision"
+  if [[ "$MODE" == deploy ]]; then
+    [[ -n "$REPO" && -d "$REPO" ]] || die "--local deploy needs --repo <git dir>"
+    [[ "$REF" =~ ^[0-9a-f]{40}$ ]] || die "--local deploy needs --ref <40-hex sha>, got '$REF'"
+  fi
+else
+  [[ -z "$REPO" ]] || die "--repo only goes with --local"
+  [[ -n "$HOST" ]] || { usage >&2; exit 2; }
+  [[ "$HOST" =~ ^([A-Za-z0-9._-]+@)?[A-Za-z0-9._:-]+$ ]] || die "'$HOST' does not look like a host or user@host"
+fi
 
-for bin in git ssh gzip curl; do
+for bin in git gzip curl; do
   command -v "$bin" >/dev/null || die "$bin not found"
 done
+[[ "$LOCAL" == 1 ]] || command -v ssh >/dev/null || die "ssh not found"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(git -C "$HERE" rev-parse --show-toplevel)"
+if [[ "$LOCAL" == 1 && -n "$REPO" ]]; then
+  ROOT="$(cd "$REPO" && pwd)"
+else
+  ROOT="$(git -C "$HERE" rev-parse --show-toplevel)"
+fi
 APP="$ROOT/app"
 
 # ---------------------------------------------------------------- ssh (one shared connection)
@@ -68,7 +99,7 @@ if [[ -n "${SSH_OPTS:-}" ]]; then read -r -a SSH_EXTRA <<<"$SSH_OPTS"; fi
 [[ "$HOST" == *@* ]] || SSH_EXTRA+=(-l root)
 CTL_DIR="$(mktemp -d)"
 cleanup() {
-  ssh -o ControlPath="$CTL_DIR/c" -O exit "$HOST" >/dev/null 2>&1 || true
+  [[ "$LOCAL" == 1 ]] || ssh -o ControlPath="$CTL_DIR/c" -O exit "$HOST" >/dev/null 2>&1 || true
   rm -rf "$CTL_DIR"
 }
 trap cleanup EXIT
@@ -319,7 +350,9 @@ main "$@" </dev/null
 REMOTE
 }
 
-run_remote() { remote_script | ssh_ bash -s -- "$@"; }
+run_remote() {
+  if [[ "$LOCAL" == 1 ]]; then remote_script | bash -s -- "$@"; else remote_script | ssh_ bash -s -- "$@"; fi
+}
 
 # ---------------------------------------------------------------- --check
 if [[ "$MODE" == check ]]; then
@@ -328,7 +361,7 @@ if [[ "$MODE" == check ]]; then
 fi
 
 SHA="$(git -C "$ROOT" rev-parse --verify "${REF}^{commit}")" || die "no commit $REF"
-if [[ -n "$(git -C "$ROOT" status --porcelain)" ]]; then
+if [[ "$LOCAL" == 0 && -n "$(git -C "$ROOT" status --porcelain)" ]]; then
   log "note: the checkout has uncommitted changes; they are NOT deployed (only commit ${SHA:0:12})"
 fi
 
@@ -348,6 +381,7 @@ fi
 
 # ---------------------------------------------------------------- deploy: local checks
 DEP_SRC="${LEMNISCATE_DEPLOYMENTS_SRC:-$APP/deployments}"
+if [[ "$LOCAL" == 1 ]]; then [[ -n "${LEMNISCATE_DEPLOYMENTS_SRC:-}" ]] || die "--local needs LEMNISCATE_DEPLOYMENTS_SRC (the folder that holds 4663.json)"; fi
 [[ -f "$DEP_SRC/4663.json" ]] || die "no mainnet deployment in $DEP_SRC (4663.json): set LEMNISCATE_DEPLOYMENTS_SRC to the folder that has it"
 grep -Eq '"chainId"[[:space:]]*:[[:space:]]*4663([^0-9]|$)' "$DEP_SRC/4663.json" || die "$DEP_SRC/4663.json is not for chain 4663"
 grep -Eq '"network"[[:space:]]*:[[:space:]]*"mainnet"' "$DEP_SRC/4663.json" || die "$DEP_SRC/4663.json is not a mainnet deployment (network must be mainnet)"
@@ -355,11 +389,20 @@ if grep -Eq '"forkProof"' "$DEP_SRC/4663.json"; then die "$DEP_SRC/4663.json com
 
 # ---------------------------------------------------------------- deploy: upload, then run on the server
 REL="$(date -u +%Y%m%dT%H%M%SZ)-${SHA:0:12}"
-log "deploying ${SHA:0:12} to $HOST as release $REL"
-git -C "$ROOT" archive --format=tar "$SHA" app vol-engine LICENSE README.md | gzip -c \
-  | ssh_ "set -e; test -d /opt/lemniscate/releases || { echo 'not provisioned: run deploy.sh --provision first' >&2; exit 1; }; mkdir /opt/lemniscate/releases/$REL; tar -xzf - -C /opt/lemniscate/releases/$REL --no-same-owner"
-ssh_ "mkdir -p /opt/lemniscate/releases/$REL/app/deployments"
-ssh_ "cat >/opt/lemniscate/releases/$REL/app/deployments/4663.json" <"$DEP_SRC/4663.json"
+if [[ "$LOCAL" == 1 ]]; then
+  log "deploying ${SHA:0:12} on this server as release $REL"
+  [[ -d /opt/lemniscate/releases ]] || die "not provisioned: /opt/lemniscate/releases is missing"
+  mkdir "/opt/lemniscate/releases/$REL"
+  git -C "$ROOT" archive --format=tar "$SHA" app vol-engine LICENSE README.md | tar -xf - -C "/opt/lemniscate/releases/$REL" --no-same-owner
+  mkdir -p "/opt/lemniscate/releases/$REL/app/deployments"
+  cat "$DEP_SRC/4663.json" >"/opt/lemniscate/releases/$REL/app/deployments/4663.json"
+else
+  log "deploying ${SHA:0:12} to $HOST as release $REL"
+  git -C "$ROOT" archive --format=tar "$SHA" app vol-engine LICENSE README.md | gzip -c \
+    | ssh_ "set -e; test -d /opt/lemniscate/releases || { echo 'not provisioned: run deploy.sh --provision first' >&2; exit 1; }; mkdir /opt/lemniscate/releases/$REL; tar -xzf - -C /opt/lemniscate/releases/$REL --no-same-owner"
+  ssh_ "mkdir -p /opt/lemniscate/releases/$REL/app/deployments"
+  ssh_ "cat >/opt/lemniscate/releases/$REL/app/deployments/4663.json" <"$DEP_SRC/4663.json"
+fi
 log "uploaded code and 4663.json"
 
 run_remote deploy "$REL" "$SHA"
