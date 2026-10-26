@@ -104,13 +104,58 @@ async function latestMarks(context: KeeperContext, ids: readonly Hex[]): Promise
   return marks;
 }
 
-/** Funding sampling grid (review F11/F34, decision 35): every live series of a name in REGULAR or EXTENDED that is worth
- * sampling is accrued once per slot, whatever its lastAccrual, so a holder who accrues at prints of their choosing cannot
- * suppress the keeper's samples. R13: "worth sampling" is bounded. Archived series (beyond the archive moneyness), series
- * under KEEPER_ACCRUE_GRID_MIN_VALUE_USDG of outstanding value and anything past KEEPER_ACCRUE_GRID_MAX_SERIES per slot
- * (the most valuable are kept) are left to the hourly catch-up, so positions an attacker holds for a dollar each cannot bill
- * the keeper's gas at the grid rate. */
+/** Funding sampling grid (review F11/F34, decision 35): every live series of a name in REGULAR or EXTENDED is accrued once
+ * per slot, whatever its lastAccrual, so a holder who accrues at prints of their choosing cannot suppress the keeper's
+ * samples. Review R3-01 (decision 67): the grid takes a name WHOLE, i.e. every series in the engine's live NAV tier (tier 0:
+ * on the live list and worth at least the minimum trade at its mark, archived or not, whatever its size), because the
+ * engine completes a name's live-tier pass only when every one of them is re-marked; one series left to the hourly catch-up
+ * held the name's claim envelope to the hour. R13 still bounds the work: at most KEEPER_ACCRUE_GRID_MAX_SERIES per slot.
+ * Every name's R13 part (non-archived series worth KEEPER_ACCRUE_GRID_MIN_VALUE_USDG or more) is admitted first, then whole
+ * names largest first in what is left (selectGrid), so an attacker holding a dollar in hundreds of archived series can
+ * neither bill the keeper's gas past the budget nor push any name's honest positions off the grid. A name that does not fit
+ * whole is reported with an ALERT (its pass is hourly until the budget is raised). */
 export const ACCRUE_GRID_SECONDS = 300n;
+/** R3-01 alert: a name in session whose oldest tier-0 mark is older than this has a stale live-tier NAV pass. */
+export const GRID_STALE_SECONDS = 2n * ACCRUE_GRID_SECONDS;
+
+export interface GridEntry { id: Hex; stock: Address; value: bigint; archived: boolean }
+
+/** R3-01 grid selection (pure), in two phases so one name's dust cannot starve another name's real positions:
+ * (a) every name's R13 part (non-archived, worth `minValue` or more), the most valuable first across names, within `budget`;
+ * (b) then the rest of each name's tier-0 series, largest name first, a name only WHOLE in the budget left.
+ * `tier0`: the engine's live-tier series (live list, value at the mark >= the minimum trade) of names in session. Returns the
+ * ids to sample, the names on the grid whole and the names split (some of their tier-0 series left to the hourly catch-up). */
+export function selectGrid(tier0: readonly GridEntry[], budget: number, minValue: bigint):
+  { grid: Hex[]; whole: string[]; split: string[]; skipped: number } {
+  const desc = (a: bigint, b: bigint) => (a === b ? 0 : a > b ? -1 : 1);
+  const byName = new Map<string, { value: bigint; entries: GridEntry[] }>();
+  for (const entry of tier0) {
+    const key = entry.stock.toLowerCase();
+    const name = byName.get(key) ?? { value: 0n, entries: [] };
+    name.value += entry.value;
+    name.entries.push(entry);
+    byName.set(key, name);
+  }
+  const cap = Math.max(0, budget);
+  // (a) the R13 parts of all names first
+  const r13 = tier0.filter((entry) => !entry.archived && entry.value >= minValue).sort((a, b) => desc(a.value, b.value));
+  const taken = new Set<Hex>(r13.slice(0, cap).map((entry) => entry.id));
+  // (b) whole names with what is left
+  const whole: string[] = [];
+  const split: string[] = [];
+  for (const [stock, name] of [...byName.entries()].sort((a, b) => desc(a[1].value, b[1].value))) {
+    const rest = name.entries.filter((entry) => !taken.has(entry.id));
+    if (taken.size + rest.length <= cap) {
+      for (const entry of rest) taken.add(entry.id);
+      whole.push(stock);
+    } else {
+      split.push(stock);
+    }
+  }
+  const grid = tier0.filter((entry) => taken.has(entry.id)).sort((a, b) => desc(a.value, b.value)).map((entry) => entry.id);
+  return { grid, whole, split, skipped: tier0.length - grid.length };
+}
+
 /** The next run is timed this long after the next grid boundary (the first price read after it). */
 const GRID_SETTLE_MS = 5_000;
 // SessionKind: REGULAR 0, EXTENDED 1.
@@ -164,31 +209,51 @@ export function createAccrueJob(context: KeeperContext) {
 
     const all = await reader.readAll();
 
-    // F11 grid sample: once per slot, the live series of a name in session that are worth sampling (R13).
+    // F11 grid sample: once per slot, every tier-0 series of each name in session, whole names (R3-01) within the R13 budget.
     let grid: Hex[] = [];
     let gridSkipped = 0;
+    let gridSplit: string[] = [];
+    let staleTier0: string[] = [];
     if (risk && slot !== lastGridSlot) {
-      const archived = new Set(all.filter((series) => series.archived).map((series) => series.id));
+      const seriesOf = new Map(all.map((series) => [series.id, series]));
       const minValue = BigInt(Math.round(Number(context.config.KEEPER_ACCRUE_GRID_MIN_VALUE_USDG ?? 100) * 1e6)) * 10n ** 12n;
-      const candidates = risk.live.filter((entry) => !retire.dust.has(entry.id) && !archived.has(entry.id) && entry.value >= minValue);
-      const inSession = await liveSessionStocks(context, [...new Set(candidates.map((entry) => entry.stock))]).catch((error: unknown) => {
+      // The engine's live tier: on the live list and worth the minimum trade at the mark (EngineMarkLib's tier line).
+      const tier0 = risk.live.filter((entry) => !retire.dust.has(entry.id) && entry.value >= risk.dustWad);
+      const inSession = await liveSessionStocks(context, [...new Set(tier0.map((entry) => entry.stock))]).catch((error: unknown) => {
         context.logger.warn({ err: safeErrorSummary(error) }, "PriceGuard sessions unreadable; no grid sample this run");
         return new Set<string>();
       });
-      const sampled = candidates.filter((entry) => inSession.has(entry.stock.toLowerCase()))
-        .sort((a, b) => (a.value === b.value ? 0 : a.value > b.value ? -1 : 1));
+      const sampled = tier0.filter((entry) => inSession.has(entry.stock.toLowerCase()))
+        .map((entry) => ({ ...entry, archived: seriesOf.get(entry.id)?.archived ?? false }));
       const budget = Math.max(0, Math.floor(Number(context.config.KEEPER_ACCRUE_GRID_MAX_SERIES ?? 450)));
-      gridSkipped = Math.max(0, sampled.length - budget);
-      grid = sampled.slice(0, budget).map((entry) => entry.id);
-      if (gridSkipped > 0) context.logger.warn({ sampled: sampled.length, budget, skipped: gridSkipped },
-        "ALERT: more series qualify for the 5-minute funding grid than its per-slot budget; the least valuable are left to the hourly catch-up");
+      const selection = selectGrid(sampled, budget, minValue);
+      grid = selection.grid;
+      gridSkipped = selection.skipped;
+      gridSplit = selection.split;
+      if (gridSplit.length) context.logger.warn({ names: gridSplit, budget, skipped: gridSkipped },
+        "ALERT: names in session do not fit the 5-minute funding grid whole (KEEPER_ACCRUE_GRID_MAX_SERIES); their live-tier NAV pass is hourly, raise the budget");
+      // R3-01 (3): a name in session whose oldest tier-0 mark is more than two grid intervals old (checked once the keeper
+      // has been gridding: the first run after a start sees every mark as old).
+      if (lastGridSlot !== undefined) {
+        const oldest = new Map<string, bigint>();
+        for (const entry of sampled) {
+          const at = seriesOf.get(entry.id)?.lastAccrual;
+          if (at === undefined) continue;
+          const key = entry.stock.toLowerCase();
+          const prev = oldest.get(key);
+          if (prev === undefined || at < prev) oldest.set(key, at);
+        }
+        staleTier0 = [...oldest.entries()].filter(([, at]) => nowSeconds - at > GRID_STALE_SECONDS).map(([stock]) => stock);
+        if (staleTier0.length) context.logger.warn({ names: staleTier0, maxAgeSeconds: Number(GRID_STALE_SECONDS) },
+          "ALERT: a live-tier series of a name in session was not re-marked for two grid intervals; the name's NAV bounds are stale");
+      }
     }
 
     const liveIds = risk ? new Set<Hex>(risk.live.map((entry) => entry.id)) : undefined;
     const hourly = await hourlyDue(context, all, nowSeconds, threshold, retire.dust, liveIds);
     const ids = [...new Set<Hex>([...grid, ...hourly.due])];
     const base = { series: all.length, pokes, retireSent, retired: hourly.retired, dustPass: hourly.dustPass, deferredDust: hourly.deferredDust,
-      gridSampled: grid.length, gridSkipped, retryAfterMs };
+      gridSampled: grid.length, gridSkipped, gridSplit: gridSplit.length, staleTier0: staleTier0.length, retryAfterMs };
     if (risk && slot !== lastGridSlot && !ids.length) lastGridSlot = slot;
     if (!ids.length) return { ...base, due: 0, accrued: 0, idle: true };
 

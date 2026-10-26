@@ -61,8 +61,8 @@ const envSchema = z.object({
   // R17 (decision 62): LemniscatePaymaster, for the keeper's kernel-register job (the same variable the API's sponsorship uses).
   PAYMASTER_ADDRESS: z.preprocess((value) => (value === "" ? undefined : value), z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional()),
   KEEPER_ACCRUE_BATCH: z.coerce.number().int().min(1).max(45).default(40),
-  // R13: the 5-minute funding grid samples only non-archived series with at least this much outstanding value, at most this many per slot
-  // (the most valuable first); the rest are covered by the hourly catch-up.
+  // R13 + R3-01 (decision 67): the 5-minute funding grid takes every live-tier series of a name in session (whole names, largest first),
+  // at most MAX_SERIES per slot; a name that does not fit whole keeps only its non-archived series worth MIN_VALUE or more (an ALERT).
   KEEPER_ACCRUE_GRID_MIN_VALUE_USDG: z.coerce.number().min(0).default(100),
   KEEPER_ACCRUE_GRID_MAX_SERIES: z.coerce.number().int().min(0).max(5000).default(450),
   // USDG (whole) the buy-burn job offers LmnsBuyBurn.buyAndBurn per call (the contract also caps it, decision 43).

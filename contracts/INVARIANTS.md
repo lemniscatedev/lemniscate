@@ -224,3 +224,12 @@ Each finding has its PoC as a regression test and a fuzz test of the general pro
 | R16 | For any feed S and trade TWAP (REGULAR or CLOSED): exit bound >= exact at both prices, entry bound <= exact at both | `security/R16LiabilityTwap.t.sol` |
 | R17 | A standard Kernel account is sponsorable whoever deployed it and whoever registers it; non-standard setups never register | `security/R17KernelRegister.t.sol` |
 | R18 | Any deposit setting is refused up front or the scripted deploy passes its own check, leaving only the documented pending items | `system/DeployPaymaster.t.sol::*R18*` |
+
+## Round-3 review fixes, NAV bounds (review of 2026-10-25)
+
+Each finding has its PoC as a regression test and a fuzz test of the general property.
+
+| Finding | Property (fuzz) | Tests |
+| --- | --- | --- |
+| R3-01 | Production keeper schedule (5-minute grid in random batches, hourly catch-up, any extra $1-$100 position): (i) exact - entry bound <= tangent convexity + sum_i value_i (now - mark_i) / tau_i, under the old and the fixed keeper; (ii) with the whole name on the grid, exit bound - exact <= live-tier units x \|S - S at the slot\| + funding + a dust-tier term, and tier-0 tc within two grid intervals. Funding sums equal their recomputation through partial sells and sells to zero mid-slot, and return to zero when every series is closed. Keeper: within the budget, every name's R13 part is on the grid before any whole name's dust (no starvation) | `security/R3MixedCadence.t.sol`; keeper side `app/src/keeper/jobs/accrue.test.ts` (R3-01 describe, R13 property) |
+| R3-02 | For every session (REGULAR, EXTENDED, CLOSED, HALTED) and any trade TWAP: exit bound >= exact at both S and TWAP, entry bound <= exact at both; a settled HALTED name is bounded at its settlement price | `security/R3HaltedLiability.t.sol` |

@@ -358,7 +358,7 @@ script's `check(address)` asserts the owner (the Safe), signer, immutables, stak
   re-marked yet may get slightly less than the exact NAV (and an entrant slightly fewer shares); after the keeper's re-mark the two
   bounds are the exact book value. The hedge leg of an entry or exit is valued at the worse for that LP of the feed S and the
   5-minute trade TWAP, and the high-water checkpoint always uses the exit side. The vol part of the bound is first order (x1.5 on the conservative side). The entry bound also
-  subtracts the most funding can have taken since the name's last full re-mark (book value x elapsed / tau per speed), so a
+  subtracts the most funding can have taken since each series' own last mark (value x elapsed / tau per series, R3-01), so a
   deposit just before an accrual does not capture it; what remains is the NAV guard band being built from the greeks at the
   marks (second order, tens of ppm of NAV per keeper interval) (LOW).
 - Withdrawal tickets (review F12(c)): only the ticket's owner can claim it, so nobody else picks the moment of someone's exit.
@@ -489,7 +489,7 @@ Each has a regression test that fails without it and a property or fuzz test of 
 - **The funding grid is bounded (R13).** The 5-minute grid accrued every live series worth at least a dollar, so deep-ITM series held
   for $1 each billed the keeper about 59 million gas a day apiece. The grid now samples only non-archived series with at least $100 of
   outstanding value (`KEEPER_ACCRUE_GRID_MIN_VALUE_USDG`), at most 450 per slot, the most valuable first (`KEEPER_ACCRUE_GRID_MAX_SERIES`),
-  with an alert when more qualify; everything else stays on the hourly catch-up.
+  with an alert when more qualify; everything else stays on the hourly catch-up. Amended by R3-01 below: names are now gridded whole.
 - **Hedger reverts are named (R19).** The keeper simulates with raw calldata, and a node reports a custom-error revert as `execution
   reverted` plus data, so no message ever carried `HedgerFrozen`, `HedgeLossBudget` or `PerpEquityCap` and the back-off and the alert never
   fired in production. The transaction queue now decodes the revert data (against every contract's errors, with the PoolHedging library
@@ -585,6 +585,26 @@ These amend the bullets above where they differ (decisions 54-64).
   Service side (28-merge): when the API sees a deployed account the paymaster does not know and its address is the standard
   setup of its stored owner, it answers `ACCOUNT_REGISTERING` (unsponsored this time) and queues it; the keeper's
   `kernel-register` job sends `registerKernelAccount` (the API holds no funded key) and backs off one that reverts.
+
+## NAV-bound fixes from the round-3 review (2026-10-25)
+
+These amend the bullets above where they differ (decisions 67-68).
+
+- Mixed keeper cadence (R3-01): a name's live-tier NAV pass completes only when every live-tier series (worth the $1 minimum at its
+  mark) is re-marked, and the keeper's grid used to skip series under $100, archived ones and those past its budget, so one small
+  position held the name's bounds to the hourly cadence. The deposit bound now subtracts each series' own funding since its own mark
+  (O(1) per name: now x A - B), so it no longer depends on the slowest series; and the keeper grids every live-tier series of a name
+  in session together (within `KEEPER_ACCRUE_GRID_MAX_SERIES`: first every name's non-archived series worth
+  `KEEPER_ACCRUE_GRID_MIN_VALUE_USDG` or more, then the rest of each name, whole names only, largest first, so one name's
+  archived dust cannot take another name's grid slots), alerting when a name does not fit whole
+  or a live-tier mark of a name in session is more than two grid intervals old. Accepted: a name that does not fit the budget whole
+  keeps only its R13 part on the grid (non-archived series worth `KEEPER_ACCRUE_GRID_MIN_VALUE_USDG` or more), so its claim bound
+  uses up to an hour of S range until the budget is raised (conservative: claims priced low, never high; the alert fires).
+  An engine upgraded from a build before this fix must accrue every open series in the upgrade batch (the per-series funding
+  terms start at each series' next mark).
+- Halted names (R3-02): a HALTED name with a last good price is bounded like a CLOSED one, at that price (or its ORC-4 settlement
+  price) and the worse for the LP of it and the trade TWAP, so the liability and the hedge leg read the same prices while a feed is
+  halted. Only a name with no price at all keeps its book value.
 
 ## Audit history
 

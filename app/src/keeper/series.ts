@@ -97,5 +97,7 @@ export async function readLiveRisk(context: Pick<KeeperContext, "clients" | "dep
     }))) as (readonly bigint[])[];
     live.forEach((entry, index) => { entry.value = BigInt(risks[index]![0]!); });
   }
-  return { live, dustWad: BigInt(guards[0]) * 10n ** 12n };
+  // The engine's dust line (EngineMarkLib.dustWad): a minTradeUsdg of 0 means the 1 USDG default.
+  const minTrade = BigInt(guards[0]);
+  return { live, dustWad: (minTrade === 0n ? 1_000_000n : minTrade) * 10n ** 12n };
 }

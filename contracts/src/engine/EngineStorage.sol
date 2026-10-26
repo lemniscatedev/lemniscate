@@ -189,6 +189,25 @@ library EngineStorage {
         /// back on the live list or without supply), so monitoring still counts retired units.
         mapping(address stock => bytes32[]) retired;
         mapping(bytes32 id => bool) everRetired;
+        // ---- round-3 review fixes, appended
+        /// @dev Review R3-01: per name, the deposit-side funding sums over every series with units, A = sum c_i and
+        /// B = sum c_i x mark_i with c_i = ceil(value at the mark / tau) (WAD USDG per second); the funding since the marks
+        /// is at most now x A - B, whatever the tier passes do.
+        mapping(address stock => FundSum) fund;
+        /// @dev Review R3-01: series `id`'s term in `fund` (what the next update removes; absent = none).
+        mapping(bytes32 id => SeriesFund) seriesFund;
+    }
+
+    /// @dev Review R3-01: see Layout.fund.
+    struct FundSum {
+        uint256 a;
+        uint256 b;
+    }
+
+    /// @dev Review R3-01: one series' c_i and the mark time it was added at.
+    struct SeriesFund {
+        uint128 c;
+        uint40 at;
     }
 
     /// @dev keccak256(abi.encode(uint256(keccak256("lemniscate.storage.Engine")) - 1)) & ~bytes32(uint256(0xff))

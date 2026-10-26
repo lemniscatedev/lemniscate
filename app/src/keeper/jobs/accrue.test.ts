@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { A, FakeChain, WAD } from "../test-support";
-import { accrueInBatches, createAccrueJob } from "./accrue";
+import { accrueInBatches, createAccrueJob, selectGrid, type GridEntry } from "./accrue";
 
 function chainWithSeries(count: number, supply = 5n * WAD): FakeChain {
   const chain = new FakeChain();
@@ -234,7 +234,7 @@ describe("F11/F34 fixed 5-minute accrual grid (decision 35)", () => {
       for (const id of attacker) expect(perSeries.get(id) ?? 0).toBeLessThanOrEqual(25); // hourly, not 288 times
     });
 
-    test("PROPERTY: whatever is held, the grid has only live, non-archived series above the minimum value, at most the per-slot budget, the most valuable first", async () => {
+    test("PROPERTY (R13 + R3-01): the grid is within the budget, takes a name whole when it fits, and otherwise only its non-archived series above the minimum value, the most valuable first", async () => {
       let seed = 31337;
       const rnd = (n: number) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
       for (let trial = 0; trial < 25; trial++) {
@@ -250,20 +250,140 @@ describe("F11/F34 fixed 5-minute accrual grid (decision 35)", () => {
             lastAccrual: chain.nowSeconds - 5n, riskValue: value });
           info.set(series.id, { archived, value });
         }
-        const budget = 1 + rnd(30);
+        const budget = 1 + rnd(150);
         const minValue = BigInt(rnd(300)) * WAD;
         const result = await createAccrueJob(chain.context({}, { KEEPER_ACCRUE_GRID_MAX_SERIES: budget, KEEPER_ACCRUE_GRID_MIN_VALUE_USDG: Number(minValue / WAD) }))();
         const sampled = sentIds(chain);
         expect(Number(result.gridSampled)).toBeLessThanOrEqual(budget);
-        for (const id of sampled) {
-          const row = info.get(id)!;
-          expect(row.archived).toBe(false);
-          expect(row.value >= minValue && row.value >= WAD).toBe(true);
+        const tier0 = [...info.entries()].filter(([, row]) => row.value >= WAD);
+        for (const id of sampled) expect(info.get(id)!.value >= WAD).toBe(true); // never a dust-tier series
+        if (tier0.length <= budget) {
+          // whole name: every tier-0 series, archived and small ones included (R3-01)
+          expect([...sampled].sort()).toEqual(tier0.map(([id]) => id).sort());
+          expect(Number(result.gridSplit)).toBe(0);
+        } else {
+          for (const id of sampled) {
+            expect(info.get(id)!.archived).toBe(false);
+            expect(info.get(id)!.value >= minValue).toBe(true);
+          }
+          const eligible = tier0.map(([, row]) => row).filter((row) => !row.archived && row.value >= minValue).map((row) => row.value).sort((a, b) => (a < b ? 1 : -1));
+          const taken = sampled.map((id) => info.get(id)!.value).sort((a, b) => (a < b ? 1 : -1));
+          expect(taken).toEqual(eligible.slice(0, Math.min(budget, eligible.length)));
+          expect(Number(result.gridSplit)).toBe(1);
         }
-        const eligible = [...info.values()].filter((row) => !row.archived && row.value >= minValue && row.value >= WAD).map((row) => row.value).sort((a, b) => (a < b ? 1 : -1));
-        const taken = sampled.map((id) => info.get(id)!.value).sort((a, b) => (a < b ? 1 : -1));
-        if (chain.prices.get(A.nvda)!.session <= 1) expect(taken).toEqual(eligible.slice(0, Math.min(budget, eligible.length)));
       }
+    });
+  });
+
+  describe("R3-01 the grid takes every live-tier series of a name, so the engine's NAV pass completes every slot", () => {
+    const sentIds = (chain: FakeChain) => chain.sent.filter((tx) => tx.name === "accrueMany").flatMap((tx) => tx.args[0] as string[]);
+    function pocChain(): { chain: FakeChain; big: string[]; small: string; archived: string } {
+      const chain = new FakeChain();
+      chain.nowSeconds = 1_800_000_000n - (1_800_000_000n % 300n) + 10n;
+      chain.prices.set(A.nvda, { s: 100n * WAD, session: 0, fresh: true, buysPaused: false, updatedAt: chain.nowSeconds - 30n });
+      const big = Array.from({ length: 20 }, (_, i) => chain.addSeries({ stock: A.nvda, isCall: i < 10, strike: BigInt(95 + i) * WAD, tauSeconds: 86_400,
+        supply: 1_000n * WAD, lastAccrual: chain.nowSeconds - 5n, riskValue: 1_700n * WAD }).id);
+      const small = chain.addSeries({ stock: A.nvda, isCall: true, strike: 1045n * WAD / 10n, tauSeconds: 86_400, supply: 8n * WAD,
+        lastAccrual: chain.nowSeconds - 5n, riskValue: 255n * WAD / 100n }).id;
+      const archived = chain.addSeries({ stock: A.nvda, isCall: true, strike: 60n * WAD, tauSeconds: 86_400, supply: 2n * WAD, archived: true, buyable: false,
+        lastAccrual: chain.nowSeconds - 5n, riskValue: 80n * WAD }).id;
+      return { chain, big, small, archived };
+    }
+
+    test("PoC: a $2.55 position and an archived $80 one are sampled every slot with the name's $100+ series (they were hourly)", async () => {
+      const { chain, big, small, archived } = pocChain();
+      const job = createAccrueJob(chain.context());
+      for (let step = 0; step < 24; step++) { await job(); chain.nowSeconds += 300n; } // two hours of slots
+      const perSeries = new Map<string, number>();
+      for (const id of sentIds(chain)) perSeries.set(id, (perSeries.get(id) ?? 0) + 1);
+      for (const id of [...big, small, archived]) expect(perSeries.get(id)).toBe(24);
+    });
+
+    test("PROPERTY: with many names, every name either has all its live-tier series on the grid or is reported split; the budget is never exceeded", () => {
+      let seed = 4242;
+      const rnd = (n: number) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+      for (let trial = 0; trial < 200; trial++) {
+        const entries: GridEntry[] = [];
+        const names = 1 + rnd(8);
+        for (let k = 0; k < names; k++) {
+          const stock = `0x${(0xa00 + k).toString(16).padStart(40, "0")}` as `0x${string}`;
+          for (let i = 0, n = 1 + rnd(40); i < n; i++) {
+            entries.push({ id: `0x${(trial * 10_000 + k * 100 + i).toString(16).padStart(64, "0")}` as `0x${string}`, stock,
+              value: BigInt(1 + rnd(5_000)) * WAD, archived: rnd(4) === 0 });
+          }
+        }
+        const budget = rnd(120);
+        const minValue = BigInt(rnd(500)) * WAD;
+        const out = selectGrid(entries, budget, minValue);
+        expect(out.grid.length).toBeLessThanOrEqual(budget);
+        expect(new Set(out.grid).size).toBe(out.grid.length);
+        const onGrid = new Set(out.grid);
+        for (const stock of new Set(entries.map((entry) => entry.stock.toLowerCase()))) {
+          const mine = entries.filter((entry) => entry.stock.toLowerCase() === stock);
+          if (out.whole.includes(stock)) for (const entry of mine) expect(onGrid.has(entry.id)).toBe(true);
+          else {
+            expect(out.split).toContain(stock);
+            for (const entry of mine) if (onGrid.has(entry.id)) expect(!entry.archived && entry.value >= minValue).toBe(true);
+          }
+        }
+        expect(out.skipped).toBe(entries.length - out.grid.length);
+        // budget pressure (skeptic follow-up): the R13 parts of ALL names come first, so every name keeps its most valuable
+        // non-archived series whenever the R13 parts fit, however much dust another name holds
+        const r13 = entries.filter((entry) => !entry.archived && entry.value >= minValue).sort((a, b) => (a.value < b.value ? 1 : a.value > b.value ? -1 : 0));
+        for (const entry of r13.slice(0, budget)) {
+          // ties at the cut may go either way
+          if (r13.length > budget && entry.value === r13[budget]!.value) continue;
+          expect(onGrid.has(entry.id)).toBe(true);
+        }
+        // a whole name never displaces an R13 series: the grid holds min(budget, |R13|) R13 series at least
+        expect(out.grid.filter((id) => r13.some((entry) => entry.id === id)).length).toBe(Math.min(budget, r13.length));
+      }
+    });
+
+    test("PoC (skeptic): $2 in 430 archived series of the largest name cannot starve another name's 20 honest $5k series", () => {
+      const X = "0x1111111111111111111111111111111111111111" as `0x${string}`;
+      const Y = "0x2222222222222222222222222222222222222222" as `0x${string}`;
+      let n = 0;
+      const id = () => `0x${(++n).toString(16).padStart(64, "0")}` as `0x${string}`;
+      const entries: GridEntry[] = [];
+      for (let i = 0; i < 20; i++) entries.push({ id: id(), stock: X, value: 50_000n * WAD, archived: false });
+      for (let i = 0; i < 430; i++) entries.push({ id: id(), stock: X, value: 2n * WAD, archived: true });
+      const honestY = Array.from({ length: 20 }, () => id());
+      for (const y of honestY) entries.push({ id: y, stock: Y, value: 5_000n * WAD, archived: false });
+      const out = selectGrid(entries, 450, 100n * WAD);
+      for (const y of honestY) expect(out.grid).toContain(y);
+      expect(out.grid.length).toBeLessThanOrEqual(450);
+      expect(out.whole).toContain(Y.toLowerCase());
+      expect(out.split).toContain(X.toLowerCase()); // X's archived dust is what is left to the hourly catch-up
+    });
+
+    test("the keeper's dust line follows the engine's: a minimum trade of 0 means the $1 default", async () => {
+      const { chain } = pocChain();
+      chain.guards.minTradeUsdg = 0n;
+      const dust = chain.addSeries({ stock: A.nvda, isCall: false, strike: 70n * WAD, tauSeconds: 86_400, supply: 1n * WAD, lastAccrual: chain.nowSeconds - 5n, riskValue: WAD / 2n }).id;
+      const { readLiveRisk } = await import("../series");
+      expect((await readLiveRisk(chain.context())).dustWad).toBe(WAD);
+      await createAccrueJob(chain.context())();
+      expect(sentIds(chain)).not.toContain(dust);
+    });
+
+    test("a dust-tier series (under the minimum trade at its mark) is not needed on the grid", async () => {
+      const { chain } = pocChain();
+      const dust = chain.addSeries({ stock: A.nvda, isCall: false, strike: 70n * WAD, tauSeconds: 86_400, supply: 1n * WAD, lastAccrual: chain.nowSeconds - 5n, riskValue: WAD / 2n }).id;
+      await createAccrueJob(chain.context())();
+      expect(sentIds(chain)).not.toContain(dust);
+    });
+
+    test("ALERT: a live-tier series of a name in session not re-marked for two grid intervals is reported", async () => {
+      const { chain, small } = pocChain();
+      const job = createAccrueJob(chain.context());
+      expect((await job()).staleTier0).toBe(0); // first run: no alert (every mark is old after a start)
+      chain.nowSeconds += 300n;
+      expect((await job()).staleTier0).toBe(0);
+      // the small series' mark did not move for two intervals (e.g. its accrual failed): reported
+      chain.nowSeconds += 300n;
+      chain.series.get(small as `0x${string}`)!.lastAccrual = chain.nowSeconds - 700n;
+      expect((await job()).staleTier0).toBe(1);
     });
   });
 

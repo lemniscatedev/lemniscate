@@ -328,6 +328,12 @@ contract LemniscateEngine is
         return EngineStorage.layout().marks[stock];
     }
 
+    /// @notice A name's deposit-side funding sums (review R3-01): funding since the marks <= now x a - b.
+    function fundingSums(address stock) external view returns (uint256 a, uint256 b) {
+        EngineStorage.FundSum storage f = EngineStorage.layout().fund[stock];
+        return (f.a, f.b);
+    }
+
     /// @notice A name's NAV-mark tier (0 live, 1 dust; review R09/R07): envelope, units, pass and its last completion.
     function markTier(address stock, uint256 tier) external view returns (EngineStorage.MarkTier memory) {
         return EngineStorage.layout().tiers[stock][tier];

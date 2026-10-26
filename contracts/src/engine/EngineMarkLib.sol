@@ -11,8 +11,8 @@ import {EngineStorage} from "./EngineStorage.sol";
 /// claim was priced on a stale liability (and a caller could re-mark only the series that suit them). This library
 /// keeps, per name, O(1) sums over the series' last marks and turns them into a bound on today's liability:
 ///  - lower bound (deposits): bookValue + sum of delta_i x (S - S_i), the tangent at each series' mark (option values
-///    are convex in S), less the most funding can have taken since the name's last full re-mark (value x dt / tau per
-///    speed, follow-up B2), floored at minus the name's book value;
+///    are convex in S), less the most funding can have taken since each series' own mark (value_i x dt_i / tau_i,
+///    follow-up B2, per series since review R3-01), floored at minus the name's book value;
 ///  - upper bound (claims, the high-water checkpoint): bookValue + call units x max(0, S - lo) + put units x
 ///    max(0, hi - S), since |dV/dS| <= 1 per unit and every mark S_i lies in the envelope [lo, hi];
 ///  - plus a first-order vol term per speed, vega x (sigma now - sigma at the mark), 1.5x on the side that hurts the
@@ -67,6 +67,7 @@ library EngineMarkLib {
         n.vg[sp] += vega[1];
         uint24 sg = sigma > SIGMA_MASK ? SIGMA_MASK : uint24(sigma);
         n.vb[sp] += vega[1] * sg;
+        _fund($, id, stock, units == 0 ? 0 : Math.ceilDiv(value[1], sp == 0 ? DAILY : WEEKLY));
         uint256 t0 = oldSigma & TIER_BIT == 0 ? 0 : 1;
         uint256 t1 = value[1] < dustWad() ? 1 : 0;
         EngineStorage.MarkTier storage a = $.tiers[stock][t0];
@@ -83,6 +84,19 @@ library EngineMarkLib {
             if (t1 != t0) _completeIfMarked(b);
         }
         _completeIfMarked(a);
+    }
+
+    /// @dev Review R3-01: replaces series `id`'s term in its name's funding sums by `c` marked now. The removal uses the
+    /// stored term, so the sums stay exact (A and B return to zero when every series is closed).
+    function _fund(EngineStorage.Layout storage $, bytes32 id, address stock, uint256 c) private {
+        EngineStorage.SeriesFund storage f = $.seriesFund[id];
+        uint256 old = f.c;
+        if (old == 0 && c == 0) return;
+        EngineStorage.FundSum storage fs = $.fund[stock];
+        fs.a = fs.a + c - old;
+        fs.b = fs.b + c * block.timestamp - old * f.at;
+        f.c = uint128(c);
+        f.at = uint40(block.timestamp);
     }
 
     /// @dev `_remove` then `_add` in the same tier, with the count unchanged.
@@ -199,7 +213,9 @@ library EngineMarkLib {
     }
 
     /// @notice The liability bound at today's prices: `high` the upper bound (claims), else the lower bound (deposits).
-    /// A name without a usable price now (HALTED, settled or no reading) keeps its book value.
+    /// A name without any price keeps its book value. Review R3-02: a HALTED name is bounded at its last good S (or its
+    /// ORC-4 settlement price, as sells read it) with the trade TWAP, like CLOSED, so the R16 worse-of rule also holds
+    /// while the feed is halted and the token's pool moves (the hedge leg already used the TWAP).
     function navLiability(bool high) public view returns (uint256) {
         EngineStorage.Layout storage $ = EngineStorage.layout();
         int256 total = int256($.bookValue);
@@ -208,7 +224,8 @@ library EngineMarkLib {
             EngineStorage.MarkTier[2] storage tiers = $.tiers[stock];
             if (tiers[0].count == 0 && tiers[1].count == 0) continue;
             PriceReading memory r = $.priceGuard.readLite(stock);
-            if (r.s == 0 || r.session == SessionKind.HALTED) continue;
+            if (r.session == SessionKind.HALTED && $.settleS[stock] != 0) r.s = $.settleS[stock];
+            if (r.s == 0) continue;
             total += _adjust($, stock, r.s, _tradeTwap($, stock), high);
         }
         return total > 0 ? uint256(total) : 0;
@@ -259,14 +276,11 @@ library EngineMarkLib {
                 if (at < a) a = at;
             }
             // B2: funding since the marks only lowers the liability, by at most value x dt / tau per series (the
-            // funding rate (V - payoff) / (V tau) is at most 1 / tau, also at F11's max(start, now) rate); every mark
-            // of a tier is at or after its tc (R09: the start of its last completed pass).
-            for (uint256 k; k < 2; ++k) {
-                EngineStorage.MarkTier storage t = tiers[k];
-                if (t.count == 0) continue;
-                uint256 dt = block.timestamp - t.tc;
-                if (dt != 0) a -= int256((t.val[0] / DAILY + t.val[1] / WEEKLY) * dt);
-            }
+            // funding rate (V - payoff) / (V tau) is at most 1 / tau, also at F11's max(start, now) rate). Review
+            // R3-01: each series' own bound, sum c_i x (now - mark_i) = now x A - B, so a series re-marked late (a
+            // small position the keeper samples hourly) no longer charges the whole name's value since its tc.
+            EngineStorage.FundSum storage fs = $.fund[stock];
+            a -= int256(block.timestamp * fs.a - fs.b);
             int256 floor_ = -int256($.book[stock].value);
             if (a < floor_) a = floor_;
             if (vol < 0) a += vol * 3 / 2;

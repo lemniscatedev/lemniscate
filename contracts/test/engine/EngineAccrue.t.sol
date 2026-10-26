@@ -80,7 +80,8 @@ contract EngineAccrueTest is EngineBase {
         // Review R07/R09 moved the NAV-mark update into one delegatecalled library copy (EIP-170): ~3k gas per series
         // more. The keeper's batch is at most 45 series (decision 49); that batch stays under half a 32M block.
         assertLt(used * 45 / 50, 16_000_000, "a keeper batch (<= 45) under half of a 32M block");
-        assertLt(used, 16_250_000, "50 series regression bound");
+        // Review R3-01 adds each series' own funding term (one slot per series plus the name's sums): ~3.5k gas per series.
+        assertLt(used, 16_750_000, "50 series regression bound");
         for (uint256 i; i < 50; ++i) {
             assertEq(registry.seriesOf(ids[i]).lastAccrual, vm.getBlockTimestamp());
         }
