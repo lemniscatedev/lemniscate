@@ -34,78 +34,59 @@
 #   6. prints the API's view: head, indexer lag, each keeper job's coarse status.
 # The last 5 releases are kept; README.md says how to roll back by hand.
 #
+# Files are created with umask 022 and the release dir is 0755, whatever umask the caller had (a sudo wrapper or a
+# systemd unit with UMask=0027 would otherwise make the release, node_modules and the virtualenv unreadable to the
+# lem-* service users). Network steps (eth_chainId, bun install, pip) are retried with backoff (DEPLOY_RETRY_WAITS,
+# seconds, default "10 30": three tries).
+#
+# Exit codes: 0 deployed and healthy (or --check healthy); 75 nothing was switched (a failure before the link moved:
+# commit or 4663.json missing, upload, preflight, bun install, key preflight, virtualenv; the running release is
+# untouched, safe to try again later); 1 a failure after the switch (migrations, an unhealthy service: the link went
+# back to the previous release), an unhealthy --check, or a refused command line; 2 usage.
+#
 # Env (all optional):
 #   SSH_OPTS                  extra ssh options, e.g. "-i ~/.ssh/<key> -p 22"
 #   LEMNISCATE_DEPLOYMENTS_SRC  folder holding 4663.json (default: app/deployments of this checkout)
 #   LEMNISCATE_PUBLIC_API_URL   e.g. https://api.<your-domain>: also checked from this machine after the deploy
 #   LEMNISCATE_ALLOW_REAL_DEPLOY, LEMNISCATE_ALLOW_FILE   the --local arming guard (see above)
+#   DEPLOY_RETRY_WAITS        waits between tries of a network step (default "10 30")
 #   API_DOMAIN, MCP_DOMAIN, ACME_EMAIL, DB_NAME, SWAP_SIZE, TIMESCALE_CODENAME: passed to provision.sh by --provision
 set -euo pipefail
+umask 022
 
-usage() { sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'; }
+# Nothing was switched: the caller (the release runner) may try again later; it never rolls back on this code.
+EX_NOT_SWITCHED=75
+
+usage() { sed -n '2,53p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { printf 'deploy: %s\n' "$*" >&2; exit 1; }
+# a failure before anything on the server was switched
+die_unswitched() { printf 'deploy: %s (nothing switched)\n' "$*" >&2; exit "$EX_NOT_SWITCHED"; }
 log() { printf '[deploy %s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 
-MODE=deploy
-REF=HEAD
-HOST=""
-LOCAL=0
-REPO=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --ref) [[ $# -ge 2 ]] || die "--ref needs a value"; REF="$2"; shift 2 ;;
-    --provision) MODE=provision; shift ;;
-    --check) MODE=check; shift ;;
-    --local) LOCAL=1; shift ;;
-    --repo) [[ $# -ge 2 ]] || die "--repo needs a value"; REPO="$2"; shift 2 ;;
-    -h | --help) usage; exit 0 ;;
-    -*) die "unknown option $1 (try --help)" ;;
-    *) [[ -z "$HOST" ]] || die "one host only"; HOST="$1"; shift ;;
-  esac
-done
-if [[ "$LOCAL" == 1 ]]; then
-  # Real-deploy guard: first thing, before any other check, so a refused run touches nothing.
-  [[ "${LEMNISCATE_ALLOW_REAL_DEPLOY:-}" == 1 ]] || die "--local refused: LEMNISCATE_ALLOW_REAL_DEPLOY=1 is not set (the real-deploy guard)"
-  [[ -n "${LEMNISCATE_ALLOW_FILE:-}" && -f "$LEMNISCATE_ALLOW_FILE" ]] \
-    || die "--local refused: the arming file named by LEMNISCATE_ALLOW_FILE is missing (the real-deploy guard)"
-  [[ -z "$HOST" ]] || die "--local takes no host"
-  [[ "$MODE" != provision ]] || die "--local cannot --provision"
-  if [[ "$MODE" == deploy ]]; then
-    [[ -n "$REPO" && -d "$REPO" ]] || die "--local deploy needs --repo <git dir>"
-    [[ "$REF" =~ ^[0-9a-f]{40}$ ]] || die "--local deploy needs --ref <40-hex sha>, got '$REF'"
-  fi
-else
-  [[ -z "$REPO" ]] || die "--repo only goes with --local"
-  [[ -n "$HOST" ]] || { usage >&2; exit 2; }
-  [[ "$HOST" =~ ^([A-Za-z0-9._-]+@)?[A-Za-z0-9._:-]+$ ]] || die "'$HOST' does not look like a host or user@host"
-fi
-
-for bin in git gzip curl; do
-  command -v "$bin" >/dev/null || die "$bin not found"
-done
-[[ "$LOCAL" == 1 ]] || command -v ssh >/dev/null || die "ssh not found"
-
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ "$LOCAL" == 1 && -n "$REPO" ]]; then
-  ROOT="$(cd "$REPO" && pwd)"
-else
-  ROOT="$(git -C "$HERE" rev-parse --show-toplevel)"
-fi
-APP="$ROOT/app"
-
-# ---------------------------------------------------------------- ssh (one shared connection)
-SSH_EXTRA=()
-if [[ -n "${SSH_OPTS:-}" ]]; then read -r -a SSH_EXTRA <<<"$SSH_OPTS"; fi
-[[ "$HOST" == *@* ]] || SSH_EXTRA+=(-l root)
-CTL_DIR="$(mktemp -d)"
-cleanup() {
-  [[ "$LOCAL" == 1 ]] || ssh -o ControlPath="$CTL_DIR/c" -O exit "$HOST" >/dev/null 2>&1 || true
-  rm -rf "$CTL_DIR"
+# retry <what> <command...>: up to 1 + the number of DEPLOY_RETRY_WAITS tries, waiting that long between them.
+retry() {
+  local what="$1" w waits rc
+  shift
+  read -r -a waits <<<"${DEPLOY_RETRY_WAITS:-10 30}"
+  for w in ${waits[@]+"${waits[@]}"} last; do
+    if "$@"; then return 0; else rc=$?; fi
+    [[ "$w" == last ]] && break
+    log "$what failed (exit $rc); trying again in ${w}s" >&2
+    sleep "$w"
+  done
+  return "$rc"
 }
-trap cleanup EXIT
-ssh_() {
-  ssh -o BatchMode=yes -o ControlMaster=auto -o ControlPath="$CTL_DIR/c" -o ControlPersist=300 \
-    -o ServerAliveInterval=30 ${SSH_EXTRA[@]+"${SSH_EXTRA[@]}"} "$HOST" "$@"
+
+# stage_release <git dir> <sha> <release dir> <folder with 4663.json>: the committed tree of app/ and vol-engine/ at sha
+# (git archive, so a bare repo works) plus the deployment file, in a NEW release dir that every service user can read.
+stage_release() {
+  local root="$1" sha="$2" dir="$3" dep="$4"
+  mkdir -m 0755 "$dir" || return 1
+  chmod 0755 "$dir" || return 1
+  git -C "$root" archive --format=tar "$sha" app vol-engine LICENSE README.md | tar -xf - -C "$dir" --no-same-owner || return 1
+  mkdir -p "$dir/app/deployments" && chmod 0755 "$dir/app/deployments" || return 1
+  cat "$dep/4663.json" >"$dir/app/deployments/4663.json" || return 1
+  chmod -R go-w,a+rX "$dir"
 }
 
 # ---------------------------------------------------------------- the script that runs on the server (as root)
@@ -115,7 +96,14 @@ remote_script() {
   cat <<'REMOTE'
 main() {
   set -euo pipefail
+  umask 022
   local mode="$1" rel="${2:-}" sha="${3:-}"
+  # Any failure of a deploy before the link moves exits 75 ("nothing switched"; the running release is untouched and the
+  # caller may simply try again later). From the switch on, a failure exits 1 (the link was put back; see below).
+  SWITCHED=0
+  if [[ "$mode" == deploy ]]; then
+    trap 'rc=$?; if [[ "$rc" != 0 && "$SWITCHED" == 0 ]]; then printf "deploy (server): stopped before the switch (exit %s): nothing switched, %s/current is unchanged\n" "$rc" /opt/lemniscate >&2; exit 75; fi' EXIT
+  fi
   local BASE=/opt/lemniscate ENVF=/etc/lemniscate/lemniscate.env KEYS=/etc/lemniscate/keys
   # Start order. Required services always; mcp only when it is already enabled.
   local CORE=(indexer api keeper hedger vol-engine)
@@ -124,6 +112,19 @@ main() {
   # Last assignment wins, as in systemd's EnvironmentFile.
   envval() { sed -n "s/^$1=//p" "$ENVF" | tail -1; }
   lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+  # retry <what> <command...>: network steps (RPC, package registries) get 1 + len(DEPLOY_RETRY_WAITS) tries.
+  retry() {
+    local what="$1" w waits rc=1
+    shift
+    read -r -a waits <<<"${DEPLOY_RETRY_WAITS:-10 30}"
+    for w in ${waits[@]+"${waits[@]}"} last; do
+      if "$@"; then return 0; else rc=$?; fi
+      [[ "$w" == last ]] && break
+      log "$what failed (exit $rc); trying again in ${w}s" >&2
+      sleep "$w"
+    done
+    return "$rc"
+  }
 
   [[ "$(id -u)" == 0 ]] || die "connect as root"
   id lemniscate >/dev/null 2>&1 && [[ -x /usr/local/bin/bun && -f /etc/lemniscate/db.env && -f "$ENVF" ]] \
@@ -225,8 +226,8 @@ main() {
   local rpc chain
   rpc="$(envval PUBLIC_RPC_URL)"
   rpc="${rpc:-https://rpc.mainnet.chain.robinhood.com}"
-  chain="$(curl -fsS -m 20 -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' "$rpc" | jq -r '.result // empty')" \
-    || die "PUBLIC_RPC_URL did not answer eth_chainId"
+  chain_id() { curl -fsS -m 20 -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' "$rpc" | jq -er '.result'; }
+  chain="$(retry "eth_chainId" chain_id)" || die "PUBLIC_RPC_URL did not answer eth_chainId (tried 3 times)"
   [[ -n "$chain" && "$((chain))" == 4663 ]] || die "PUBLIC_RPC_URL answered chain id ${chain:-nothing}, not Robinhood Chain mainnet 4663: refusing"
 
   local dep="$R/app/deployments/4663.json"
@@ -285,20 +286,25 @@ main() {
   # The service users (not the owner of the files) run the code: readable and traversable by them, writable by nobody else.
   chmod -R go-w,a+rX "$R"
   log "bun install --frozen-lockfile"
-  (cd "$R/app" && runuser -u lemniscate -- env HOME=/var/lib/lemniscate PATH=/usr/local/bin:/usr/bin:/bin \
-    bun install --frozen-lockfile --production) || die "bun install failed; /opt/lemniscate/current is unchanged"
+  bun_install() { (cd "$R/app" && runuser -u lemniscate -- env HOME=/var/lib/lemniscate PATH=/usr/local/bin:/usr/bin:/bin \
+    bun install --frozen-lockfile --production); }
+  retry "bun install" bun_install || die "bun install failed (tried 3 times); /opt/lemniscate/current is unchanged"
   log "key preflight: every keystore unlocks, addresses are distinct (addresses only are printed)"
   # Runs as root: it must open every keystore to compare addresses, and no service user may open them all.
   (cd "$R/app" && env HOME=/root PATH=/usr/local/bin:/usr/bin:/bin bun src/bin/check-keys.ts "$KEYS") || die "key preflight failed (see above); /opt/lemniscate/current is unchanged"
   log "vol-engine virtualenv (hash-pinned: requirements.lock, --require-hashes)"
-  (cd "$R/vol-engine" && runuser -u lemniscate -- env HOME=/var/lib/lemniscate PATH=/usr/local/bin:/usr/bin:/bin \
-    bash -c 'python3 -m venv .venv && ./.venv/bin/pip install --quiet --no-cache-dir --require-hashes --no-deps -r requirements.lock && ./.venv/bin/pip install --quiet --no-cache-dir --no-deps --no-build-isolation .') \
-    || die "could not build the vol-engine virtualenv; /opt/lemniscate/current is unchanged"
+  venv_build() { (cd "$R/vol-engine" && runuser -u lemniscate -- env HOME=/var/lib/lemniscate PATH=/usr/local/bin:/usr/bin:/bin \
+    bash -c 'python3 -m venv .venv && ./.venv/bin/pip install --quiet --no-cache-dir --require-hashes --no-deps -r requirements.lock && ./.venv/bin/pip install --quiet --no-cache-dir --no-deps --no-build-isolation .'); }
+  retry "vol-engine virtualenv" venv_build || die "could not build the vol-engine virtualenv (tried 3 times); /opt/lemniscate/current is unchanged"
+  # node_modules and .venv were made by the lemniscate user: readable and traversable by every service user too
+  chmod 0755 "$R"
+  chmod -R go-w,a+rX "$R"
 
   # ---- switch, migrate (roll the link back on failure)
   local prev=""
   [[ -L "$BASE/current" ]] && prev="$(readlink "$BASE/current")"
   point() { ln -sfn "$1" "$BASE/current.new" && mv -T "$BASE/current.new" "$BASE/current"; }
+  SWITCHED=1
   point "releases/$rel"
   log "current -> releases/$rel; migrating"
   if ! systemctl start lemniscate-migrate.service; then
@@ -350,6 +356,72 @@ main "$@" </dev/null
 REMOTE
 }
 
+# Tests source this file with DEPLOY_SH_SOURCE_ONLY=1 to reach the functions above (stage_release, retry, remote_script)
+# without running a deploy (deploy-local.test.sh).
+if [[ "${DEPLOY_SH_SOURCE_ONLY:-}" == 1 ]]; then return 0 2>/dev/null || exit 0; fi
+
+MODE=deploy
+REF=HEAD
+HOST=""
+LOCAL=0
+REPO=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --ref) [[ $# -ge 2 ]] || die "--ref needs a value"; REF="$2"; shift 2 ;;
+    --provision) MODE=provision; shift ;;
+    --check) MODE=check; shift ;;
+    --local) LOCAL=1; shift ;;
+    --repo) [[ $# -ge 2 ]] || die "--repo needs a value"; REPO="$2"; shift 2 ;;
+    -h | --help) usage; exit 0 ;;
+    -*) die "unknown option $1 (try --help)" ;;
+    *) [[ -z "$HOST" ]] || die "one host only"; HOST="$1"; shift ;;
+  esac
+done
+if [[ "$LOCAL" == 1 ]]; then
+  # Real-deploy guard: first thing, before any other check, so a refused run touches nothing.
+  [[ "${LEMNISCATE_ALLOW_REAL_DEPLOY:-}" == 1 ]] || die "--local refused: LEMNISCATE_ALLOW_REAL_DEPLOY=1 is not set (the real-deploy guard)"
+  [[ -n "${LEMNISCATE_ALLOW_FILE:-}" && -f "$LEMNISCATE_ALLOW_FILE" ]] \
+    || die "--local refused: the arming file named by LEMNISCATE_ALLOW_FILE is missing (the real-deploy guard)"
+  [[ -z "$HOST" ]] || die "--local takes no host"
+  [[ "$MODE" != provision ]] || die "--local cannot --provision"
+  if [[ "$MODE" == deploy ]]; then
+    [[ -n "$REPO" && -d "$REPO" ]] || die "--local deploy needs --repo <git dir>"
+    [[ "$REF" =~ ^[0-9a-f]{40}$ ]] || die "--local deploy needs --ref <40-hex sha>, got '$REF'"
+  fi
+else
+  [[ -z "$REPO" ]] || die "--repo only goes with --local"
+  [[ -n "$HOST" ]] || { usage >&2; exit 2; }
+  [[ "$HOST" =~ ^([A-Za-z0-9._-]+@)?[A-Za-z0-9._:-]+$ ]] || die "'$HOST' does not look like a host or user@host"
+fi
+
+for bin in git gzip curl; do
+  command -v "$bin" >/dev/null || die "$bin not found"
+done
+[[ "$LOCAL" == 1 ]] || command -v ssh >/dev/null || die "ssh not found"
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "$LOCAL" == 1 && -n "$REPO" ]]; then
+  ROOT="$(cd "$REPO" && pwd)"
+else
+  ROOT="$(git -C "$HERE" rev-parse --show-toplevel)"
+fi
+APP="$ROOT/app"
+
+# ---------------------------------------------------------------- ssh (one shared connection)
+SSH_EXTRA=()
+if [[ -n "${SSH_OPTS:-}" ]]; then read -r -a SSH_EXTRA <<<"$SSH_OPTS"; fi
+[[ "$HOST" == *@* ]] || SSH_EXTRA+=(-l root)
+CTL_DIR="$(mktemp -d)"
+cleanup() {
+  [[ "$LOCAL" == 1 ]] || ssh -o ControlPath="$CTL_DIR/c" -O exit "$HOST" >/dev/null 2>&1 || true
+  rm -rf "$CTL_DIR"
+}
+trap cleanup EXIT
+ssh_() {
+  ssh -o BatchMode=yes -o ControlMaster=auto -o ControlPath="$CTL_DIR/c" -o ControlPersist=300 \
+    -o ServerAliveInterval=30 ${SSH_EXTRA[@]+"${SSH_EXTRA[@]}"} "$HOST" "$@"
+}
+
 run_remote() {
   if [[ "$LOCAL" == 1 ]]; then remote_script | bash -s -- "$@"; else remote_script | ssh_ bash -s -- "$@"; fi
 }
@@ -360,7 +432,7 @@ if [[ "$MODE" == check ]]; then
   exit 0
 fi
 
-SHA="$(git -C "$ROOT" rev-parse --verify "${REF}^{commit}")" || die "no commit $REF"
+SHA="$(git -C "$ROOT" rev-parse --verify "${REF}^{commit}")" || die_unswitched "no commit $REF"
 if [[ "$LOCAL" == 0 && -n "$(git -C "$ROOT" status --porcelain)" ]]; then
   log "note: the checkout has uncommitted changes; they are NOT deployed (only commit ${SHA:0:12})"
 fi
@@ -381,26 +453,24 @@ fi
 
 # ---------------------------------------------------------------- deploy: local checks
 DEP_SRC="${LEMNISCATE_DEPLOYMENTS_SRC:-$APP/deployments}"
-if [[ "$LOCAL" == 1 ]]; then [[ -n "${LEMNISCATE_DEPLOYMENTS_SRC:-}" ]] || die "--local needs LEMNISCATE_DEPLOYMENTS_SRC (the folder that holds 4663.json)"; fi
-[[ -f "$DEP_SRC/4663.json" ]] || die "no mainnet deployment in $DEP_SRC (4663.json): set LEMNISCATE_DEPLOYMENTS_SRC to the folder that has it"
-grep -Eq '"chainId"[[:space:]]*:[[:space:]]*4663([^0-9]|$)' "$DEP_SRC/4663.json" || die "$DEP_SRC/4663.json is not for chain 4663"
-grep -Eq '"network"[[:space:]]*:[[:space:]]*"mainnet"' "$DEP_SRC/4663.json" || die "$DEP_SRC/4663.json is not a mainnet deployment (network must be mainnet)"
-if grep -Eq '"forkProof"' "$DEP_SRC/4663.json"; then die "$DEP_SRC/4663.json comes from a fork run (it has forkProof)"; fi
+if [[ "$LOCAL" == 1 ]]; then [[ -n "${LEMNISCATE_DEPLOYMENTS_SRC:-}" ]] || die_unswitched "--local needs LEMNISCATE_DEPLOYMENTS_SRC (the folder that holds 4663.json)"; fi
+[[ -f "$DEP_SRC/4663.json" ]] || die_unswitched "no mainnet deployment in $DEP_SRC (4663.json): set LEMNISCATE_DEPLOYMENTS_SRC to the folder that has it"
+grep -Eq '"chainId"[[:space:]]*:[[:space:]]*4663([^0-9]|$)' "$DEP_SRC/4663.json" || die_unswitched "$DEP_SRC/4663.json is not for chain 4663"
+grep -Eq '"network"[[:space:]]*:[[:space:]]*"mainnet"' "$DEP_SRC/4663.json" || die_unswitched "$DEP_SRC/4663.json is not a mainnet deployment (network must be mainnet)"
+if grep -Eq '"forkProof"' "$DEP_SRC/4663.json"; then die_unswitched "$DEP_SRC/4663.json comes from a fork run (it has forkProof)"; fi
 
 # ---------------------------------------------------------------- deploy: upload, then run on the server
 REL="$(date -u +%Y%m%dT%H%M%SZ)-${SHA:0:12}"
 if [[ "$LOCAL" == 1 ]]; then
   log "deploying ${SHA:0:12} on this server as release $REL"
-  [[ -d /opt/lemniscate/releases ]] || die "not provisioned: /opt/lemniscate/releases is missing"
-  mkdir "/opt/lemniscate/releases/$REL"
-  git -C "$ROOT" archive --format=tar "$SHA" app vol-engine LICENSE README.md | tar -xf - -C "/opt/lemniscate/releases/$REL" --no-same-owner
-  mkdir -p "/opt/lemniscate/releases/$REL/app/deployments"
-  cat "$DEP_SRC/4663.json" >"/opt/lemniscate/releases/$REL/app/deployments/4663.json"
+  [[ -d /opt/lemniscate/releases ]] || die_unswitched "not provisioned: /opt/lemniscate/releases is missing"
+  stage_release "$ROOT" "$SHA" "/opt/lemniscate/releases/$REL" "$DEP_SRC" || die_unswitched "could not write the release dir /opt/lemniscate/releases/$REL"
 else
   log "deploying ${SHA:0:12} to $HOST as release $REL"
   git -C "$ROOT" archive --format=tar "$SHA" app vol-engine LICENSE README.md | gzip -c \
-    | ssh_ "set -e; test -d /opt/lemniscate/releases || { echo 'not provisioned: run deploy.sh --provision first' >&2; exit 1; }; mkdir /opt/lemniscate/releases/$REL; tar -xzf - -C /opt/lemniscate/releases/$REL --no-same-owner"
-  ssh_ "mkdir -p /opt/lemniscate/releases/$REL/app/deployments"
+    | ssh_ "set -e; umask 022; test -d /opt/lemniscate/releases || { echo 'not provisioned: run deploy.sh --provision first' >&2; exit 1; }; mkdir -m 0755 /opt/lemniscate/releases/$REL; tar -xzf - -C /opt/lemniscate/releases/$REL --no-same-owner" \
+    || die_unswitched "upload to $HOST failed"
+  ssh_ "umask 022; mkdir -p /opt/lemniscate/releases/$REL/app/deployments"
   ssh_ "cat >/opt/lemniscate/releases/$REL/app/deployments/4663.json" <"$DEP_SRC/4663.json"
 fi
 log "uploaded code and 4663.json"
