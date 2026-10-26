@@ -37,6 +37,8 @@ function sameCoverage(prior: KindedSession[], next: KindedSession[], now: bigint
 /** R3: keeps MarketHours' calendar at least `REFRESH_BEFORE_DAYS` ahead. A push replaces the whole list, so it is only
  * sent when the contract's horizon is closing in or the part both calendars cover differs (a corrected holiday). */
 const REFRESH_BEFORE_DAYS = 7n;
+/** R3-03 follow-up: a push deferred for a failed halt-latch upkeep is sent anyway once the pushed calendar ends this soon. */
+const PUSH_ANYWAY_HOURS = 24n;
 
 export async function updateSessions(context: KeeperContext): Promise<Record<string, unknown>> {
   const marketHours = context.deployment.contracts.marketHours;
@@ -58,7 +60,15 @@ export async function updateSessions(context: KeeperContext): Promise<Record<str
   }
   // Review R3-03: the push deletes every past session, which is what PriceGuard derives a halt start from. Store any
   // visible derived start first (the price upkeep pokes such a stock in any session), so the halt start never moves later.
-  if (context.deployment.contracts.priceGuard && context.deployment.stocks.length > 0) await keepLastGoodPrices(context);
+  // If that upkeep could not read a stock or a poke failed, skip this push and retry next hour, unless the pushed calendar
+  // ends within PUSH_ANYWAY_HOURS (an expired calendar reads UNKNOWN for every stock, which is worse).
+  if (context.deployment.contracts.priceGuard && context.deployment.stocks.length > 0) {
+    const upkeep = await keepLastGoodPrices(context);
+    if ((upkeep.failed.length > 0 || upkeep.unread.length > 0) && horizon - nowSeconds > PUSH_ANYWAY_HOURS * 3600n) {
+      context.logger.warn({ failed: upkeep.failed, unread: upkeep.unread }, "Calendar push deferred: the halt-latch upkeep did not complete");
+      return { calendarUpdateNeeded: true, deferred: true, failed: upkeep.failed, unread: upkeep.unread };
+    }
+  }
   const result = await context.tx.submit({
     label: "sessions", to: marketHours,
     data: encodeFunctionData({

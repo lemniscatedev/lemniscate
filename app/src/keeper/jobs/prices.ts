@@ -20,7 +20,7 @@ import type { KeeperContext } from "../context";
  * in any session) or when the derived start is earlier than the stored one.
  * R3-04: a live, fresh stock that still carries a stored latch (a transient in-session halt that ended without a new feed
  * round) is poked too, which clears the latch; a continuity-paused stock is left alone (poke would not clear it). */
-export async function keepLastGoodPrices(context: Pick<KeeperContext, "clients" | "deployment" | "tx" | "logger" | "now" | "metadata">): Promise<{ poked: Address[]; failed: string[]; latched: Address[] }> {
+export async function keepLastGoodPrices(context: Pick<KeeperContext, "clients" | "deployment" | "tx" | "logger" | "now" | "metadata">): Promise<{ poked: Address[]; failed: string[]; latched: Address[]; unread: Address[] }> {
   const marketHours = context.deployment.contracts.marketHours as Address | undefined;
   const nowSeconds = BigInt(Math.floor(context.now(await context.metadata()).getTime() / 1000));
   const priceGuard = context.deployment.contracts.priceGuard as Address;
@@ -42,11 +42,15 @@ export async function keepLastGoodPrices(context: Pick<KeeperContext, "clients" 
   const poked: Address[] = [];
   const latched: Address[] = [];
   const failed: string[] = [];
+  const unread: Address[] = [];
   for (const [index, stock] of stocks.entries()) {
     const read = reads[head + index * 3];
     const state = reads[head + index * 3 + 1];
     const since = reads[head + index * 3 + 2];
-    if (read?.status !== "success" || state?.status !== "success") continue;
+    if (read?.status !== "success" || state?.status !== "success" || since?.status !== "success") {
+      unread.push(stock); // the sessions job will not push a calendar over a stock it could not check (R3-03 follow-up)
+      if (read?.status !== "success" || state?.status !== "success") continue;
+    }
     const r = read.result as { s: bigint; session: number; fresh: boolean; updatedAt: bigint };
     const st = state.result as { lastGoodS: bigint; lastGoodAt: bigint; contPaused: boolean; haltedSince: bigint | number };
     const stored = BigInt(st.haltedSince);
@@ -69,5 +73,5 @@ export async function keepLastGoodPrices(context: Pick<KeeperContext, "clients" 
       context.logger.warn({ stock, err: summary }, "PriceGuard poke failed");
     }
   }
-  return { poked, failed, latched };
+  return { poked, failed, latched, unread };
 }
