@@ -66,7 +66,9 @@ interface ITokenDecimals {
 ///      mover's own fill. Like `_twapPrice` it never reverts (0 = unavailable).
 ///    - Halt latch (F07/F21): `poke` records `haltedSince` when a REGULAR/EXTENDED reading is halted, and clears it on
 ///      the next live good reading. While it is set, CLOSED and UNKNOWN read HALTED (sells queue) instead of the
-///      pre-halt price, and the engine's ORC-4 settlement measures the halt from it.
+///      pre-halt price, and the engine's ORC-4 settlement measures the halt from it. Review R3-03: poke also stores the
+///      feed-derived start in any session (a calendar push later deletes the past sessions it is derived from), and the
+///      stored latch only ever moves earlier, so the halt start never moves later while the halt lasts.
 ///    - CLOSED/UNKNOWN age bound (F07): a last good price older than `maxAgeClosed` (5 days by default: a 3-day holiday
 ///      weekend plus a quiet 24h-heartbeat feed fits inside) reads HALTED, so a dead keeper or feed cannot pay out at a
 ///      frozen price.
@@ -430,12 +432,20 @@ contract PriceGuard is AccessControl, IPriceGuard {
             } else {
                 _setLastGood(stock, st, e);
             }
-        } else if (
-            (e.kind == SessionKind.REGULAR || e.kind == SessionKind.EXTENDED) && e.r.session == SessionKind.HALTED
-                && st.haltedSince == 0
-        ) {
-            st.haltedSince = uint40(block.timestamp);
-            emit HaltLatched(stock, block.timestamp);
+        } else if (e.r.session == SessionKind.HALTED) {
+            // Review R3-03: the derived start reads past calendar sessions, which a later calendar push deletes. Store it
+            // on first sight, in ANY session, so the halt start never moves later (F21 stays closed and the ORC-4 clock
+            // never restarts). The latch only ever moves earlier, to the feed-derived start; in session with no derived
+            // start (issuer pause, sequencer, bad token read) it starts now.
+            uint256 since = st.haltedSince;
+            uint256 next = since;
+            uint256 derived = _derivedHalt(_configs[stock], feedDecimals[stock]);
+            if (derived != 0 && (next == 0 || derived < next)) next = derived;
+            if (next == 0 && (e.kind == SessionKind.REGULAR || e.kind == SessionKind.EXTENDED)) next = block.timestamp;
+            if (next != since) {
+                st.haltedSince = uint40(next);
+                emit HaltLatched(stock, next);
+            }
         }
         return _evaluate(stock).r;
     }
