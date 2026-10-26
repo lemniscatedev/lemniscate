@@ -20,4 +20,8 @@ run() { (cd "$ROOT" && DEPLOYMENT_FILE="$T/dep.json" BLOCKSCOUT_URL="http://127.
 run >/dev/null || { echo "FAIL: expected pass when each contract is verified on one explorer" >&2; exit 1; }
 rm "$T/site/api/v2/smart-contracts/$A"
 if run >/dev/null 2>&1; then echo "FAIL: expected failure when a contract is unverified everywhere" >&2; exit 1; fi
+# Forge 1.x refuses `--resume` without `--broadcast` ("required arguments were not provided"): both submit commands
+# must carry it, or the Sourcify/Blockscout submission never starts (found in the todo 26 testnet dry run).
+[[ "$(grep -c -- '--resume --broadcast --verify' "$ROOT/script/verify-deployment.sh")" == 2 ]] \
+  || { echo "FAIL: verify-deployment.sh submit must run forge script --resume --broadcast --verify (twice)" >&2; exit 1; }
 echo "verify-deployment.test: ok"

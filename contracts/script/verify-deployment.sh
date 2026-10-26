@@ -35,10 +35,12 @@ case "$MODE" in
     : "${RPC_URL:?RPC_URL is required}"
     [ -n "$BLOCKSCOUT_URL" ] || { echo "verify-deployment: no Blockscout URL for chain $CHAIN_ID (set BLOCKSCOUT_URL)" >&2; exit 2; }
     # --resume re-reads the broadcast and verifies each created contract with its recorded constructor arguments.
-    # A verifier that is down must not hide the other one, so both are tried and `check` is the judge.
-    forge script script/DeploySystem.s.sol --rpc-url "$RPC_URL" --resume --verify \
+    # Forge requires --broadcast with --resume; with every transaction of the run already mined it sends nothing (and
+    # no signer is given, so it cannot). A verifier that is down must not hide the other one, so both are tried and
+    # `check` is the judge.
+    forge script script/DeploySystem.s.sol --rpc-url "$RPC_URL" --resume --broadcast --verify \
       --verifier blockscout --verifier-url "${BLOCKSCOUT_URL%/}/api/" || echo "verify-deployment: Blockscout submit reported errors" >&2
-    forge script script/DeploySystem.s.sol --rpc-url "$RPC_URL" --resume --verify \
+    forge script script/DeploySystem.s.sol --rpc-url "$RPC_URL" --resume --broadcast --verify \
       --verifier sourcify --verifier-url "${SOURCIFY_URL%/}/" || echo "verify-deployment: Sourcify submit reported errors" >&2
     exec "$0" check
     ;;
