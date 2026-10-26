@@ -42,6 +42,12 @@
 
 __API_DOMAIN__ {
 	import lemniscate_common api
+	# Server-sent events: send each event to the client as it arrives instead of buffering it.
+	@stream path /v1/stream
+	reverse_proxy @stream 127.0.0.1:3101 {
+		import lemniscate_upstream_headers
+		flush_interval -1
+	}
 	reverse_proxy 127.0.0.1:3101 {
 		import lemniscate_upstream_headers
 	}
