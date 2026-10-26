@@ -1,7 +1,8 @@
 // Lemniscate workspace, wired to the Lemniscate API and the user's wallet (todo 18).
 // Every market number comes from the API (LM_CONFIG.apiBase); `?demo=1` swaps in labelled offline demo data.
 // Option trades use the API intents (unsigned calldata) and are signed in the user's wallet; nothing here holds keys.
-import {createApi,plainError,SESSION_LABEL,SESSION_NOTE,BLOCK_REASON} from '/chain/api.js?v=10';
+import {createApi,plainError,SESSION_LABEL,SESSION_NOTE,BLOCK_REASON,sponsorNote} from '/chain/api.js?v=11';
+import {createLaneProofCache} from '/chain/lane-proof.js?v=1';
 import {createDemoApi} from '/chain/demo.js?v=10';
 import * as W from '/chain/wallet.js?v=11';
 import {regionStatus,declare,regionList} from '/chain/region.js?v=10';
@@ -48,6 +49,8 @@ const sessionOf=name=>chainOf(name)?.session||null;
 const smartAddress=()=>{if(isAddress(prefs.smartAccount))return prefs.smartAccount.toLowerCase();const w=W.wallet().address;return w&&data.smart?.owner===w&&data.smart.address?data.smart.address.toLowerCase():''};
 const owner=()=>DEMO?'0x00000000000000000000000000000000000de300':(CFG.oneTap&&smartAddress()?smartAddress():W.wallet().address);
 const chainMismatch=()=>!DEMO&&data.config&&Number(data.config.chainId)!==Number(CFG.chainId);
+// R3-06: one-tap sells carry the owner's sell-lane proof, signed at most about once per 15 minutes per account and chain.
+const laneProofs=createLaneProofCache({sign:message=>W.signMessage(message)});
 const explorerTx=hash=>CFG.explorerUrl.replace(/\/$/,'')+'/tx/'+hash;
 const qs=extra=>{const p=new URLSearchParams();if(DEMO)p.set('demo','1');for(const [k,v] of Object.entries(extra))p.set(k,v);return '/dashboard?'+p.toString()};
 
@@ -466,8 +469,16 @@ async function runIntent(kind,body,label,nameForReceipt){
   const full={...body,slippageBps:prefs.slippageBps,deadlineSeconds:prefs.deadlineSeconds};
   let hash,intent;
   if(oneTap){
-   const r=await api.intent(kind,{...full,account:smartAddress(),owner:W.wallet().address},{userop:true});intent=r.fallback||r;
-   ui.step(1);ui.status('Sign the operation in your wallet.');
+   let laneProof=null;
+   if(kind==='sell'){
+    const account=smartAddress();
+    if(!laneProofs.peek(account,CFG.chainId))ui.status('Sign the message in your wallet to show this account is yours. It sends nothing and costs no gas. If you decline, the sale still goes ahead.');
+    laneProof=await laneProofs.get(account,CFG.chainId);
+    ui.status('Preparing…');
+   }
+   const r=await api.intent(kind,{...full,account:smartAddress(),owner:W.wallet().address,...(laneProof?{laneProof}:{})},{userop:true});intent=r.fallback||r;
+   const gasNote=sponsorNote(r.sponsorship);
+   ui.step(1);ui.status('Sign the operation in your wallet.'+(gasNote?'<br>'+esc(gasNote):''));
    const signature=await W.signHash(r.userOpHash);
    const sent=await api.useropSend({...r.userOp,signature});
    ui.step(2);ui.status('Waiting for the network…');
@@ -487,7 +498,7 @@ async function runIntent(kind,body,label,nameForReceipt){
   await afterTrade();
  }catch(error){
   if(error.code==='INVITE_REQUIRED'){data.invites={required:true,approved:false};closeModal();render();if(await inviteModal())toast('Your wallet is approved. Open your option again.');return}
-  const msg=error.reason?(BLOCK_REASON[error.reason]||error.message):(error.status!==undefined&&error.code?error.message:W.walletErrorText(error));
+  const msg=error.status===503&&error.code!=='AA_UNAVAILABLE'&&oneTap?'One-tap trading is busy right now. Wait a moment and try again.':error.reason?(BLOCK_REASON[error.reason]||error.message):(error.status!==undefined&&error.code?error.message:W.walletErrorText(error));
   ui.status(`<span class="dash-error" role="alert">${esc(msg)}</span>`);
  }
 }

@@ -14,6 +14,7 @@ const PLAIN={
  NO_SHIELD_SERIES:'No Weekly Down option is open for purchase on this name right now.',
  AA_UNAVAILABLE:'One-tap trading is not available on this server. Use a regular transaction.',
  BUNDLER_ERROR:'The one-tap relay did not accept the operation. Try a regular transaction.',
+ CHAIN_UNAVAILABLE:'One-tap trading is busy right now. Wait a moment and try again.',
  BAD_REQUEST:'That request was not accepted. Reload the page and try again.',
  RATE_LIMITED:'Too many requests in a short time. Wait a moment and try again.',
  INVITE_REQUIRED:'Lemniscate is invite-only for now. Enter your invite code to start buying. Selling is always open.',
@@ -91,4 +92,27 @@ export const BLOCK_REASON={
  VOL_STALE:'New purchases are paused until volatility inputs are refreshed.',
  EARNINGS_BLOCK:'New purchases are paused around this company’s earnings report. Sells stay open.',
  NO_PRICE:'No price is available for this name yet.',
+ NONCE_LANE:'Gas is sponsored only on the account’s main lane. Your account pays the gas for this one.',
 };
+/** Why a one-tap operation came back unsponsored (sponsorship.reason, backend sponsorship.ts). The operation still works; the account pays gas. */
+export const SPONSOR_DENIAL={
+ NONCE_LANE:'Gas is sponsored only on the account’s main lane.',
+ INVITE_REQUIRED:'Gas is sponsored for invited accounts only.',
+ BELOW_MINIMUM:'This trade is below the smallest size that gets sponsored gas.',
+ NO_POSITION:'The account does not hold what this sell needs.',
+ OWNER_UNVERIFIED:'The account owner could not be checked.',
+ QUOTA_ACCOUNT:'This account used its sponsored operations for today.',
+ QUOTA_OWNER:'This wallet used its sponsored operations for today.',
+ QUOTA_NETWORK:'This network used its sponsored operations for today.',
+ QUOTA_GLOBAL:'Today’s sponsored operations are used up.',
+ INSUFFICIENT_BALANCE:'The account does not hold the USDG this trade spends.',
+ ACCOUNT_REGISTERING:'This account is being registered for sponsored gas. That takes a few minutes.',
+ ACCOUNT_UNREGISTERED:'Gas is sponsored only for accounts made in the app or registered.',
+ ACCOUNT_UNSUPPORTED:'This account type is not sponsored.',
+ UNAVAILABLE:'Sponsorship could not be checked right now.',
+};
+export function sponsorNote(sponsorship){
+ if(!sponsorship?.requested||sponsorship.granted)return '';
+ const why=SPONSOR_DENIAL[sponsorship.reason]||'Gas is not sponsored for this one.';
+ return why+' Your account pays the network gas.';
+}

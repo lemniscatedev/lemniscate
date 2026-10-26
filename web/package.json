@@ -13,7 +13,8 @@
     "mock-api": "node scripts/mock-api.mjs",
     "test:browser": "node scripts/browser-check.mjs",
     "fork": "LM_PROFILE=fork node serve.mjs",
-    "test:fork": "node scripts/fork-check.mjs"
+    "test:fork": "node scripts/fork-check.mjs",
+    "test": "node --test scripts/lane-proof.test.mjs"
   },
   "engines": {
     "node": ">=18"

@@ -109,7 +109,12 @@ export function startMockApi({port=4190,overrides={},seed=false}={}){
     // R02: a sell inside the seller's 30-minute hold carries the hold view (overrides.hold), as the API does for an account
     if(q&&body.side==='sell'&&body.account&&overrides.hold)q.hold={...overrides.hold};
     return q?send(res,200,q):send(res,404,{error:'NOT_FOUND',message:'Unknown series.'})}
-   if((m=p.match(/^\/v1\/intent\/(buy|sell|shield)$/))){if(m[1]!=='sell'&&overrides.invites&&!approved.has(String(body?.account||'').toLowerCase())&&!approved.has(String(body?.owner||'').toLowerCase()))return send(res,403,{error:'INVITE_REQUIRED',message:'Lemniscate is invite-only for now. Enter your invite code to start buying. Selling is always open.'});if(url.searchParams.get('format')==='userop')return send(res,503,{error:'AA_UNAVAILABLE',message:'One-tap flows are not configured on this server. Use the plain transaction.'});const [status,out]=intent(m[1],body);return send(res,status,out)}
+   if((m=p.match(/^\/v1\/intent\/(buy|sell|shield)$/))){if(m[1]!=='sell'&&overrides.invites&&!approved.has(String(body?.account||'').toLowerCase())&&!approved.has(String(body?.owner||'').toLowerCase()))return send(res,403,{error:'INVITE_REQUIRED',message:'Lemniscate is invite-only for now. Enter your invite code to start buying. Selling is always open.'});if(url.searchParams.get('format')==='userop'&&overrides.userop){
+     // R3-06: one-tap builds are recorded (the sell-lane proof is checked by the tests); 'busy' answers like a spent read lane.
+     (overrides.useropBodies||=[]).push(body);
+     if(overrides.userop==='busy')return send(res,503,{error:'CHAIN_UNAVAILABLE',message:'The chain could not be read right now.'});
+    }
+    if(url.searchParams.get('format')==='userop')return send(res,503,{error:'AA_UNAVAILABLE',message:'One-tap flows are not configured on this server. Use the plain transaction.'});const [status,out]=intent(m[1],body);return send(res,status,out)}
    if(p==='/v1/invites/redeem'){
     const code=String(body?.code||'').toUpperCase().replace(/[^A-Z0-9]/g,''),a=String(body?.address||'').toLowerCase();
     if(!/^0x[0-9a-f]{40}$/.test(a)||!/^0x[0-9a-fA-F]{130}$/.test(body?.signature||''))return send(res,401,{error:'UNAUTHORIZED',message:'Signature check failed.'});

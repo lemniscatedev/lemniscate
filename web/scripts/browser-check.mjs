@@ -40,7 +40,7 @@ const FAKE_WALLET=`(()=>{const ACCOUNT='0x00000000000000000000000000000000000a11
   if(method==='eth_blockNumber')return '0x10';
   if(method==='eth_getLogs')return [];
   if(method==='eth_sendTransaction'){window.__sent=(window.__sent||[]).concat(params[0]);const h='0x'+(BigInt(Date.now())*1000n+BigInt(++n)).toString(16).padStart(64,'0');await fetch('http://127.0.0.1:${API_PORT}/__test/settle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:params[0].data,hash:h})});return h}
-  if(method==='personal_sign'){const hex=params[0].slice(2);window.__signed=(window.__signed||[]).concat(new TextDecoder().decode(Uint8Array.from(hex.match(/../g)||[],b=>parseInt(b,16))));return '0x'+'11'.repeat(65)}
+  if(method==='personal_sign'){const hex=params[0].slice(2);const msg=new TextDecoder().decode(Uint8Array.from(hex.match(/../g)||[],b=>parseInt(b,16)));if(window.__rejectLaneProof&&/Action: sell-lane/.test(msg))throw Object.assign(new Error('User rejected the request.'),{code:4001});window.__signed=(window.__signed||[]).concat(msg);return '0x'+'11'.repeat(65)}
   if(method==='eth_getTransactionReceipt')return {status:'0x1',transactionHash:params[0],blockNumber:'0x10'};
   throw Object.assign(new Error('unsupported '+method),{code:4200})},on(){},removeListener(){}};
  const info={uuid:'test-wallet-uuid',name:'Test Wallet',icon:'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22/%3E',rdns:'test.wallet'};
@@ -306,6 +306,52 @@ await section('F',async()=>{
  ok('F console clean',errors.length===0,errors.join(' | ').slice(0,300));
  await context.close();
  overrides.invites=false;mock.approved.clear();
+});
+
+// ---- H. one-tap sells carry the sell-lane proof (backend R3-06): signed once, reused, and a declined proof still sells
+await section('H',async()=>{
+ const A='0x00000000000000000000000000000000000a11ce';
+ overrides.session='REGULAR';overrides.invites=false;overrides.userop='busy';overrides.useropBodies=[];
+ const run=async({reject=false}={})=>{
+  const {page,context,errors}=await newPage({apiBase:`http://127.0.0.1:${API_PORT}`,wallet:true,config:{oneTap:'true'}});
+  // The smart account is set to the test wallet's own address so the positions from section C are there to sell.
+  await context.addInitScript(([a,r])=>{try{const k='lemniscate.prefs.v2';localStorage.setItem(k,JSON.stringify({...JSON.parse(localStorage.getItem(k)||'{}'),smartAccount:a}))}catch{};if(r)window.__rejectLaneProof=true},[A,reject]);
+  await page.goto(`${base}/dashboard?tab=positions`,{waitUntil:'load'});await settle(page);
+  await page.click('.dash-header [data-action="connect"]');await page.waitForSelector('.dash-wallet-option');
+  await page.locator('.dash-wallet-option',{hasText:'Test Wallet'}).click();
+  await page.waitForSelector('.dash-header [data-address]',{timeout:5_000}).catch(()=>{});
+  const sell=async()=>{
+   await page.waitForSelector('[data-action="sell"]',{timeout:10_000});
+   await page.click('[data-action="sell"]');await page.waitForFunction(()=>/Proceeds after spread/.test(document.querySelector('#sell-summary')?.innerText||''),null,{timeout:8_000}).catch(()=>{});
+   await page.click('[data-action="confirm-sell"]');
+   await page.waitForFunction(()=>/busy right now/.test(document.querySelector('#tx-status')?.innerText||''),null,{timeout:10_000}).catch(()=>{});
+   const status=await page.locator('#tx-status').innerText().catch(()=>'');
+   await page.keyboard.press('Escape');
+   return status;
+  };
+  return {page,context,errors,sell};
+ };
+ let s=await run();
+ const status=await s.sell();
+ ok('H 503 on a one-tap build: short plain message',/One-tap trading is busy right now\. Wait a moment and try again\./.test(status),status.replace(/\n/g,' ').slice(0,160));
+ let signed=(await s.page.evaluate(()=>window.__signed||[])).filter(m=>/Action: sell-lane/.test(m));
+ const proof=overrides.useropBodies[0]?.laneProof;
+ const now=Math.floor(Date.now()/1000);
+ ok('H sell-lane message signed in the backend format',signed.length===1&&signed[0]===`Lemniscate wants you to sign this message.\n\nAction: sell-lane\nAccount: ${A}\nExpires: ${proof?.expires}\nChain: 4663`,JSON.stringify(signed));
+ ok('H build request carries laneProof {expires, signature}, expiry within 15 minutes',proof?.signature==='0x'+'11'.repeat(65)&&proof.expires>now&&proof.expires<=now+900,JSON.stringify(proof));
+ await s.sell();
+ signed=(await s.page.evaluate(()=>window.__signed||[])).filter(m=>/Action: sell-lane/.test(m));
+ ok('H second sell reuses the cached proof (no new wallet prompt)',signed.length===1&&overrides.useropBodies.length===2&&JSON.stringify(overrides.useropBodies[1].laneProof)===JSON.stringify(proof),`${signed.length} signed, ${overrides.useropBodies.length} builds`);
+ const decoded=await s.page.evaluate(async()=>{const m=await import('/chain/api.js?v=11');return [m.sponsorNote({requested:true,granted:false,reason:'NONCE_LANE'}),m.BLOCK_REASON.NONCE_LANE||'',m.sponsorNote({requested:true,granted:true})]});
+ ok('H NONCE_LANE denial decoded in plain words',/main lane/.test(decoded[0])&&/pays the network gas/.test(decoded[0])&&/main lane/.test(decoded[1])&&decoded[2]==='',decoded.join(' | '));
+ ok('H console clean',s.errors.length===0,s.errors.join(' | ').slice(0,300));
+ await s.context.close();
+ s=await run({reject:true});
+ const before=overrides.useropBodies.length;
+ const declined=await s.sell();
+ ok('H declined proof: the sell is still built, without laneProof',overrides.useropBodies.length===before+1&&!('laneProof' in overrides.useropBodies[before])&&/busy right now/.test(declined),JSON.stringify(overrides.useropBodies[before]||{}).slice(0,160));
+ await s.context.close();
+ delete overrides.userop;delete overrides.useropBodies;
 });
 
 // ---- D. demo mode
