@@ -990,7 +990,7 @@ async function main() {
     }
   });
 
-  await flow("rules", "Minimum trade $1 (F08/F14/F24, expected failures)", "a buy costing under $1 reverts BelowMinimum; a partial sell leaving dust reverts BelowMinimum; selling the whole balance works", async (f) => {
+  await flow("rules", "Minimum trade $1 (F08/F14/F24, expected failures)", "a buy costing under $1 reverts BelowMinimum; a sold part under $1 reverts BelowMinimum; a sell leaving a sub-minimum remainder sells the whole balance (R03)", async (f) => {
     await waitVolFresh(["NVDA"]);
     const deadline = BigInt(await chainTime()) + 600n;
     await f.send("usdg.approve(engine)", walletFor("carol"), { to: C.usdg, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [C.engine, 10n ** 12n] }) });
@@ -998,10 +998,14 @@ async function main() {
     const q2 = await engineRead<{ usdg: bigint }>("quote", [ruleRow.id, 2n * WAD, true]);
     await f.send("engine.buy (2 units)", walletFor("carol"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "buy", args: [ruleRow.id, 2n * WAD, (q2.usdg * 103n) / 100n, deadline, addressOf("carol")] }) });
     const held = await tokenBalance(ruleRow.token, addressOf("carol"));
-    const dust = await f.expectRevert("engine.sell (leaves dust)", walletFor("carol"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "sell", args: [ruleRow.id, held - held / 100_000n, 0n, deadline, addressOf("carol")] }) }, "BelowMinimum");
-    const r = await f.send("engine.sell (whole balance)", walletFor("carol"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "sell", args: [ruleRow.id, held, 0n, deadline, addressOf("carol")] }) });
-    assert(events(r, OptionEngineAbi, C.engine).some((e) => e.eventName === "Sold"), "whole-balance sell did not settle");
-    return `${tiny}; ${dust}; whole balance sold`;
+    // A sold part under the minimum still reverts (decision 56).
+    const part = await f.expectRevert("engine.sell (part under $1)", walletFor("carol"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "sell", args: [ruleRow.id, held / 100_000n, 0n, deadline, addressOf("carol")] }) }, "BelowMinimum");
+    // R03 (decision 56): a sell that would leave a remainder under the minimum sells the whole balance instead of reverting.
+    const r = await f.send("engine.sell (leaves dust -> whole balance)", walletFor("carol"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "sell", args: [ruleRow.id, held - held / 100_000n, 0n, deadline, addressOf("carol")] }) });
+    assert(events(r, OptionEngineAbi, C.engine).some((e) => e.eventName === "Sold"), "the sell did not settle");
+    const left = await tokenBalance(ruleRow.token, addressOf("carol"));
+    assert(left === 0n, `a sub-minimum remainder of ${left} was left instead of swept into the sale`);
+    return `${tiny}; ${part}; a sell leaving dust sold the whole balance (R03)`;
   });
 
   // Weekend: CLOSED session.

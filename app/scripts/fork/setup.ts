@@ -15,6 +15,10 @@
 //   3. PriceGuard maxAgeClosed = 14 days (its hard maximum; production 5 days, review F07/F21). Same reason as 1: the
 //      last good price is the fork block's round, so after a few days of warps every CLOSED/UNKNOWN read would turn
 //      HALTED. The halt path itself (latch, settleHalted) is exercised with a mock feed.
+//   4. PriceGuard TWAP band (feed S vs the Uniswap pool TWAP, buys pause outside it) = at least 300 bps for every launch
+//      name (production 75 bps). Reason: the fork's feeds and pools are both frozen at the fork block, so a gap the real
+//      market closes within minutes stays for the whole run (2026-10-25: Sunday fork, NVDA feed at Friday's close 211.16
+//      vs pool 213.2, +0.97 %), and every flow on that name would see buys paused. The pause itself is unit-tested.
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -26,6 +30,7 @@ import {
 
 export const FORK_MAX_AGE = 30 * 86_400;
 export const FORK_MAX_AGE_CLOSED = 14 * 86_400;
+export const FORK_TWAP_BAND_BPS = 300;
 
 export async function clearDevDelegations(): Promise<number> {
   const { pub, test } = forkClients();
@@ -59,6 +64,17 @@ async function relax(): Promise<void> {
   });
   if ((await pub.waitForTransactionReceipt({ hash: closedHash })).status !== "success") throw new Error(`relax maxAgeClosed: ${closedHash} reverted`);
   console.log(`setup: fork relaxation PriceGuard maxAgeClosed 14 days (${closedHash})`);
+  for (const s of dep.stocks) {
+    const src = await pub.readContract({ address: dep.contracts.priceGuard, abi: PriceGuardAbi, functionName: "twapSource", args: [s.stock] }) as
+      { pool: Address; window: number; bandBps: number };
+    if (src.pool === "0x0000000000000000000000000000000000000000" || src.bandBps >= FORK_TWAP_BAND_BPS) continue;
+    const hash = await admin.writeContract({
+      address: dep.contracts.priceGuard, abi: PriceGuardAbi, functionName: "setTwapSource", chain: null, account: timelock,
+      args: [s.stock, src.pool, src.window, FORK_TWAP_BAND_BPS],
+    });
+    if ((await pub.waitForTransactionReceipt({ hash })).status !== "success") throw new Error(`relax TWAP band ${s.name}: ${hash} reverted`);
+    console.log(`setup: fork relaxation PriceGuard TWAP band ${FORK_TWAP_BAND_BPS} bps for ${s.name} (${hash})`);
+  }
   await test.stopImpersonatingAccount({ address: timelock });
 }
 
@@ -105,6 +121,9 @@ export function serviceEnv(): Record<string, Record<string, string | number>> {
       // The website's fork profile: `npm run fork` in the frontend repo (port 4189) or the Playwright fork check (7200+O).
       CORS_ORIGINS: [PORTS.web, 4189].flatMap((p) => [`http://localhost:${p}`, `http://127.0.0.1:${p}`]).join(","),
       BUNDLER_URL: `http://127.0.0.1:${PORTS.bundler}`,
+      // The fork bundler answers eth_sendUserOperation only after simulating and mining the bundle (receipt polling), which
+      // on a loaded machine can exceed the 8 s production default; a real bundler answers at once.
+      AA_BUNDLER_TIMEOUT_MS: "30000",
     },
     keeper: { ...shared, KEEPER_PRIVATE_KEY: keyOf("keeper"), KEEPER_DRY_RUN: 0, KEEPER_ACCRUE_MAX_AGE_SECONDS: 300, KEEPER_LISTER_MAX_TX: 250 },
     hedger: {
