@@ -124,7 +124,12 @@ abstract contract SystemChecks is SystemDeployer {
                 break;
             }
         }
-        if (testnet) return;
+        if (testnet) {
+            // The owner administers directly (no timelock on testnet): it must be a real Safe unless ALLOW_EOA_OWNER=1.
+            string memory problem = ownerSafeProblem(c.roles.owner, c.safeSingletons, c.allowEoaOwner);
+            if (bytes(problem).length != 0) _fail(problem);
+            return;
+        }
 
         address tlAddr = d.timelock;
         if (tlAddr.code.length == 0) {

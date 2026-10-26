@@ -62,6 +62,56 @@ contract MockSafe {
     }
 }
 
+/// @notice Answers like a Safe 1.4.1 for the testnet owner check: threshold, owners, modules, guard and singleton
+/// (slot 0) read through getModulesPaginated / getStorageAt.
+contract MockOwnerSafe {
+    uint256 public threshold;
+    uint256 public ownerCount;
+    address public module;
+    mapping(uint256 => bytes32) internal _slots;
+
+    constructor(uint256 t, uint256 n, address singleton) {
+        threshold = t;
+        ownerCount = n;
+        _slots[0] = bytes32(uint256(uint160(singleton)));
+    }
+
+    function setModule(address m) external {
+        module = m;
+    }
+
+    function setGuard(address g) external {
+        _slots[0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8] = bytes32(uint256(uint160(g))); // not-a-key
+    }
+
+    function getThreshold() external view returns (uint256) {
+        return threshold;
+    }
+
+    function getOwners() external view returns (address[] memory o) {
+        o = new address[](ownerCount);
+        for (uint256 i; i < ownerCount; ++i) {
+            o[i] = address(uint160(0x2000 + i));
+        }
+    }
+
+    function getModulesPaginated(address, uint256) external view returns (address[] memory m, address next) {
+        m = new address[](module == address(0) ? 0 : 1);
+        if (module != address(0)) m[0] = module;
+        next = address(0x1);
+    }
+
+    function getStorageAt(uint256 offset, uint256 length) external view returns (bytes memory out) {
+        out = new bytes(32 * length);
+        for (uint256 i; i < length; ++i) {
+            bytes32 v = _slots[offset + i];
+            assembly {
+                mstore(add(add(out, 0x20), mul(i, 0x20)), v)
+            }
+        }
+    }
+}
+
 /// @notice Todo 10 R1, R2, R3, R9: the deploy script's own code path (SystemDeployer._deploySystem under
 /// vm.startBroadcast(deployer), exactly what DeploySystem.s.sol runs) on the fork profile over mocks that stand in for
 /// the mainnet tokens, feeds and pools, on the testnet profile with its own mocks, and on the mainnet profile; then the
@@ -179,6 +229,7 @@ contract DeploySystemTest is Test, SystemChecks {
         c.profileName = "testnet";
         c.profile = PROFILE_TESTNET;
         c.handoff = true;
+        c.allowEoaOwner = true; // `owner` is a plain test address; the Safe-owner path has its own tests (R10)
         c.roles = _roles();
         c.timers = Timers({
             poolQueueDelay: 10 minutes,
@@ -839,5 +890,86 @@ contract DeploySystemTest is Test, SystemChecks {
         assertEq(c.vaults.epoch, 600);
         c = this.doParse('{"profile":"testnet","stocks":[]}');
         assertFalse(c.vaults.enabled, "off by default");
+    }
+
+    // ------------------------------------------------------------------------------------------------- R10 testnet owner
+
+    function _safeOwnedTestnet(MockOwnerSafe safe, address singleton) internal view returns (Config memory c) {
+        c = _testnetConfig();
+        c.allowEoaOwner = false;
+        c.roles.owner = address(safe);
+        c.safeSingletons = new address[](1);
+        c.safeSingletons[0] = singleton;
+    }
+
+    function test_R10_testnetOwnerSafeDeploysAndPasses() public {
+        vm.chainId(CHAIN_TESTNET);
+        address singleton = address(new MockGuardFeed(8, 1e8)); // any contract stands in for the singleton
+        MockOwnerSafe safe = new MockOwnerSafe(2, 3, singleton);
+        Config memory c = _safeOwnedTestnet(safe, singleton);
+        Deployed memory d = _deploy(c);
+        assertEq(d.admin, address(safe), "the Safe administers the testnet deployment");
+        _assertClean(c, d);
+    }
+
+    function test_R10_testnetEoaOwnerNeedsTheFlag() public {
+        vm.chainId(CHAIN_TESTNET);
+        Config memory c = _testnetConfig();
+        c.allowEoaOwner = false;
+        vm.expectRevert(
+            bytes("SystemConfig: testnet owner refused: OWNER_IS_EOA (deploy the owner Safe first, or ALLOW_EOA_OWNER=1)")
+        );
+        this.doDeploy(c);
+        c.allowEoaOwner = true;
+        _assertClean(c, _deploy(c));
+    }
+
+    function test_R10_testnetOwnerSafeRefusals() public {
+        vm.chainId(CHAIN_TESTNET);
+        address singleton = address(new MockGuardFeed(8, 1e8));
+        MockOwnerSafe oneOfThree = new MockOwnerSafe(1, 3, singleton);
+        vm.expectRevert(bytes("SystemConfig: testnet owner refused: OWNER_SAFE_THRESHOLD_BELOW_2"));
+        this.doDeploy(_safeOwnedTestnet(oneOfThree, singleton));
+
+        MockOwnerSafe withModule = new MockOwnerSafe(2, 3, singleton);
+        withModule.setModule(makeAddr("module"));
+        vm.expectRevert(bytes("SystemConfig: testnet owner refused: OWNER_SAFE_HAS_MODULE"));
+        this.doDeploy(_safeOwnedTestnet(withModule, singleton));
+
+        MockOwnerSafe withGuard = new MockOwnerSafe(2, 3, singleton);
+        withGuard.setGuard(makeAddr("guard"));
+        vm.expectRevert(bytes("SystemConfig: testnet owner refused: OWNER_SAFE_HAS_GUARD"));
+        this.doDeploy(_safeOwnedTestnet(withGuard, singleton));
+
+        MockOwnerSafe otherSingleton = new MockOwnerSafe(2, 3, address(new MockGuardFeed(8, 1e8)));
+        vm.expectRevert(bytes("SystemConfig: testnet owner refused: OWNER_SAFE_UNKNOWN_SINGLETON"));
+        this.doDeploy(_safeOwnedTestnet(otherSingleton, singleton));
+
+        // An EIP-7702 delegated EOA has code but is not a Safe; the escape hatch does not admit it either.
+        address delegated = makeAddr("delegated");
+        vm.etch(delegated, abi.encodePacked(hex"ef0100", makeAddr("sweeper")));
+        Config memory c = _testnetConfig();
+        c.roles.owner = delegated;
+        vm.expectRevert(bytes("SystemConfig: testnet owner refused: OWNER_IS_DELEGATED_EOA"));
+        this.doDeploy(c);
+    }
+
+    function test_R10_postDeployCheckCatchesAnOwnerSafeThatGainsAModule() public {
+        vm.chainId(CHAIN_TESTNET);
+        address singleton = address(new MockGuardFeed(8, 1e8));
+        MockOwnerSafe safe = new MockOwnerSafe(2, 3, singleton);
+        Config memory c = _safeOwnedTestnet(safe, singleton);
+        Deployed memory d = _deploy(c);
+        safe.setModule(makeAddr("module"));
+        _expectFail(c, d, "OWNER_SAFE_HAS_MODULE");
+    }
+
+    function test_R10_configParsesSafeSingletons() public view {
+        Config memory c = this.doParse(
+            string.concat('{"profile":"testnet","safeSingletons":["', vm.toString(address(0x5afe)), '"],"stocks":[]}')
+        );
+        assertEq(c.safeSingletons.length, 1);
+        assertEq(c.safeSingletons[0], address(0x5afe));
+        assertFalse(c.allowEoaOwner, "the EOA escape hatch is off unless ALLOW_EOA_OWNER=1");
     }
 }

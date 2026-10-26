@@ -108,6 +108,12 @@ abstract contract SystemConfig is CommonBase {
         Limits limits;
         StockCfg[] stocks;
         VaultCfg vaults;
+        /// @dev Testnet owner escape hatch: true only from the environment (`ALLOW_EOA_OWNER=1`), never from the JSON. Off
+        /// by default: the testnet owner must then be a real Safe (see `ownerSafeProblem`). Ignored on fork and mainnet.
+        bool allowEoaOwner;
+        /// @dev Official Safe singletons on the target chain (`.safeSingletons`); a Safe owner must run one of them. Empty
+        /// = the singleton is not checked (it must still have code).
+        address[] safeSingletons;
     }
 
     // ------------------------------------------------------------------------------------------------- loading
@@ -130,6 +136,10 @@ abstract contract SystemConfig is CommonBase {
         c.swapRouter = _addr(json, ".swapRouter");
         c.referenceWindow = uint32(_uint(json, ".referenceWindow", 1800));
         c.handoff = vm.keyExistsJson(json, ".handoff") ? vm.parseJsonBool(json, ".handoff") : true;
+        c.allowEoaOwner = vm.envOr("ALLOW_EOA_OWNER", false);
+        if (vm.keyExistsJson(json, ".safeSingletons")) {
+            c.safeSingletons = vm.parseJsonAddressArray(json, ".safeSingletons");
+        }
 
         c.roles.owner = _addr(json, ".roles.owner");
         c.roles.safe = _addr(json, ".roles.safe");
@@ -255,6 +265,8 @@ abstract contract SystemConfig is CommonBase {
         require(c.stocks.length != 0, "SystemConfig: no stocks");
         if (c.profile == PROFILE_TESTNET) {
             require(r.owner != address(0), "SystemConfig: testnet needs roles.owner");
+            string memory problem = ownerSafeProblem(r.owner, c.safeSingletons, c.allowEoaOwner);
+            require(bytes(problem).length == 0, string.concat("SystemConfig: testnet owner refused: ", problem));
         } else {
             require(c.usdg != address(0) && c.usdg.code.length != 0, "SystemConfig: usdg has no code");
             require(c.swapRouter != address(0) && c.swapRouter.code.length != 0, "SystemConfig: swapRouter has no code");
@@ -275,6 +287,47 @@ abstract contract SystemConfig is CommonBase {
             );
             require(c.uniswapFactory != address(0), "SystemConfig: mainnet needs the Uniswap v3 factory");
         }
+    }
+
+    address internal constant SAFE_MODULES_SENTINEL = address(0x1);
+    /// @dev keccak256("guard_manager.guard.address"), Safe's guard storage slot.
+    uint256 internal constant SAFE_GUARD_SLOT = 0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8; // not-a-key
+
+    /// @notice Why `owner` cannot administer the testnet deployment ("" = it can). A real Safe check, not a code-size check
+    /// (crypto-audit-lessons): an EIP-7702 delegated EOA is refused although it has code; a contract owner must answer as a
+    /// Safe with threshold >= 2, at least `threshold` owners, no module (a module bypasses the threshold), no guard, and a
+    /// singleton from `singletons` when that list is given. A plain EOA passes only with `allowEoa` (ALLOW_EOA_OWNER=1).
+    function ownerSafeProblem(address owner, address[] memory singletons, bool allowEoa) internal view returns (string memory) {
+        bytes memory code = owner.code;
+        if (code.length == 23 && code[0] == 0xef && code[1] == 0x01 && code[2] == 0x00) return "OWNER_IS_DELEGATED_EOA";
+        if (code.length == 0) return allowEoa ? "" : "OWNER_IS_EOA (deploy the owner Safe first, or ALLOW_EOA_OWNER=1)";
+        uint256 threshold = _safeThreshold(owner);
+        if (threshold < 2) return "OWNER_SAFE_THRESHOLD_BELOW_2";
+        if (_safeOwners(owner) < threshold) return "OWNER_SAFE_OWNERS_BELOW_THRESHOLD";
+        (bool ok, bytes memory m) =
+            owner.staticcall(abi.encodeWithSignature("getModulesPaginated(address,uint256)", SAFE_MODULES_SENTINEL, 10));
+        if (!ok || m.length < 64) return "OWNER_SAFE_MODULES_UNREADABLE";
+        (address[] memory modules,) = abi.decode(m, (address[], address));
+        if (modules.length != 0) return "OWNER_SAFE_HAS_MODULE";
+        if (_safeSlot(owner, SAFE_GUARD_SLOT) != 0) return "OWNER_SAFE_HAS_GUARD";
+        address singleton = address(uint160(_safeSlot(owner, 0)));
+        if (singleton.code.length == 0) return "OWNER_SAFE_SINGLETON_NO_CODE";
+        if (singletons.length != 0) {
+            bool known;
+            for (uint256 i; i < singletons.length; ++i) {
+                if (singletons[i] == singleton) known = true;
+            }
+            if (!known) return "OWNER_SAFE_UNKNOWN_SINGLETON";
+        }
+        return "";
+    }
+
+    /// @dev One storage word of a Safe through its StorageAccessible `getStorageAt` (0 when unreadable).
+    function _safeSlot(address safe, uint256 slot) internal view returns (uint256 v) {
+        (bool ok, bytes memory d) = safe.staticcall(abi.encodeWithSignature("getStorageAt(uint256,uint256)", slot, 1));
+        if (!ok || d.length < 96) return 0;
+        bytes memory word = abi.decode(d, (bytes));
+        if (word.length == 32) v = uint256(bytes32(word));
     }
 
     function _safeThreshold(address safe) internal view returns (uint256) {
