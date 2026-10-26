@@ -5,6 +5,8 @@ import { createDbClient } from "../db/client";
 import { TtlCache } from "../api/cache";
 import { createLogger, safeErrorSummary } from "../log";
 import { createX402FromEnv } from "../x402";
+import { limitsFromConfig, sponsorshipCapWarning } from "../api/sponsorship";
+import { DEFAULT_MAX_COST_PER_OP_WEI } from "../aa/config";
 
 // Never keep the keeper signing key in a non-keeper process, even if it shares an env file.
 stripKeeperSecrets();
@@ -28,6 +30,13 @@ logger.info(
   { config: safeConfigSummary(config), port: config.API_PORT, network: deployment.network },
   "API listening",
 );
+// Round-3 skeptic L4: the sponsored totals must fit the paymaster's on-chain daily cap even when every operation costs its maximum.
+const capWarning = sponsorshipCapWarning(
+  limitsFromConfig(config),
+  BigInt(process.env.PAYMASTER_MAX_COST_PER_OP_WEI?.trim() || DEFAULT_MAX_COST_PER_OP_WEI),
+  config.PAYMASTER_GLOBAL_DAILY_CAP_WEI ? BigInt(config.PAYMASTER_GLOBAL_DAILY_CAP_WEI) : undefined,
+);
+if (capWarning) logger.warn(capWarning);
 
 const shutdown = async () => {
   server.stop(true);

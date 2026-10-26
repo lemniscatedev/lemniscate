@@ -479,13 +479,13 @@ Each has a regression test that fails without it and a property or fuzz test of 
   `/v1/userop/send` relays that operation (matched by its hash). The per-account, per-owner and per-network limits count spends and
   live reservations, so a flood spends the flooder's own limits; the global limit counts spends only. The money stays bounded by the
   paymaster's own on-chain daily caps, and an operation sent to a bundler without our relay is not counted by the API (the
-  chain caps still apply).
+  chain caps still apply). Superseded by round 3 (R3-05, below): budgets now count signatures, one per account and nonce.
 - **The account-abstraction read budget is partitioned (R12).** One 5 reads-per-second bucket let one client keep every `?format=userop`
   build at 503. Each client (IPv4 or IPv6 /64) now has a 1 read-per-second share with a burst under half the shared one, 40 % of the
   rate is reserved for sells of smart accounts a read has shown to have a stored owner, `?format=userop` builds are limited to 30 a
   minute per client, and cache entries that never expire (deployed accounts) are kept apart from throw-away keys, so a flood cannot evict
   them. Tests: one client at the route limit leaves another's sell build served; under any number of flooding clients a warm sell is
-  always served.
+  always served. Narrowed by round 3 (R3-06, below): the reserved lane is for accounts that hold the option.
 - **The funding grid is bounded (R13).** The 5-minute grid accrued every live series worth at least a dollar, so deep-ITM series held
   for $1 each billed the keeper about 59 million gas a day apiece. The grid now samples only non-archived series with at least $100 of
   outstanding value (`KEEPER_ACCRUE_GRID_MIN_VALUE_USDG`), at most 450 per slot, the most valuable first (`KEEPER_ACCRUE_GRID_MAX_SERIES`),
@@ -513,6 +513,44 @@ Each has a regression test that fails without it and a property or fuzz test of 
   ceil(N / batch) transactions an hour for N dust series, about 7 million gas a day per series at the hourly default; raise the age
   to trade gas for a looser dust-tier claim bound. Property test: a second run with nothing changed sends nothing, and over a day
   every held series is accrued within the cadence and a retired one at most 25 times.
+
+## Service fixes from the round 3 review (2026-10-25, services only)
+
+Each has a regression test that fails without it and a randomized property test of the rule (finding numbers refer to the private review):
+
+- **Every sponsored signature counts, whoever bundles it (R3-05).** R11 counted the global budget only for operations relayed through
+  `/v1/userop/send`, so a signed operation sent straight to `EntryPoint.handleOps` (or a public bundler) was never counted and could
+  use up the paymaster's single on-chain daily cap, after which every sponsored exit failed validation. The API now books a grant for
+  the EntryPoint nonce the operation is built with, at signing time, and keeps it for the UTC day. Only one operation can execute at a
+  nonce, so a rebuild of the same operation, by anyone, reuses the grant and books nothing; sponsored operations use nonce lane 0 only
+  (`NONCE_LANE` otherwise), so an account's grants are bounded by the operations it really executes, plus one, and requests that name
+  someone else's account cannot use up its quota. Exits keep a reserved share: entries stop at `SPONSOR_ENTRY_GLOBAL_DAILY`, exits may
+  use whatever the day's total (entry plus exit) has left. The day's total is the most this signer can ever spend on chain; keep it well
+  below the paymaster's `globalDailyCap`; with `PAYMASTER_GLOBAL_DAILY_CAP_WEI` set, the API warns at startup when that total times
+  `PAYMASTER_MAX_COST_PER_OP_WEI` could exceed the cap (the shipped defaults do: 2,500 x 0.002 ETH against 0.25 ETH, so a day of
+  mostly account-deploying operations could reach the on-chain cap; the totals are an operator decision). A reused grant must be of
+  the same group, so an exit grant never lets a buy past a full entry budget. The per-owner quota counts and limits only an owner's
+  other accounts, never the standard account at index 0, so gifts into an owner's counterfactual accounts cannot use it up.
+  Accepted: attackers' own exits (accounts holding about $1 of a position, sells self-bundled even if they revert) can use up the exit
+  share for the day; entries alone never can, and the property test shows that is the only way a holder's exit is refused.
+- **The reserved read lane is for holders (R3-06).** The R12 lane opened for any deployed Kernel account, so about seven IPv6 /64s and
+  four self-deployed accounts kept every one-tap build at 503. A sell now uses the reserved lane only when (a) Postgres (the indexed
+  balances, no chain read) shows the account holds the option it sells, (b) it is on nonce lane 0, and (c) the request carries the
+  owner's proof of control: a personal_sign over "sell-lane", the account, the chain and an expiry at most 15 minutes ahead, checked
+  offline by recovering the signer and computing its standard Kernel account at `accountIndex`. Without (c) strangers could name real
+  holders' accounts and drain the lane (round-3 skeptic). Each holder account draws at most a tenth of the lane (burst 6, enough for a
+  cold sponsored sell). The lane-0 nonce is cached for two minutes and moved on when our relay accepts an operation; an account may have
+  at most four fresh non-zero nonce lanes read a minute, and those reads never use the reserved lane. Properties: with 1,000 attacker /64s
+  at the route limit and any number of attacker-deployed Kernel accounts without a position, and with strangers naming any number of real
+  holders' accounts on any lanes, a holder's own sell is served within three tries. Accepted: ten accounts the attacker owns that each
+  hold a position can keep the lane busy; a user who bundles elsewhere may get a stale nonce for up to two minutes.
+- **Wallet rate limits are per client (R3-07).** The per-wallet buckets (quotes, intents, userop builds, relays, upcoming and invite
+  writes) were shared by every client and filled by anyone who named the wallet in a body, so one IP could lock a holder out. A wallet is
+  now counted per (client, wallet): requests that name a wallet from other clients never spend the wallet's own client's budget.
+- **The kernel-register keeper job runs on the shipped env (R3-08).** Both env examples set `KEEPER_ENABLED_JOBS` explicitly and left
+  `kernel-register` out, so accounts answered `ACCOUNT_REGISTERING` were never registered. It is now listed, and a test checks that every
+  default job is enabled by both env examples apart from the opt-in ones. An existing `/etc/lemniscate/lemniscate.env` needs the same
+  edit by hand (provision.sh copies the example on the first run only).
 
 ## Contract protections added by the round-2 review (2026-10-25, lane A)
 

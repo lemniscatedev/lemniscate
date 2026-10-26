@@ -49,6 +49,8 @@ export interface BuildInput {
   readonly nonceLane?: number | undefined;
   /** CREATE2 salt index for a new account (default 0). */
   readonly accountIndex?: number | undefined;
+  /** R3-05: the EntryPoint nonce already read for this operation (the one its sponsorship grant is booked for). */
+  readonly nonce?: bigint | undefined;
 }
 
 export interface BuiltUserOp {
@@ -102,7 +104,7 @@ export async function buildUserOp(services: AaServices, input: BuildInput): Prom
     factoryData = kernelFactoryData(config.kernelValidator, input.owner, salt);
   }
 
-  const nonce = await chain.entryPointNonce(config.entryPoint, input.account, nonceKey)
+  const nonce = input.nonce ?? await chain.entryPointNonce(config.entryPoint, input.account, nonceKey)
     .catch(() => { throw new AaError(503, "CHAIN_UNAVAILABLE", "The chain could not be read right now."); });
   const callData = encodeKernelExecute(input.calls);
   const fees = await chain.feesPerGas().catch((error: unknown) => {

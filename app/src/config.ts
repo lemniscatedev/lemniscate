@@ -111,9 +111,12 @@ const envSchema = z.object({
   SPONSOR_EXIT_PER_OWNER_DAILY: z.coerce.number().int().min(0).default(20),
   SPONSOR_EXIT_PER_IP_DAILY: z.coerce.number().int().min(0).default(60),
   SPONSOR_EXIT_GLOBAL_DAILY: z.coerce.number().int().min(0).default(1000),
+  // Round-3 skeptic L4: the paymaster's on-chain globalDailyCap (wei). When set, the API warns at startup if the sponsored totals x
+  // PAYMASTER_MAX_COST_PER_OP_WEI could exceed it. Empty: no check.
+  PAYMASTER_GLOBAL_DAILY_CAP_WEI: z.preprocess((value) => (value === "" ? undefined : value), z.string().regex(/^\d+$/).optional()),
   // Chain reads the account-abstraction routes may make per second in total (F32); beyond it they answer 503.
   AA_RPC_CALLS_PER_SECOND: z.coerce.number().min(1).default(5),
-  // R12: the part of that budget one client (IPv4 or IPv6 /64) may use, reads per second; 40 % of the total is kept for sells of known accounts.
+  // R12: the part of that budget one client (IPv4 or IPv6 /64) may use, reads per second; 40 % of the total is kept for sells by holders (R3-06).
   AA_RPC_CLIENT_CALLS_PER_SECOND: z.coerce.number().min(0.1).default(1),
   // R12: ?format=userop builds per client per minute (the plain intent keeps its own, higher limit).
   API_USEROP_BUILD_PER_MINUTE: z.coerce.number().int().min(1).default(30),

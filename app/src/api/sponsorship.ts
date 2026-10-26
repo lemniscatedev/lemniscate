@@ -19,13 +19,16 @@ import type { ApiDependencies } from "./types";
  *     owner or the account must have redeemed a code (entry flows only).
  *  2. A real trade. Buy/shield: at least SPONSOR_MIN_NOTIONAL_USDG and the account holds the USDG it will spend. Sell: the
  *     account holds the option tokens it sells and the proceeds are at least SPONSOR_MIN_SELL_USDG.
- *  3. Quotas, per UTC day, booked in the database before signing: per account, per owner, per IPv4/IPv6 /64 and globally,
- *     with exits in their own group so entries can never use up the budget that lets holders sell.
- *     R11: a booking is a RESERVATION, not a spend. It lives as long as the paymaster signature can still be used (the
- *     validity window plus a minute) and becomes a spend when the signed operation is relayed through /v1/userop/send. The
- *     per-account, per-owner and per-network limits count spends and live reservations (so a flood costs the flooder his
- *     own limits); the GLOBAL limit counts spends only, so nobody can use up the day's budget by asking for signatures
- *     he never submits. What stays bounded by the chain is the money: the paymaster's own daily caps.
+ *  3. Quotas, per UTC day, booked in the database before signing: per account, per owner, per IPv4/IPv6 /64 and globally.
+ *     R3-05 (decision 72): every signature counts from the moment it is signed, whoever bundles the operation afterwards
+ *     (this API's relay, a public bundler, a direct EntryPoint.handleOps). R11 counted the global budget at relay time,
+ *     which let self-bundled operations spend the paymaster's single on-chain daily cap unseen. A grant is one EntryPoint
+ *     nonce of one account (`nonce`): only one operation can ever execute at a nonce, so rebuilding the same operation, by
+ *     anyone, reuses the grant. Sponsored operations use nonce lane 0 only, so the grants of an account are bounded by the
+ *     operations it really executes, plus one: requests that name somebody else's account cannot use up its quota.
+ *     Exits keep a reserved share: entries may sign at most `entry.global`, exits may use whatever the day's total
+ *     (`entry.global + exit.global`) has left, so entries can never take the budget that lets holders sell. The day's total
+ *     is what this signer can ever spend on chain; keep it well below the paymaster's globalDailyCap (decision 48).
  * Any failure to read what the policy needs denies sponsorship (fail closed). A denial is not an error for the user: the
  * route then returns the same operation unsponsored (they pay gas), and the plain transaction is always available.
  */
@@ -33,7 +36,7 @@ export type SponsorshipKind = "buy" | "sell" | "shield";
 export type DenialReason =
   | "INVITE_REQUIRED" | "BELOW_MINIMUM" | "NO_POSITION" | "INSUFFICIENT_BALANCE" | "OWNER_UNVERIFIED"
   | "QUOTA_ACCOUNT" | "QUOTA_OWNER" | "QUOTA_NETWORK" | "QUOTA_GLOBAL" | "UNAVAILABLE"
-  | "ACCOUNT_UNREGISTERED" | "ACCOUNT_UNSUPPORTED" | "ACCOUNT_REGISTERING";
+  | "ACCOUNT_UNREGISTERED" | "ACCOUNT_UNSUPPORTED" | "ACCOUNT_REGISTERING" | "NONCE_LANE";
 
 export interface SponsorshipInput {
   readonly kind: SponsorshipKind;
@@ -48,10 +51,16 @@ export interface SponsorshipInput {
   readonly validitySeconds?: number;
   /** The Kernel account index the request names (the CREATE2 salt), default 0 (R17 registration check). */
   readonly accountIndex?: number | undefined;
+  /** R3-05: the nonce lane the operation uses; only lane 0 is sponsored. Default 0. */
+  readonly nonceLane?: number | undefined;
+  /** R3-05: the EntryPoint nonce the operation will be built with (read once by the caller and handed to the builder).
+   * null: it could not be read, so nothing is signed. Omitted: the grant is not tied to a nonce (direct use of the gate). */
+  readonly nonce?: bigint | null | undefined;
 }
 
 export type SponsorshipDecision =
-  | { readonly granted: true; readonly ticket: number }
+  /** `ticket` null: a grant for the same account and nonce was already booked today and is reused (nothing to release). */
+  | { readonly granted: true; readonly ticket: number | null }
   | { readonly granted: false; readonly reason: DenialReason; readonly message: string };
 
 export interface SponsorshipGate {
@@ -60,7 +69,7 @@ export interface SponsorshipGate {
   release(ticket: number): Promise<void>;
   /** Ties the reservation to the operation it was signed for, so that relaying that operation can turn it into a spend. */
   attach(ticket: number, userOpHash: string): Promise<void>;
-  /** The operation with this hash was relayed: its reservation becomes a spend (global budget). Returns the rows changed. */
+  /** The operation with this hash was relayed through this API (recorded for operations; budgets count signatures). */
   markSubmitted(userOpHash: string): Promise<number>;
 }
 
@@ -78,6 +87,7 @@ const MESSAGES: Record<DenialReason, string> = {
   ACCOUNT_UNREGISTERED: "Gas is sponsored only for smart accounts the paymaster knows (created with sponsored gas or registered). The operation is returned unsponsored.",
   ACCOUNT_UNSUPPORTED: "This smart account runs an implementation the paymaster does not sponsor. The operation is returned unsponsored.",
   ACCOUNT_REGISTERING: "This smart account was created outside the app, so it is being registered with the paymaster now. Sponsored gas works in a few minutes; this operation is returned unsponsored.",
+  NONCE_LANE: "Gas is sponsored only on the account's main nonce lane (nonceLane 0). The operation is returned unsponsored.",
 };
 
 const deny = (reason: DenialReason): SponsorshipDecision => ({ granted: false, reason, message: MESSAGES[reason] });
@@ -139,9 +149,20 @@ export function createSponsorshipGate(options: SponsorshipGateOptions): Sponsors
     return true;
   }
 
+  /** The owner's standard Kernel account at index 0, computed offline; null when the gate does not know the deployment. */
+  function primaryAccountOf(owner: Address): string | null {
+    if (!options.kernelFactory || !options.kernelImplementation) return null;
+    try {
+      return predictKernelAddressOffline({ factory: options.kernelFactory, validator: options.kernelValidator, implementation: options.kernelImplementation }, owner, 0).toLowerCase();
+    } catch { return null; }
+  }
+
   return {
     async evaluate(input) {
       try {
+        if ((input.nonceLane ?? 0) !== 0) return deny("NONCE_LANE");
+        if (input.nonce === null) return deny("UNAVAILABLE");
+        const nonce = input.nonce === undefined ? null : input.nonce.toString();
         const group = input.kind === "sell" ? "exit" : "entry";
         const quota = limits[group];
         const account = input.account.toLowerCase();
@@ -192,24 +213,42 @@ export function createSponsorshipGate(options: SponsorshipGateOptions): Sponsors
         // 3. Quotas, booked atomically so concurrent requests cannot both take the last slot.
         return await sql.begin(async (tx) => {
           await tx`select pg_advisory_xact_lock(${QUOTA_LOCK})`;
-          // R11: spends (submitted) and live reservations count against an actor; only spends count against the global budget.
+          // R3-05: one grant per account and EntryPoint nonce. Only one operation can execute at a nonce, so another signature
+          // for it (a rebuild, a retry, a stranger naming the account) costs nothing more on chain and books nothing more.
+          if (nonce !== null) {
+            // Same group only (round-3 skeptic L2): an exit grant must never let a buy through once entry.global is full.
+            const existing = await tx`select id from sponsorship_grants
+              where day = ((now() at time zone 'utc')::date) and account = ${account} and nonce = ${nonce} and grp = ${group} limit 1`;
+            if (existing.length) return { granted: true as const, ticket: null };
+          }
+          // Round-3 skeptic L1: the per-owner quota counts and limits only the owner's OTHER accounts. Anyone can gift a little
+          // USDG or option tokens into an owner's counterfactual accounts at other indices and book grants for them, so those
+          // must never use up the quota of the owner's primary account (the standard Kernel account at index 0).
+          const primary = owner ? primaryAccountOf(owner as Address) : null;
+          const isPrimary = primary !== null && primary === account;
+          // Every grant of the day counts, relayed or not: the signature is what lets an operation spend the paymaster's gas.
           const rows = await tx`
-            select count(*) filter (where account = ${account})::int as per_account,
-                   count(*) filter (where owner = ${owner ?? null})::int as per_owner,
-                   count(*) filter (where ip_key = ${input.ipKey})::int as per_ip,
-                   count(*) filter (where submitted_at is not null)::int as total
+            select count(*) filter (where grp = ${group} and account = ${account})::int as per_account,
+                   count(*) filter (where grp = ${group} and owner = ${owner ?? null} and account is distinct from ${primary})::int as per_owner,
+                   count(*) filter (where grp = ${group} and ip_key = ${input.ipKey})::int as per_ip,
+                   count(*) filter (where grp = 'entry')::int as entries,
+                   count(*) filter (where grp = 'exit')::int as exits
             from sponsorship_grants
-            where day = ((now() at time zone 'utc')::date) and grp = ${group} and (submitted_at is not null or expires_at > now())` as unknown as
-            { per_account: number; per_owner: number; per_ip: number; total: number }[];
+            where day = ((now() at time zone 'utc')::date)` as unknown as
+            { per_account: number; per_owner: number; per_ip: number; entries: number; exits: number }[];
           const used = rows[0]!;
-          if (used.total >= quota.global) return deny("QUOTA_GLOBAL");
+          // Exits keep their reserved share: entries stop at entry.global, exits may use whatever the day's total has left.
+          const full = group === "entry"
+            ? used.entries >= limits.entry.global
+            : used.entries + used.exits >= limits.entry.global + limits.exit.global;
+          if (full) return deny("QUOTA_GLOBAL");
           if (used.per_ip >= quota.ip) return deny("QUOTA_NETWORK");
           if (used.per_account >= quota.account) return deny("QUOTA_ACCOUNT");
-          if (owner && used.per_owner >= quota.owner) return deny("QUOTA_OWNER");
+          if (owner && !isPrimary && used.per_owner >= quota.owner) return deny("QUOTA_OWNER");
           const ttl = Math.max(60, Math.floor(input.validitySeconds ?? DEFAULT_VALIDITY_SECONDS)) + 60;
           const inserted = await tx`
-            insert into sponsorship_grants (grp, kind, account, owner, ip_key, notional_usdg, expires_at)
-            values (${group}, ${input.kind}, ${account}, ${owner ?? null}, ${input.ipKey}, ${usdgToNumber(notional)}, now() + ${ttl} * interval '1 second')
+            insert into sponsorship_grants (grp, kind, account, owner, ip_key, notional_usdg, expires_at, nonce)
+            values (${group}, ${input.kind}, ${account}, ${owner ?? null}, ${input.ipKey}, ${usdgToNumber(notional)}, now() + ${ttl} * interval '1 second', ${nonce})
             returning id` as unknown as { id: string | number }[];
           return { granted: true as const, ticket: Number(inserted[0]!.id) };
         });
@@ -239,4 +278,22 @@ export function createSponsorshipGate(options: SponsorshipGateOptions): Sponsors
 function wadFromDecimal(text: string): bigint {
   const [whole = "0", fraction = ""] = text.split(".");
   return BigInt(whole || "0") * 10n ** 18n + BigInt((fraction + "0".repeat(18)).slice(0, 18) || "0");
+}
+
+/**
+ * Round-3 skeptic L4: the day's sponsored total (entry + exit global) times the paymaster's maxCostPerOp is the most the
+ * signer could ever spend on chain in a day (postOp only refunds). When that is above the paymaster's globalDailyCap, a day
+ * of expensive operations (most of them deploying an account) can reach the on-chain cap, and then sponsored exits fail on
+ * chain while the API still signs. Returned as a startup warning with the totals that would be safe.
+ */
+export function sponsorshipCapWarning(limits: SponsorshipLimits, maxCostPerOpWei: bigint, globalDailyCapWei: bigint | undefined): string | undefined {
+  if (globalDailyCapWei === undefined || maxCostPerOpWei <= 0n) return undefined;
+  const total = BigInt(limits.entry.global + limits.exit.global);
+  const worstCase = total * maxCostPerOpWei;
+  if (worstCase <= globalDailyCapWei) return undefined;
+  const safe = globalDailyCapWei / maxCostPerOpWei;
+  return `Sponsorship totals (${total} operations a day = SPONSOR_ENTRY_GLOBAL_DAILY + SPONSOR_EXIT_GLOBAL_DAILY) x maxCostPerOp `
+    + `${maxCostPerOpWei} wei = ${worstCase} wei, above the paymaster's globalDailyCap ${globalDailyCapWei} wei: in the worst case the `
+    + `on-chain cap is reached and sponsored exits fail on chain. At most ${safe} worst-case operations fit; lower the totals or the `
+    + `per-op cap, or raise the paymaster cap.`;
 }

@@ -89,6 +89,50 @@ describe("server env.example", () => {
   });
 });
 
+describe("R3-08 keeper jobs in the shipped env files", () => {
+  /** Jobs the code does not run by default and that an operator turns on on purpose. */
+  const OPT_IN = new Set(["buy-burn", "hedge"]);
+  const jobs = (value: string) => new Set(value.split(",").map((job) => job.trim()).filter(Boolean));
+  const defaults = () => {
+    const env = withDb({ ...server });
+    delete env.KEEPER_ENABLED_JOBS;
+    return jobs(loadConfig(env).KEEPER_ENABLED_JOBS);
+  };
+
+  test("every default keeper job (kernel-register among them) is enabled by both env examples, apart from the opt-in ones", () => {
+    const expected = [...defaults()].filter((job) => !OPT_IN.has(job));
+    expect(expected).toContain("kernel-register");
+    for (const [name, env] of [["scripts/server/env.example", server], [".env.example", dev]] as const) {
+      const enabled = jobs(env.KEEPER_ENABLED_JOBS ?? "");
+      expect({ file: name, missing: expected.filter((job) => !enabled.has(job)) }).toEqual({ file: name, missing: [] });
+    }
+  });
+
+  test("PROPERTY: drop any subset of jobs from either shipped env file's real list and the check names exactly the default jobs dropped", () => {
+    const all = [...defaults()].filter((job) => !OPT_IN.has(job));
+    let seed = 808;
+    const rnd = (n: number) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+    for (const env of [server, dev]) {
+      const shipped = (env.KEEPER_ENABLED_JOBS ?? "").split(",").map((job) => job.trim()).filter(Boolean);
+      expect(shipped.length).toBeGreaterThan(0); // the file really sets the list
+      for (let trial = 0; trial < 200; trial++) {
+        const dropped = shipped.filter(() => rnd(4) === 0);
+        const enabled = jobs(shipped.filter((job) => !dropped.includes(job)).join(","));
+        expect(all.filter((job) => !enabled.has(job))).toEqual(all.filter((job) => dropped.includes(job)));
+      }
+    }
+  });
+
+  test("the dust-pass age in .env.example matches the config default (hourly, decision 66a)", () => {
+    const env = withDb({ ...server });
+    delete env.KEEPER_ACCRUE_DUST_MAX_AGE_SECONDS;
+    const fallback = loadConfig(env).KEEPER_ACCRUE_DUST_MAX_AGE_SECONDS;
+    expect(fallback).toBe(3600);
+    for (const env of [server, dev]) if (env.KEEPER_ACCRUE_DUST_MAX_AGE_SECONDS !== undefined) expect(Number(env.KEEPER_ACCRUE_DUST_MAX_AGE_SECONDS)).toBe(fallback);
+    expect(readFileSync(join(ROOT, ".env.example"), "utf8")).not.toContain("accrued once a day");
+  });
+});
+
 describe("indexer snapshot heartbeat (27d)", () => {
   test("production keeps 10 minutes (the vol-engine's 25-minute tick limit is two heartbeats plus 5), the fork profile 60 s, and an override is capped at 10", () => {
     expect(snapshotHeartbeatMs(loadConfig(withDb({ ...server, NETWORK: "mainnet" })))).toBe(600_000);

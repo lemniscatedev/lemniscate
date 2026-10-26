@@ -813,10 +813,12 @@ export const sponsorshipGrants = pgTable(
     ipKey: text("ip_key").notNull(),
     notionalUsdg: numeric("notional_usdg", { precision: 38, scale: 6 }).notNull().default("0"),
     createdAt: at("created_at").notNull().defaultNow(),
-    /** R11: a booking is a reservation until the signed operation is relayed; it stops counting here if it never is. */
+    /** When the paymaster signature stops being usable. Since R3-05 every grant counts for the whole day, relayed or not. */
     expiresAt: at("expires_at").notNull().default(sql`now() + interval '6 minutes'`),
     userOpHash: text("user_op_hash"),
     submittedAt: at("submitted_at"),
+    /** R3-05: the EntryPoint nonce (key << 64 | sequence, decimal) the signed operation uses: one grant per account and nonce. */
+    nonce: text("nonce"),
   },
   (table) => [
     index("sponsorship_grants_user_op_idx").on(table.userOpHash),
@@ -824,5 +826,6 @@ export const sponsorshipGrants = pgTable(
     index("sponsorship_grants_day_account_idx").on(table.day, table.account),
     index("sponsorship_grants_day_owner_idx").on(table.day, table.owner),
     index("sponsorship_grants_day_ip_idx").on(table.day, table.ipKey),
+    index("sponsorship_grants_day_account_nonce_idx").on(table.day, table.account, table.nonce),
   ],
 );

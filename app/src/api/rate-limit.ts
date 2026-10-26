@@ -10,8 +10,10 @@ export interface RateLimitOptions {
   readonly clientIpHeader: string;
   readonly maxClients?: number;
   readonly now?: () => number;
-  /** Per-wallet keys for write routes: the wallets a request acts for (read from its JSON body). Each wallet has its
-   * own counter next to the per-client one, so one wallet cannot be hammered from many addresses. */
+  /** Per-wallet keys for write routes: the wallets a request acts for (read from its JSON body). R3-07: the body is not
+   * authenticated, so a wallet counter is kept per (client, wallet): a client that names many wallets, or one wallet many
+   * times, uses up its own limits, and requests that name a wallet from other clients never spend that wallet's own client's
+   * budget. */
   readonly walletKeys?: (context: Context) => Promise<readonly string[]>;
   /** Requests allowed per wallet per window; defaults to `limit`. */
   readonly walletLimit?: number;
@@ -85,7 +87,7 @@ export function walletsFromBody(fields: readonly string[] = ["address", "account
   };
 }
 
-/** Fixed-window, in-memory request limiter: per client (IPv4 address or IPv6 /64) and, when configured, per wallet. */
+/** Fixed-window, in-memory request limiter: per client (IPv4 address or IPv6 /64) and, when configured, per (client, wallet). */
 export function rateLimit(options: RateLimitOptions): MiddlewareHandler {
   const now = options.now ?? Date.now;
   const maxClients = options.maxClients ?? 50_000;
@@ -120,9 +122,12 @@ export function rateLimit(options: RateLimitOptions): MiddlewareHandler {
     if (options.limit <= 0 || context.req.method === "OPTIONS") return next();
     const at = now();
     if (at - lastSweep >= options.windowMs || windows.size >= maxClients) sweep(at);
-    const keys: { key: string; limit: number }[] = [{ key: `ip:${rateLimitKey(clientIp(context, options.clientIpHeader))}`, limit: options.limit }];
+    const client = rateLimitKey(clientIp(context, options.clientIpHeader));
+    const keys: { key: string; limit: number }[] = [{ key: `ip:${client}`, limit: options.limit }];
     if (options.walletKeys) {
-      for (const wallet of (await options.walletKeys(context)).slice(0, 4)) keys.push({ key: wallet, limit: walletLimit });
+      // R3-07: never a bare wallet key. Anyone can name any wallet in a body, so a counter shared by every client would let a
+      // stranger fill a holder's bucket and lock the holder out of quotes, sells, builds and relays.
+      for (const wallet of (await options.walletKeys(context)).slice(0, 4)) keys.push({ key: `${wallet}@${client}`, limit: walletLimit });
     }
     let retryAfter: number | undefined;
     for (const { key, limit } of keys) {

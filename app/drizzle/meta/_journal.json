@@ -148,6 +148,13 @@
       "when": 1790780000019,
       "tag": "0020_hold_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1790780000020,
+      "tag": "0021_sponsorship_nonce_slots",
+      "breakpoints": true
     }
   ]
 }

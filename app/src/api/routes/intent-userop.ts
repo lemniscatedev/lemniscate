@@ -11,7 +11,9 @@ import { BundlerError, toRpcUserOp, type Op } from "../../aa/bundler";
 import { withAaCaller } from "../../aa/chain";
 import { AaError, buildUserOp, callsForIntent, hashOf, type AaServices, type IntentLike } from "../../aa/userop";
 import { PAYMASTER_DATA_LENGTH } from "../../aa/paymaster";
+import { kernelNonceKey } from "../../aa/kernel";
 import { KERNEL_V33_IMPLEMENTATION } from "../../aa/counterfactual";
+import { verifySellLaneProof } from "../sell-lane-proof";
 import { optionalEnv } from "../../config";
 
 /**
@@ -35,6 +37,8 @@ const extraSchema = z.object({
   sponsor: z.boolean().default(true),
   nonceLane: z.number().int().min(0).max(65_535).default(0),
   accountIndex: z.number().int().min(0).max(1_000_000).default(0),
+  /** R3-06 (H1): the owner's signature over sellLaneProofMessage(account, chainId, expires): opens the reserved read lane. */
+  laneProof: z.object({ expires: z.number().int(), signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/) }).optional(),
 });
 
 const intentSchema = z.object({
@@ -77,6 +81,16 @@ function fromRpc(value: z.infer<typeof rpcOpSchema>): Op {
     } : {}),
   };
   return op;
+}
+
+/** R3-06: the indexed balance of the series' option token is positive (Postgres only; any failure reads as "no"). */
+async function holdsSeries(deps: ApiDependencies, account: Address, series: unknown): Promise<boolean> {
+  if (typeof series !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(series)) return false;
+  try {
+    const rows = await deps.sql`select 1 from balances b join series s on lower(s.token) = b.token
+      where s.id = ${series.toLowerCase()} and b.account = ${account.toLowerCase()} and b.balance > 0 limit 1`;
+    return rows.length > 0;
+  } catch { return false; }
 }
 
 const fail = (error: AaError) => ({ body: { error: error.apiError, message: error.message }, status: error.status });
@@ -153,30 +167,49 @@ export function registerIntentUserOp(app: OpenAPIHono, deps: ApiDependencies): v
     }
     const intent = parsed.data as IntentLike;
     let ticket: number | undefined;
+    let granted = false;
     const gate = { gate: undefined as SponsorshipGate | undefined };
     try {
-      // R12: the reads below are charged to this client's own share of the AA read budget, and a sell may use the reserved lane.
+      // R12: the reads below are charged to this client's own share of the AA read budget. R3-06: a sell uses the reserved
+      // lane only when Postgres shows the account holds the option it sells (no chain read), on that account's own share.
       const callerKey = rateLimitKey(clientIp(context, deps.config.API_CLIENT_IP_HEADER ?? ""));
-      await withAaCaller({ client: callerKey, sell: intent.kind === "sell" }, async () => {
-        const svc = services();
-        const plain = await context.res.clone().json() as Record<string, unknown>;
+      const plain = await context.res.clone().json() as Record<string, unknown>;
+      const sell = intent.kind === "sell";
+      // R3-06 (H1): only on nonce lane 0, whose nonce is cached for long; a fresh lane is a miss anyone could cause in a holder's name.
+      // R3-06 (H1): and only with the owner's proof of control, checked offline, so nobody can drain it in a holder's name.
+      const svc = services();
+      const holder = sell && extra.data.nonceLane === 0
+        && await verifySellLaneProof({
+          proof: extra.data.laneProof as { expires: number; signature: Hex } | undefined, account: extra.data.account,
+          accountIndex: extra.data.accountIndex, chainId: svc.config.chainId, nowSeconds: Math.floor(svc.now() / 1000),
+          deployment: { factory: svc.config.kernelFactory, validator: svc.config.kernelValidator,
+            implementation: (optionalEnv("AA_KERNEL_IMPLEMENTATION") || KERNEL_V33_IMPLEMENTATION) as Address },
+        })
+        && await holdsSeries(deps, extra.data.account, plain.series) ? extra.data.account : undefined;
+      await withAaCaller({ client: callerKey, sell, holder }, async () => {
         // F25/F31: sponsorship is decided by policy before anything is signed. A denial is not an error: the same operation
         // comes back unsponsored and the user pays gas (or uses the plain transaction).
         let sponsorship: { requested: boolean; granted: boolean; reason?: string; message?: string } = { requested: extra.data.sponsor && svc.sponsor !== null, granted: false };
+        // R3-05: the nonce is read once, here, so the grant is booked for exactly the nonce the operation is built with.
+        let nonce: bigint | null | undefined;
+        if (sponsorship.requested && extra.data.nonceLane === 0) {
+          nonce = await svc.chain.entryPointNonce(svc.config.entryPoint, extra.data.account, kernelNonceKey(0)).catch(() => null);
+        }
         if (sponsorship.requested) {
           gate.gate = gateFor(svc);
           const decision = await gate.gate.evaluate({
             kind: intent.kind, account: extra.data.account, owner: extra.data.owner,
             ipKey: rateLimitKey(clientIp(context, deps.config.API_CLIENT_IP_HEADER ?? "")), plain,
             ...(svc.sponsor ? { validitySeconds: svc.config.paymaster?.validitySeconds ?? 300 } : {}),
-            accountIndex: extra.data.accountIndex,
+            accountIndex: extra.data.accountIndex, nonceLane: extra.data.nonceLane, nonce,
           });
-          if (decision.granted) { ticket = decision.ticket; sponsorship = { requested: true, granted: true }; }
+          if (decision.granted) { granted = true; ticket = decision.ticket ?? undefined; sponsorship = { requested: true, granted: true }; }
           else sponsorship = { requested: true, granted: false, reason: decision.reason, message: decision.message };
         }
         const built = await buildUserOp(svc, {
-          account: extra.data.account, owner: extra.data.owner, calls: callsForIntent(intent), sponsor: ticket !== undefined,
+          account: extra.data.account, owner: extra.data.owner, calls: callsForIntent(intent), sponsor: granted,
           nonceLane: extra.data.nonceLane, accountIndex: extra.data.accountIndex,
+          ...(granted && typeof nonce === "bigint" ? { nonce } : {}),
         });
         if (ticket !== undefined && gate.gate) await gate.gate.attach(ticket, built.userOpHash);
         context.res = Response.json({
@@ -243,8 +276,10 @@ export function registerIntentUserOp(app: OpenAPIHono, deps: ApiDependencies): v
       const svc = services();
       const op = fromRpc(parsed.data.userOp);
       const bundlerHash = await svc.bundler.sendUserOperation(op, svc.config.entryPoint);
+      // R3-06 (H1): the bundler accepted it, so the owner signed it: the account's next nonce on this key is known.
+      svc.chain.noteRelayed?.(op.sender, op.nonce);
       const userOpHash = hashOf(op, svc);
-      // R11: relaying a sponsored operation turns its reservation into a spend of the global budget.
+      // Recorded for operations only: since R3-05 the budgets count signatures, whoever relays them.
       if (op.paymaster) await gateFor(svc).markSubmitted(userOpHash);
       return context.json({ userOpHash, bundlerHash, status: "submitted" as const }, 200);
     } catch (error) {
