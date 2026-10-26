@@ -84,10 +84,26 @@ library EngineOpsLib {
             revert NotSettleable(stock);
         }
         if ($.priceGuard.readLite(stock).session != SessionKind.HALTED) revert NotSettleable(stock);
+        // Review R3-03 follow-up: only an IN-SESSION HALTED read settles. Out of session the stored halt latch keeps
+        // CLOSED/UNKNOWN reading HALTED even after the feed printed a fresh round, so settling there could pay the
+        // pre-halt price; in session a recovered feed reads live. Cost: a halt ripe in a closure settles at the next open.
+        if (!_calendarInSession(address($.priceGuard))) revert NotSettleable(stock);
         (s,) = $.priceGuard.lastGoodPrice(stock);
         if (s == 0 || !EngineCore.inDomain(s)) revert NotSettleable(stock);
         $.settleS[stock] = s;
         emit StockSettled(stock, s);
+    }
+
+    /// @dev PriceGuard's calendar says REGULAR or EXTENDED now; false when anything is missing or unreadable.
+    function _calendarInSession(address guard) private view returns (bool) {
+        (bool ok, bytes memory data) = guard.staticcall(abi.encodeWithSignature("marketHours()"));
+        if (!ok || data.length < 32) return false;
+        address mh = abi.decode(data, (address));
+        if (mh == address(0)) return false;
+        (ok, data) = mh.staticcall(abi.encodeWithSignature("kindAt(uint256)", block.timestamp));
+        if (!ok || data.length < 32) return false;
+        uint256 k = abi.decode(data, (uint256));
+        return k == uint256(SessionKind.REGULAR) || k == uint256(SessionKind.EXTENDED);
     }
 
     function pokeRisk(EngineHelper h) external {

@@ -131,6 +131,21 @@ contract FixAScenariosTest is EngineBase {
         engine.settleHalted(address(nvda));
     }
 
+    /// @dev Review R3-03 follow-up: out of session the stored latch reads HALTED even after the feed recovered, so only an
+    /// in-session HALTED read settles; a ripe halt in a closure waits for the next open.
+    function test_ORC4_settleNeedsTheCalendarInSession() public {
+        guard.setSession(address(nvda), SessionKind.HALTED);
+        guard.setHaltedSince(address(nvda), vm.getBlockTimestamp());
+        skip(8 days);
+        for (uint256 k = uint256(SessionKind.CLOSED); k <= uint256(SessionKind.UNKNOWN); ++k) {
+            guard.setCalendarKind(SessionKind(k));
+            vm.expectRevert(abi.encodeWithSelector(EngineOpsLib.NotSettleable.selector, address(nvda)));
+            engine.settleHalted(address(nvda));
+        }
+        guard.setCalendarKind(SessionKind.EXTENDED);
+        assertEq(engine.settleHalted(address(nvda)), 100e18);
+    }
+
     function test_F21_fillNeverBelowTheSellersMinimum() public {
         bytes32 id = _list(address(nvda), true, 100e18, DAILY);
         (, uint256 tokens) = _buy(alice, id, UNITS);

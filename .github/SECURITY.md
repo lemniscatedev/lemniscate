@@ -464,6 +464,10 @@ Each has a regression test that fails without it and a property or fuzz test of 
 - **Transient halt latch cleared (R3-04).** A latch set by a short in-session halt (issuer pause, sequencer) that ended without a new
   feed round stayed set, because the upkeep pokes a live stock only for a newer round; the weekend then read HALTED. The upkeep now
   also pokes a live, fresh stock that still carries a latch (not one under a continuity pause), which clears it.
+- **Settle only in session (R3-03 follow-up).** With the latch stored, a feed that recovered during a closure (a holiday) still read
+  HALTED out of session, so `settleHalted` could settle at the stale pre-halt price once the 7 days had passed. It now also requires
+  PriceGuard's calendar to say REGULAR or EXTENDED; in session a recovered feed reads live. The sessions job also skips a calendar
+  push (retrying next hour) when the pre-push latch upkeep failed a poke or could not read a stock, unless the calendar ends within 24 h.
 - **Queued sells keep a floor (R06).** The sell intent used `minProceeds = 0` whenever the indexed snapshot said HALTED, so a
   permissionless `fillQueued` could be lined up with a pushed TWAP at the settle time or a resumption. The intent now sets the floor from
   the indexed quote minus the caller's slippage plus a wider queued band (1,500 bps), shows it in `queuedBandBps` and the note, and
@@ -534,6 +538,10 @@ These amend the bullets above where they differ (decisions 54-64).
 - Halt start (R3-03): `poke` stores the derived start in any session and the latch only moves earlier, so a calendar push cannot move
   the start later. Accepted: if the keeper is down from the moment the start becomes visible until a push deletes those sessions,
   the start is set again at the next in-session halted read (anyone can poke to store it earlier).
+- Settlement timing (R3-03 follow-up): a halt that reaches the 7-day settle delay inside a closure settles at the next open (up to
+  about 3 days later over a holiday weekend).
+- Continuity pause and the halt latch: a latch under a continuity pause clears only when continuity clears (2 confirming feed
+  rounds); until then CLOSED/UNKNOWN read HALTED. Clearing it earlier would expose the pre-jump last good price.
 - Paymaster (R17/R18): anyone can register a deployed standard Kernel account (`registerKernelAccount`), so deploying a user's
   account first cannot make it unsponsorable; `DeployPaymaster` passes with the mainnet config (deposit funded after deploy).
   Service side (28-merge): when the API sees a deployed account the paymaster does not know and its address is the standard

@@ -115,6 +115,21 @@ contract MockEnginePriceGuard is IPriceGuard {
         return haltedSinceOf[stock];
     }
 
+    /// @dev PriceGuard.marketHours stand-in: this mock answers kindAt itself (REGULAR unless set).
+    SessionKind public calendarKind;
+
+    function setCalendarKind(SessionKind k) external {
+        calendarKind = k;
+    }
+
+    function marketHours() external view returns (address) {
+        return address(this);
+    }
+
+    function kindAt(uint256) external view returns (SessionKind) {
+        return calendarKind;
+    }
+
     function _at(address stock) internal view returns (uint256) {
         uint256 at = updatedAtOf[stock];
         return at == 0 ? block.timestamp : at;

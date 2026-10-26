@@ -10,6 +10,23 @@ import {Session} from "../../src/libs/LemniscateTypes.sol";
 import {PriceReading, SessionKind} from "../../src/libs/OptionTypes.sol";
 import {MockGuardFeed} from "../mocks/PriceGuardMocks.sol";
 import {MockStock18} from "../mocks/TwapMocks.sol";
+import {EngineOpsLib} from "../../src/engine/EngineOpsLib.sol";
+import {EngineStorage} from "../../src/engine/EngineStorage.sol";
+
+/// @dev The engine's settleHalted (EngineOpsLib, delegatecalled) over the real PriceGuard, with only the storage it reads.
+contract SettleHaltedHarness {
+    constructor(address guard_) {
+        EngineStorage.layout().priceGuard = IPriceGuard(guard_);
+    }
+
+    function settleHalted(address stock) external returns (uint256) {
+        return EngineOpsLib.settleHalted(stock);
+    }
+
+    function settleS(address stock) external view returns (uint256) {
+        return EngineStorage.layout().settleS[stock];
+    }
+}
 
 /// @notice Round-3 review R3-03 (MEDIUM) and R3-04 (LOW, contract half). R3-03: `_derivedHalt` probes PAST calendar
 /// times, but the keeper's sessions job replaces MarketHours' list with future-only sessions, so after a push every past
@@ -289,5 +306,57 @@ contract R3_03HaltStartPersistsTest is Test {
             }
         }
         assertTrue(extraDone);
+    }
+
+    // ------------------------------------------------------------------ skeptic follow-up (settle after recovery)
+
+    /// @dev Skeptic PoC (Low-1, from the stored latch): the feed goes stale Thursday 12:00 (T0) and the keeper stores T0.
+    /// It recovers about 6.4 days later, Wednesday 21:00 in a CLOSED gap, at $150; Thursday is a holiday, so the stored
+    /// latch keeps CLOSED reading HALTED. At T0 + 7 days (holiday 13:00) settleHalted used to settle at the stale $200.
+    /// Now it needs an in-session HALTED read: refused in the holiday, and in session the recovered feed reads live.
+    function test_POC_settleAfterFeedRecoveredInHolidayClosure() public {
+        SettleHaltedHarness engine = new SettleHaltedHarness(address(guard));
+        holiday = (WED_10H - (WED_10H % 1 days)) + 8 days; // Thursday Oct 1 is a holiday
+        _push();
+        uint256 staleAt = WED_10H + 26 hours + 1; // Thursday 12:00:01
+        for (uint256 t = WED_10H + 1 hours; t <= WED_10H + 7 days + 11 hours; t += 1 hours) {
+            vm.warp(t); // to Wednesday Sep 30 21:00
+            _keeperPass();
+            if (_horizon() < t + 7 days) _push();
+        }
+        assertEq(guard.stockState(address(stock)).haltedSince, staleAt);
+        feed.push(150e8); // the feed recovers in the closure before the holiday
+        assertEq(uint8(hours_.kindAt(vm.getBlockTimestamp())), uint8(SessionKind.CLOSED));
+        for (uint256 t = vm.getBlockTimestamp() + 1 hours; t <= staleAt + SETTLE_DELAY + 1 hours; t += 1 hours) {
+            vm.warp(t);
+            _keeperPass();
+        }
+        // Thursday Oct 1 13:00, holiday: the stored latch reads HALTED and the delay has passed, yet a fresh round exists
+        assertEq(uint8(hours_.kindAt(vm.getBlockTimestamp())), uint8(SessionKind.CLOSED));
+        assertEq(uint8(guard.readLite(address(stock)).session), uint8(SessionKind.HALTED));
+        assertLe(guard.haltedSince(address(stock)) + SETTLE_DELAY, vm.getBlockTimestamp());
+        vm.expectRevert(abi.encodeWithSelector(EngineOpsLib.NotSettleable.selector, address(stock)));
+        engine.settleHalted(address(stock));
+        // Thursday 20:00 the session opens: the recovered feed reads live (not HALTED), so still no settlement at $200
+        vm.warp(staleAt + SETTLE_DELAY + 8 hours);
+        assertEq(uint8(hours_.kindAt(vm.getBlockTimestamp())), uint8(SessionKind.EXTENDED));
+        assertTrue(uint8(guard.readLite(address(stock)).session) != uint8(SessionKind.HALTED));
+        vm.expectRevert(abi.encodeWithSelector(EngineOpsLib.NotSettleable.selector, address(stock)));
+        engine.settleHalted(address(stock));
+        assertEq(engine.settleS(address(stock)), 0);
+    }
+
+    /// @dev The feed never recovers: a halt that ripens in a closure settles at the next in-session HALTED read.
+    function test_R3_03_stillStaleSettlesAtTheNextSession() public {
+        SettleHaltedHarness engine = new SettleHaltedHarness(address(guard));
+        uint256 staleAt = WED_10H + 26 hours + 1;
+        for (uint256 t = WED_10H + 1 hours; t <= staleAt + SETTLE_DELAY + 1 hours; t += 1 hours) {
+            vm.warp(t);
+            _keeperPass();
+            if (_horizon() < t + 7 days) _push();
+        }
+        // Thursday 13:00 a week later, REGULAR: settles at the last good $200
+        assertEq(uint8(hours_.kindAt(vm.getBlockTimestamp())), uint8(SessionKind.REGULAR));
+        assertEq(engine.settleHalted(address(stock)), 200e18);
     }
 }
