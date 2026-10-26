@@ -25,7 +25,7 @@ export const healthResponseSchema = z.object({
 
 export const configResponseSchema = z.object({
   chainId: z.number().int(),
-  network: z.enum(["mainnet", "fork"]),
+  network: z.enum(["mainnet", "fork", "testnet"]),
   forkProof: z.object({ blockNumber: z.number().int().nonnegative(), blockHash: z.string() }).optional(),
   rpcUrl: z.string().url(),
   explorerUrl: z.string().url(),

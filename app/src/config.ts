@@ -9,7 +9,8 @@ const routeSchema = z
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
-  NETWORK: z.enum(["mainnet", "fork"]).default("fork"),
+  // testnet (46630) behaves like mainnet (wall clock, 20 confirmations, 10-minute snapshots); only "fork" uses the chain clock.
+  NETWORK: z.enum(["mainnet", "fork", "testnet"]).default("fork"),
   CHAIN_ID: z.coerce.number().int().positive().default(4663),
   DATABASE_URL: z.string().url(),
   POSTGRES_PASSWORD: z.string().min(1),

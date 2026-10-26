@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ConfigurationError, loadConfig, loadKeeperSigningKey, snapshotHeartbeatMs } from "./config";
+import { ConfigurationError, confirmationBlocks, loadConfig, loadKeeperSigningKey, snapshotHeartbeatMs } from "./config";
 import { loadMcpSettings } from "./mcp/config";
 import { loadHedgerSigningKey } from "./hedger";
 
@@ -137,6 +137,11 @@ describe("indexer snapshot heartbeat (27d)", () => {
   test("production keeps 10 minutes (the vol-engine's 25-minute tick limit is two heartbeats plus 5), the fork profile 60 s, and an override is capped at 10", () => {
     expect(snapshotHeartbeatMs(loadConfig(withDb({ ...server, NETWORK: "mainnet" })))).toBe(600_000);
     expect(snapshotHeartbeatMs(loadConfig(dev))).toBe(60_000);
+    // todo 26: the testnet profile is a real network: production heartbeat, wall clock, 20 confirmations.
+    const testnet = loadConfig(withDb({ ...server, NETWORK: "testnet", CHAIN_ID: "46630" }));
+    expect(testnet.NETWORK).toBe("testnet");
+    expect(snapshotHeartbeatMs(testnet)).toBe(600_000);
+    expect(confirmationBlocks(testnet)).toBe(20);
     expect(snapshotHeartbeatMs(loadConfig({ ...dev, INDEXER_SNAPSHOT_HEARTBEAT_MS: "15000" }))).toBe(15_000);
     expect(() => loadConfig({ ...dev, INDEXER_SNAPSHOT_HEARTBEAT_MS: "1200000" })).toThrow();
   });
