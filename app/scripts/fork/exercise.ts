@@ -22,6 +22,8 @@ import { fundingStep } from "@/pricing";
 import { compareWithEngine, type EngineState } from "@/sim/engine-check";
 import { fromEngineStruct } from "@/api/quote/parity";
 import { createPayingFetch } from "@/x402";
+import { SELL_LANE_PROOF_MAX_SECONDS, sellLaneProofMessage, verifySellLaneProof } from "@/api/sell-lane-proof";
+import { KERNEL_V33_IMPLEMENTATION } from "@/aa/counterfactual";
 import { fund } from "./fund";
 import {
   addressOf, ANVIL_URL, API_URL, APP, DATABASE_URL, erc20Abi, FORK_DIR, forkClients, impersonated, keyOf, loadDeployment, nextNy, PORTS, ROOT, walletFor,
@@ -306,9 +308,9 @@ async function stopService(name: string) {
     await waitFor(`${name} to stop after SIGKILL`, async () => !alive(pid), 10_000, 250);
   }
 }
-async function startServices() {
+async function startServices(extraEnv: Record<string, string> = {}) {
   await new Promise<void>((resolve, reject) => {
-    const p = spawn("bash", [join(APP, "scripts/fork/up.sh")], { cwd: APP, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    const p = spawn("bash", [join(APP, "scripts/fork/up.sh")], { cwd: APP, env: { ...process.env, ...extraEnv }, stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     p.stdout.on("data", (d) => { out += d; });
     p.stderr.on("data", (d) => { out += d; });
@@ -320,7 +322,9 @@ let x402Api: ChildProcess | undefined;
 // ------------------------------------------------------------------------------------------------ the run
 const ROLES_USED: Role[] = ["alice", "bob", "carol", "agentOwner", "depositor", "lp2", "payer", "kal"];
 
+let keeperLogStart = 0;
 async function main() {
+  { const f = join(FORK_DIR, "logs", "keeper.log"); keeperLogStart = existsSync(f) ? readFileSync(f).length : 0; }
   console.log(`exercise: fork ${ANVIL_URL}, API ${API_URL}, chain time ${new Date((await chainTime()) * 1000).toISOString()}`);
   const health = await api("/v1/health");
   assert(health.status === 200, "API is not healthy");
@@ -340,11 +344,11 @@ async function main() {
   await flow("setup", "Fund test accounts from real holders", "ETH via anvil_setBalance; USDG and NVDA transferred from an impersonated real holder", async () => {
     const targets = ROLES_USED.map(addressOf);
     const r = await fund(targets, 250_000, 50, {});
-    const s = await fund([addressOf("carol")], 0, 50, { NVDA: 5, TSLA: 2 });
+    const s = await fund([addressOf("carol")], 0, 50, { NVDA: 25, TSLA: 2 });
     for (const x of r) assert(x.usdg >= USD(250_000), `${x.address} not funded`);
     const nvda = await tokenBalance(stockOf("NVDA"), addressOf("carol"));
-    assert(nvda >= 5n * WAD, "carol has no NVDA");
-    return `${r.length} accounts x 250,000 USDG + 50 ETH; carol 5 NVDA + 2 TSLA (${s.length} transfer set)`;
+    assert(nvda >= 25n * WAD, "carol has no NVDA");
+    return `${r.length} accounts x 250,000 USDG + 50 ETH; carol 25 NVDA + 2 TSLA (${s.length} transfer set)`;
   });
 
   // Session: run the trading flows in a REGULAR session.
@@ -507,7 +511,37 @@ async function main() {
   });
 
   // ---------------------------------------------------------------- R4 quote parity
-  await flow("parity", "API quote vs on-chain engine.quote, 200 random cases (R4)", "every case within 0.5% (or $0.01 for sub-cent quotes)", async () => {
+  await flow("parity", "API quote vs on-chain engine.quote, 200 random cases (R4)", "every case within 0.5% (or $0.01 for sub-cent quotes), with the API's indexed trade TWAP equal to the chain's (re-synced after hedger swaps)", async () => {
+    // The API prices at the indexed tick's trade TWAP; the engine at the pool's live 5-minute TWAP. The hedger's swaps move
+    // the fork's pool (nothing arbitrages it back) and a swap is not a Lemniscate event, so the tick can trail the chain
+    // until the indexer's 10-minute heartbeat. Compare like with like: before the cases, and again before re-running a case
+    // that misses, let a running rebalance finish and restart the indexer (a fresh process snapshots at once) until every
+    // name's indexed trade TWAP equals the chain's.
+    const twapLag = async (names: string[]) => {
+      const lag: string[] = [];
+      for (const n of names) {
+        const chainTwap = Number(await pub.readContract({ address: C.priceGuard, abi: PriceGuardAbi, functionName: "tradeTwap", args: [stockOf(n)] }) as bigint) / 1e18;
+        const r = await sql`select trade_twap::text as t from ticks where name = ${n} order by ts desc limit 1`;
+        const tick = Number(r[0]?.t ?? 0);
+        if (chainTwap > 0 && Math.abs(tick - chainTwap) / chainTwap > 0.0005) lag.push(`${n} tick ${tick.toFixed(4)} chain ${chainTwap.toFixed(4)}`);
+      }
+      return lag;
+    };
+    const resyncs: string[] = [];
+    const syncTwap = async (names: string[]) => {
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const lag = await twapLag(names);
+        if (!lag.length) return;
+        resyncs.push(lag.join("; "));
+        await Bun.sleep(20_000);
+        await stopService("indexer");
+        await startServices();
+        await Bun.sleep(5_000);
+      }
+      const left = await twapLag(names);
+      assert(!left.length, `indexed trade TWAP still behind the chain: ${left.join("; ")}`);
+    };
+    await syncTwap(dep.stocks.map((x) => x.name));
     let seed = 23;
     const rnd = () => { seed = (seed * 1103515245 + 12345) % 2 ** 31; return seed / 2 ** 31; };
     const rows: SeriesRow[] = [];
@@ -520,10 +554,19 @@ async function main() {
       const row = rows[Math.floor(rnd() * rows.length)]!;
       const units = (0.5 + rnd() * 30).toFixed(4);
       const side = rnd() < 0.5 ? "buy" : "sell";
-      const [apiQ, chainQ] = await Promise.all([
+      const both = () => Promise.all([
         api("/v1/quote", { series: row.id, units, side }),
         engineRead<{ usdg: bigint }>("quote", [row.id, parseUnits(units, 18), side === "buy"]),
       ]);
+      let [apiQ, chainQ] = await both();
+      if (apiQ.status === 200) {
+        const c0 = Number(chainQ.usdg);
+        const d0 = Math.abs(Number(BigInt(apiQ.json.quote.usdg)) - c0);
+        if (!(d0 <= 10_000 || (c0 > 0 && d0 / c0 <= 0.005)) && (await twapLag([row.name])).length) {
+          await syncTwap([row.name]);
+          [apiQ, chainQ] = await both();
+        }
+      }
       if (apiQ.status !== 200) throw new Error(`/v1/quote ${apiQ.status}: ${JSON.stringify(apiQ.json).slice(0, 200)}`);
       const a = Number(BigInt(apiQ.json.quote.usdg));
       const c = Number(chainQ.usdg);
@@ -539,12 +582,18 @@ async function main() {
     const bad = (cases as { ok: boolean }[]).filter((x) => !x.ok).length;
     assert(bad === 0, `${bad}/200 outside 0.5%; worst ${worstCase}`);
     const rels = (cases as { rel: number; chain: number }[]).filter((x) => x.chain > 10_000).map((x) => x.rel).sort((p, q) => p - q);
-    return `${checked}/200 within tolerance; median rel diff ${(rels[Math.floor(rels.length / 2)]! * 100).toFixed(4)}%, max ${(rels.at(-1)! * 100).toFixed(4)}% (cases in parity.json)`;
+    return `${checked}/200 within tolerance${resyncs.length ? ` (indexed trade TWAP re-synced ${resyncs.length}x after hedger swaps: ${resyncs.join(" | ").slice(0, 200)})` : ""}; median rel diff ${(rels[Math.floor(rels.length / 2)]! * 100).toFixed(4)}%, max ${(rels.at(-1)! * 100).toFixed(4)}% (cases in parity.json)`;
   });
 
   // ---------------------------------------------------------------- shield
   await flow("shield", "Shield a Stock Token holding", "API shield intent -> engine.shield buys a Weekly Down option ~10% below spot for the NVDA held; ShieldBought; position indexed", async (f) => {
-    const { receipt, intent } = await viaIntent(f, "shield", "carol", { name: "NVDA", tokenUnits: "5", strikePctBelowBps: 1000, slippageBps: 100 });
+    // Review F08/F14: a Shield costs at least $1. A ~10% out-of-the-money Weekly put can cost cents per share, so the
+    // holding shielded is sized from the API's own quote for 5 shares (as the buys are), up to the 25 NVDA carol holds.
+    const probe = await api("/v1/intent/shield", { account: addressOf("carol"), name: "NVDA", tokenUnits: "5", strikePctBelowBps: 1000, slippageBps: 100 });
+    if (probe.status !== 200) throw new Error(`/v1/intent/shield ${probe.status}: ${JSON.stringify(probe.json).slice(0, 300)}`);
+    const per5 = Number(probe.json.quote?.usdg ?? probe.json.maxCostUsdg);
+    const tokenUnits = per5 >= 1_500_000 ? "5" : String(Math.min(25, Math.ceil((5 * 1.5e6) / Math.max(1, per5))));
+    const { receipt, intent } = await viaIntent(f, "shield", "carol", { name: "NVDA", tokenUnits, strikePctBelowBps: 1000, slippageBps: 100 });
     const ev = events(receipt, OptionEngineAbi, C.engine).find((e) => e.eventName === "ShieldBought");
     assert(ev, "no ShieldBought");
     const held = await waitFor("shield position indexed", async () => { const u = await positionUnits(addressOf("carol"), ev.args.id); return u > 0 ? u : false; });
@@ -611,6 +660,67 @@ async function main() {
     const units = await positionUnits(addressOf("alice"), id);
     assert(steps >= 1 && worst < 1e-9, `worst rel error ${worst} over ${steps} steps`);
     return `${steps} accrual steps checked over ${logs.length} Accrued events, worst relative error ${worst.toExponential(2)}; V at start ${fmt(before[0], 18)}; alice's units now ${units} (bought 10)`;
+  });
+
+  // ---------------------------------------------------------------- keeper funding grid (R3-01): the live tier re-marked every slot
+  // Fork run 2026-10-25: the keeper could not read the engine's live list (seriesRisk decoded as an array), logged "Engine
+  // live list unreadable" on every run and never sampled the grid; no flow noticed. This flow marks every live tier-0
+  // series itself, then lets one keeper pass run in the next 5-minute slot while those marks are younger than the hourly
+  // catch-up's age (300 s on the fork), so only the grid can re-mark them.
+  await flow("keeper", "The 5-minute funding grid re-marks every live tier-0 series (R3-01)", "every series on the engine's live list worth the minimum (tier 0) of a name in session is accrued by us at t1; one keeper pass in the next grid slot (marks under 300 s old, so not the hourly path) re-marks every one (registry lastAccrual > t1); the keeper never logs \"Engine live list unreadable\"", async (f) => {
+    const riskAbi = OptionEngineAbi;
+    const [minTrade] = await engineRead<readonly [bigint, number, number]>("guards");
+    const dustWad = (minTrade === 0n ? 1_000_000n : minTrade) * 10n ** 12n;
+    const tier0: { id: Hex; name: string }[] = [];
+    const inSession: string[] = [];
+    for (const s0 of dep.stocks) {
+      if (![0, 1].includes((await priceReading(s0.name)).session)) continue;
+      inSession.push(s0.name);
+      const ids = await pub.readContract({ address: C.engine, abi: riskAbi, functionName: "liveSeries", args: [stockOf(s0.name)] }) as readonly Hex[];
+      for (const id of ids) {
+        const r = await pub.readContract({ address: C.engine, abi: riskAbi, functionName: "seriesRisk", args: [id] }) as { value: bigint };
+        if (r.value >= dustWad) tier0.push({ id, name: s0.name });
+      }
+    }
+    assert(tier0.length >= 5, `only ${tier0.length} live tier-0 series in session (${inSession.join(",")})`);
+    await stopService("keeper");
+    const GRID = 300;
+    if ((await chainTime()) % GRID < 40) await warp(45);
+    let t1 = 0;
+    for (let i = 0; i < tier0.length; i += 40) {
+      const r = await f.send("engine.accrueMany (tier 0, by us)", walletFor("carol"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "accrueMany", args: [tier0.slice(i, i + 40).map((x) => x.id)] }) }, 12_000_000n);
+      t1 = Math.max(t1, Number((await pub.getBlock({ blockNumber: r.blockNumber })).timestamp));
+    }
+    const lastAccrualOf = async (id: Hex) => (await pub.readContract({ address: C.registry, abi: SeriesRegistryAbi, functionName: "seriesOf", args: [id] }) as { lastAccrual: bigint }).lastAccrual;
+    for (const x of tier0) assert(Number(await lastAccrualOf(x.id)) >= t1 - 60, `our accrual did not mark ${x.id}`);
+    // Into the next slot, while every mark is still under the hourly path's 300 s.
+    const boundary = Math.ceil((t1 + 1) / GRID) * GRID;
+    await warpTo(boundary + 10);
+    assert((await chainTime()) - t1 < 300, "marks aged past the hourly threshold; the check would not isolate the grid");
+    const warpedTo = await chainTime();
+    await waitFor("the indexer's chain-time snapshot after the warp", async () => {
+      const r = await sql`select meta->>'chainTimestamp' as t from keeper_status where job = 'indexer'`;
+      return Number(r[0]?.t ?? 0) >= warpedTo - 5;
+    }, 120_000, 1000);
+    const logFile = join(FORK_DIR, "logs", "keeper.log");
+    const from = existsSync(logFile) ? readFileSync(logFile).length : 0;
+    await startServices();
+    const lagging = await waitFor("the keeper's grid pass to re-mark the whole live tier", async () => {
+      const behind: string[] = [];
+      for (const x of tier0) if (Number(await lastAccrualOf(x.id)) <= t1) behind.push(`${x.name}:${x.id.slice(0, 10)}`);
+      return behind.length === 0 ? [] : false;
+    }, 180_000, 3000).catch(async () => {
+      const behind: string[] = [];
+      for (const x of tier0) if (Number(await lastAccrualOf(x.id)) <= t1) behind.push(`${x.name}:${x.id.slice(0, 10)}`);
+      return behind;
+    });
+    const log = existsSync(logFile) ? readFileSync(logFile).subarray(from).toString("utf8") : "";
+    const unreadable = log.split("\n").filter((l) => l.includes("Engine live list unreadable")).length;
+    const status = await sql`select meta from keeper_status where job = 'accrue'`.catch(() => []);
+    const meta = (status[0]?.meta ?? {}) as { gridSampled?: number };
+    assert(unreadable === 0, `the keeper logged "Engine live list unreadable" ${unreadable} times`);
+    assert(lagging.length === 0, `${lagging.length}/${tier0.length} tier-0 series not re-marked by the grid pass: ${lagging.slice(0, 5).join(", ")}`);
+    return `${tier0.length} live tier-0 series (${inSession.join(",")} in session) marked by us at ${new Date(t1 * 1000).toISOString()}; warped to the next slot (marks ${warpedTo - t1} s old); the keeper's grid pass re-marked all ${tier0.length}${meta.gridSampled !== undefined ? ` (keeper gridSampled ${meta.gridSampled})` : ""}; 0 "Engine live list unreadable" lines`;
   });
 
   // ---------------------------------------------------------------- sells
@@ -794,6 +904,46 @@ async function main() {
     const held = await tokenBalance(atmDaily.token, smart);
     assert(held > 0n, "smart account holds no option tokens");
     return `smart account ${smart} (counterfactual, deployed by the op); tokens ${fmt(held, 18)}; userOp ${String(sent.json.userOpHash).slice(0, 12)}…`;
+  });
+
+  // R3-06: the reserved read lane opens only for a holder's own sell with the owner's offline proof (laneProof).
+  await flow("userop", "One-tap sell with a valid laneProof (R3-06)", "the owner personal_signs \"Action: sell-lane / Account / Expires / Chain\" (expires within 15 min); the API's verifier accepts it for this Kernel account and refuses a stranger's signature and a 16-minute expiry; ?format=userop sell with the proof builds a lane-0 op; signed, sent through the fork bundler, included; option tokens burned and USDG paid to the smart account", async (f) => {
+    const ownerAcct = privateKeyToAccount(keyOf("kal"));
+    const sa = (await api(`/v1/accounts/${ownerAcct.address}/smart-account`)).json;
+    const smart = getAddress(sa.address ?? sa.smartAccount ?? sa.account);
+    const units = await waitFor("smart account position indexed", async () => { const u = await positionUnits(smart, atmDaily.id); return u > 0 ? u : false; }, 120_000);
+    const cfg = (await api("/v1/userop/config")).json;
+    // The API checks the expiry against its own clock (wall time), not the fork's warped chain time.
+    const nowS = Math.floor(Date.now() / 1000);
+    const expires = nowS + 600;
+    const chainId = Number(cfg.chainId);
+    const signature = await ownerAcct.signMessage({ message: sellLaneProofMessage(smart, chainId, expires) });
+    const deployment = { factory: getAddress(cfg.kernelFactory), validator: getAddress(cfg.kernelValidator), implementation: KERNEL_V33_IMPLEMENTATION as Address };
+    const check = (proof: { expires: number; signature: Hex }) => verifySellLaneProof({ proof, account: smart, accountIndex: 0, chainId, deployment, nowSeconds: nowS });
+    assert(await check({ expires, signature }), "the API's verifier refused the owner's proof");
+    const stranger = await privateKeyToAccount(keyOf("bob")).signMessage({ message: sellLaneProofMessage(smart, chainId, expires) });
+    assert(!(await check({ expires, signature: stranger })), "a stranger's proof was accepted");
+    const longExpiry = nowS + SELL_LANE_PROOF_MAX_SECONDS + 60;
+    assert(!(await check({ expires: longExpiry, signature: await ownerAcct.signMessage({ message: sellLaneProofMessage(smart, chainId, longExpiry) }) })), "a proof past 15 minutes was accepted");
+    const tokensBefore = await tokenBalance(atmDaily.token, smart);
+    const usdgBefore = await usdgOf(smart);
+    const sellUnits = (units / 2).toFixed(6);
+    const built = await api("/v1/intent/sell?format=userop", { series: atmDaily.id, units: sellUnits, account: smart, owner: ownerAcct.address, slippageBps: 200, sponsor: false, laneProof: { expires, signature } });
+    assert(built.status === 200, `userop sell build ${built.status}: ${JSON.stringify(built.json).slice(0, 300)}`);
+    assert(built.json.kind === "sell" && built.json.deploysAccount === false, `unexpected build ${JSON.stringify({ kind: built.json.kind, deploys: built.json.deploysAccount })}`);
+    assert(BigInt(built.json.userOp.nonce) >> 64n === 0n, "op is not on nonce lane 0");
+    const opSig = await ownerAcct.signMessage({ message: { raw: built.json.userOpHash as Hex } });
+    const sent = await api("/v1/userop/send", { userOp: { ...built.json.userOp, signature: opSig } });
+    assert(sent.status === 200, `userop send ${sent.status}: ${JSON.stringify(sent.json).slice(0, 300)}`);
+    const receipt = await waitFor("userop included", async () => { const r = (await api(`/v1/userop/${sent.json.userOpHash}`)).json; return r.status === "included" || r.status === "reverted" ? r : false; }, 60_000);
+    assert(receipt.status === "included", `userop ${receipt.status}`);
+    const txHash = receipt.transactionHash ?? receipt.receipt?.transactionHash;
+    if (txHash) { const r = await pub.getTransactionReceipt({ hash: txHash }); f.txs.push({ flow: f.id, label: "entryPoint.handleOps (one-tap sell, laneProof)", hash: txHash, gas: r.gasUsed.toString(), status: r.status, at: Date.now() }); }
+    const tokensAfter = await tokenBalance(atmDaily.token, smart);
+    const got = (await usdgOf(smart)) - usdgBefore;
+    assert(tokensAfter < tokensBefore, "no option tokens burned");
+    assert(got > 0n, "smart account received no USDG");
+    return `proof verified offline (owner yes, stranger no, 16-min expiry no); op lane 0 built and included; tokens ${fmt(tokensBefore, 18)} -> ${fmt(tokensAfter, 18)}; smart account +${fmt(got)} USDG`;
   });
 
   // ---------------------------------------------------------------- sessions and guards (R3)
@@ -1082,7 +1232,7 @@ async function main() {
 
 
   // ORC-4 (review F07/F21): a feed HALTED for 7 days is settled at its last good price; queued sells then fill.
-  await flow("rules", "settleHalted: a feed halted for 7 days settles at its last good price (ORC-4)", "NVDA feed stale -> HALTED (poke latches haltedSince); a sell queues; settleHalted reverts NotSettleable before 7 days; after 7 days anyone settles (StockSettled) and the queued sell fills at the settlement price", async (f) => {
+  await flow("rules", "settleHalted: a feed halted for 7 days settles at its last good price, in session only (ORC-4, R3-03)", "NVDA feed stale -> HALTED (poke latches haltedSince); a sell queues; settleHalted reverts NotSettleable before 7 days, and again once ripe but out of session (R3-03: only an in-session HALTED read settles); at the next open anyone settles (StockSettled) and the queued sell fills at the settlement price", async (f) => {
     await stopService("keeper"); // the keeper's settle-halted job would race the manual steps below
     const m = await mockFeed(f, "NVDA");
     try {
@@ -1098,7 +1248,47 @@ async function main() {
       const q = events(sr, OptionEngineAbi, C.engine).find((e) => e.eventName === "SellQueued");
       assert(q, "no SellQueued");
       const early = await f.expectRevert("engine.settleHalted (before 7 days)", walletFor("carol"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "settleHalted", args: [stockOf("NVDA")] }) }, "NotSettleable");
-      await warp(7 * 86_400 + 120);
+      // R3-03 follow-up: only an IN-SESSION HALTED read settles. Ripe but out of session (the stored latch keeps the
+      // reading HALTED) it still reverts; at the next open it settles.
+      const guardExtra = parseAbi(["function haltedSince(address) view returns (uint256)", "function marketHours() view returns (address)", "function kindAt(uint256) view returns (uint8)"]);
+      const since = Number(await pub.readContract({ address: C.priceGuard, abi: guardExtra, functionName: "haltedSince", args: [stockOf("NVDA")] }));
+      const delay = Number((await engineRead<readonly [bigint, number, number]>("guards"))[2]);
+      const mh = await pub.readContract({ address: C.priceGuard, abi: guardExtra, functionName: "marketHours" });
+      const kindAt = async (t: number) => Number(await pub.readContract({ address: mh, abi: guardExtra, functionName: "kindAt", args: [BigInt(t)] }));
+      // MarketHours only knows the calendar the keeper pushed. The keeper has been stopped, so warp to the ripe time and
+      // push a fresh calendar with a sessions-only keeper (calendar push and its halt-latch upkeep; no settle-halted or
+      // queued-sells job to race the steps below). On the fork the keeper's clock is the indexer's chain-time snapshot:
+      // start it only once that has seen the warp, or its one start-up check runs on the pre-warp time (the job is hourly).
+      await warpTo(since + delay + 120);
+      const warpedTo = await chainTime();
+      await waitFor("the indexer's chain-time snapshot after the warp", async () => {
+        const r = await sql`select meta->>'chainTimestamp' as t from keeper_status where job = 'indexer'`;
+        return Number(r[0]?.t ?? 0) >= warpedTo - 5;
+      }, 120_000, 1000);
+      await startServices({ KEEPER_ENABLED_JOBS: "sessions" });
+      // A CLOSED instant (between pushed sessions: a weekend or a night) at or after the ripe time, then the next REGULAR one.
+      const findKind = async (from: number, kind: number) => {
+        let t = from;
+        for (let i = 0; i < 800; i++, t += 900) {
+          const k = await kindAt(t);
+          if (k === 3) return false; // past the pushed calendar
+          if (k === kind) return t;
+        }
+        return false;
+      };
+      const tOut = await waitFor("the keeper's calendar push to show a CLOSED time after the ripe time", async () => findKind((await chainTime()) + 60, 2), 300_000, 5000);
+      const tIn = await findKind(tOut + 900, 0);
+      assert(tIn, "the pushed calendar has no REGULAR session after the CLOSED time");
+      await stopService("keeper");
+      await warpTo(tOut + 60);
+      const outReading = await priceReading("NVDA");
+      assert(outReading.session === 4, `out of session the reading is ${outReading.session}, not HALTED`);
+      const outKind = await kindAt(await chainTime());
+      assert(outKind === 2, `calendar says ${outKind}, not CLOSED`);
+      const outOfSession = await f.expectRevert("engine.settleHalted (ripe, out of session)", walletFor("carol"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "settleHalted", args: [stockOf("NVDA")] }) }, "NotSettleable");
+      await warpTo(tIn + 300);
+      assert((await kindAt(await chainTime())) === 0, "not in a REGULAR session after the warp");
+      assert((await priceReading("NVDA")).session === 4, "in session the stale feed no longer reads HALTED");
       const st = await f.send("engine.settleHalted (by a stranger)", walletFor("carol"), { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "settleHalted", args: [stockOf("NVDA")] }) });
       const settled = events(st, OptionEngineAbi, C.engine).find((e) => e.eventName === "StockSettled");
       assert(settled, "no StockSettled");
@@ -1107,11 +1297,23 @@ async function main() {
       assert(events(fr, OptionEngineAbi, C.engine).some((e) => e.eventName === "QueuedSellFilled"), "no QueuedSellFilled");
       const paid = (await usdgOf(addressOf(holder))) - before;
       assert(paid > 0n, "settled fill paid nothing");
-      return `HALTED and latched; ticket ${q.args.ticket} queued; ${early}; after 7 days StockSettled at ${fmt(settled.args.s, 18)}; queued sell filled, ${holder} +${fmt(paid)} USDG`;
+      return `HALTED and latched; ticket ${q.args.ticket} queued; ${early}; ripe at ${new Date((since + delay) * 1000).toISOString()}, out of session (${new Date(tOut * 1000).toISOString()}, calendar ${["REGULAR", "EXTENDED", "CLOSED", "UNKNOWN", "HALTED"][outKind]}) ${outOfSession}; at the open StockSettled at ${fmt(settled.args.s, 18)}; queued sell filled, ${holder} +${fmt(paid)} USDG`;
     } finally {
       await m.restore();
+      await stopService("keeper"); // drop a sessions-only keeper, if one is still up
       await startServices();
     }
+  });
+
+  // ---------------------------------------------------------------- keeper health over the whole run
+  await flow("keeper", "The keeper read the engine's live list on every run of this exercise", "no \"Engine live list unreadable\" line in the keeper log since the exercise started", async () => {
+    const logFile = join(FORK_DIR, "logs", "keeper.log");
+    const log = existsSync(logFile) ? readFileSync(logFile).subarray(keeperLogStart).toString("utf8") : "";
+    const lines = log.split("\n");
+    const bad = lines.filter((l) => l.includes("Engine live list unreadable"));
+    const runs = lines.filter((l) => l.includes('"label":"accrue"') && l.includes("submitted")).length;
+    assert(bad.length === 0, `${bad.length} "Engine live list unreadable" lines, first: ${bad[0]?.slice(0, 200)}`);
+    return `0 unreadable-live-list lines in ${lines.length} keeper log lines; ${runs} keeper accrue transactions`;
   });
 
   // ---------------------------------------------------------------- summary

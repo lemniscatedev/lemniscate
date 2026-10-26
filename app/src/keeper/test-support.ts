@@ -105,7 +105,7 @@ export class FakeChain {
     }
     if (functionName === "seriesRisk") {
       const s = this.series.get(args[0] as Hex);
-      return [s?.riskValue ?? 10n * WAD, 0n, 0n, 0n, 0n, 0n, 0n, 0n];
+      return { value: s?.riskValue ?? 10n * WAD, delta: 0n, gamma: 0n, vega: 0n, sc0: 0n, sc1: 0n, sc2: 0n, sc3: 0n };
     }
     if (functionName === "guards") return [BigInt(this.guards.minTradeUsdg), this.guards.holdSeconds, this.guards.haltSettleDelay];
     if (functionName === "lastGoodPrice") {
@@ -136,15 +136,33 @@ export class FakeChain {
     throw new Error(`FakeChain: unhandled ${functionName}`);
   }
 
+  /** Every answer is checked against the real ABI's outputs, the shape viem decodes to: one struct output is an object
+   * keyed by field name (never an array), several outputs are an array of that length. A fake that drifts from what
+   * viem returns fails here instead of hiding a bug (readLiveRisk read seriesRisk as an array for weeks). */
+  private viemShaped(abi: unknown, functionName: string, value: unknown): unknown {
+    if (!Array.isArray(abi)) return value;
+    const fn = (abi as { type: string; name?: string; outputs?: { type: string; components?: { name: string }[] }[] }[])
+      .find((x) => x.type === "function" && x.name === functionName);
+    const outputs = fn?.outputs ?? [];
+    if (outputs.length === 1 && outputs[0]!.type === "tuple") {
+      const missing = (outputs[0]!.components ?? []).map((c) => c.name).filter((n) => value === null || typeof value !== "object" || Array.isArray(value) || !(n in value));
+      if (missing.length) throw new Error(`FakeChain: ${functionName} returns one struct; viem decodes it as an object with ${missing.join(", ")}`);
+    } else if (outputs.length > 1 && (!Array.isArray(value) || value.length !== outputs.length)) {
+      throw new Error(`FakeChain: ${functionName} has ${outputs.length} outputs; viem decodes them as an array of that length`);
+    }
+    return value;
+  }
+
   clients() {
     return {
       stateClient: {
-        readContract: async (p: { address: Address; functionName: string; args?: readonly unknown[]; blockNumber?: bigint }) => this.call(p.address, p.functionName, p.args, p.blockNumber !== undefined),
-        multicall: async (p: { contracts: { address: Address; functionName: string; args?: readonly unknown[] }[]; allowFailure?: boolean }) => {
+        readContract: async (p: { address: Address; abi?: unknown; functionName: string; args?: readonly unknown[]; blockNumber?: bigint }) =>
+          this.viemShaped(p.abi, p.functionName, this.call(p.address, p.functionName, p.args, p.blockNumber !== undefined)),
+        multicall: async (p: { contracts: { address: Address; abi?: unknown; functionName: string; args?: readonly unknown[] }[]; allowFailure?: boolean }) => {
           this.multicalls++;
           return p.contracts.map((c) => {
             try {
-              const result = this.call(c.address, c.functionName, c.args);
+              const result = this.viemShaped(c.abi, c.functionName, this.call(c.address, c.functionName, c.args));
               return p.allowFailure ? { status: "success", result } : result;
             } catch (error) {
               if (!p.allowFailure) throw error;

@@ -23,6 +23,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAddress, type Address } from "viem";
+import { mnemonicToAccount } from "viem/accounts";
 import { PriceGuardAbi } from "@/abi/PriceGuard";
 import {
   addressOf, ANVIL_URL, anvilAccounts, API_URL, DATABASE_URL, FORK_DIR, forkClients, impersonated, keyOf, loadDeployment, PORTS,
@@ -93,6 +94,34 @@ async function addProof(): Promise<void> {
   console.log(`setup: forkProof = block ${raw.deployBlock} ${block.hash}`);
 }
 
+/** anvil's built-in dev mnemonic. Its 20 accounts carry EIP-7702 sweepers on Robinhood Chain mainnet, so the fork runs
+ * anvil on a fresh random mnemonic (up.sh) and the deploy config's role addresses, written for the well-known accounts,
+ * are moved to the fresh account with the same index. */
+export const ANVIL_DEFAULT_MNEMONIC = "test test test test test test test test test test test junk";
+export function wellKnownDevAddresses(n = 20): Address[] {
+  return Array.from({ length: n }, (_, i) => mnemonicToAccount(ANVIL_DEFAULT_MNEMONIC, { addressIndex: i }).address);
+}
+
+/** Replaces every well-known anvil address in `text` (any case) with the fresh account at the same index. */
+export function remapDevAddresses(text: string, fresh: readonly Address[], known: readonly Address[] = wellKnownDevAddresses(fresh.length)): string {
+  let out = text;
+  known.forEach((addr, i) => {
+    const to = fresh[i];
+    if (!to) throw new Error(`no fresh account ${i}`);
+    out = out.replace(new RegExp(addr.slice(2), "gi"), getAddress(to).slice(2));
+  });
+  return out;
+}
+
+function remapDeployConfig(): void {
+  const file = join(FORK_DIR, "deploy-config.json");
+  const fresh = anvilAccounts().available_accounts;
+  const known = wellKnownDevAddresses(fresh.length);
+  if (fresh.every((a, i) => a.toLowerCase() === known[i]!.toLowerCase())) { console.log("setup: anvil runs the well-known dev keys; deploy config unchanged"); return; }
+  writeFileSync(file, remapDevAddresses(readFileSync(file, "utf8"), fresh, known));
+  console.log(`setup: deploy config roles moved to this fork's fresh anvil accounts (${file})`);
+}
+
 export function envText(vars: Record<string, string | number>): string {
   return `${Object.entries(vars).map(([k, v]) => `${k}=${String(v).includes(" ") ? JSON.stringify(String(v)) : v}`).join("\n")}\n`;
 }
@@ -145,6 +174,7 @@ export function serviceEnv(): Record<string, Record<string, string | number>> {
 }
 
 if (import.meta.main) {
+  if (process.argv.includes("--remap-config")) remapDeployConfig();
   if (process.argv.includes("--proof")) await addProof();
   if (process.argv.includes("--relax")) await relax();
   if (process.argv.includes("--clear-delegations")) console.log(`setup: cleared ${await clearDevDelegations()} delegations`);

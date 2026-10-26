@@ -94,8 +94,9 @@ export async function readLiveRisk(context: Pick<KeeperContext, "clients" | "dep
   if (live.length) {
     const risks = await chunkedMulticall(context, live.map(({ id }) => ({
       address: engine, abi: OptionEngineAbi, functionName: "seriesRisk", args: [id],
-    }))) as (readonly bigint[])[];
-    live.forEach((entry, index) => { entry.value = BigInt(risks[index]![0]!); });
+    }))) as { value: bigint }[];
+    // seriesRisk returns one struct (EngineStorage.SeriesRisk), which viem decodes as an object keyed by field name.
+    live.forEach((entry, index) => { entry.value = BigInt(risks[index]!.value); });
   }
   // The engine's dust line (EngineMarkLib.dustWad): a minTradeUsdg of 0 means the 1 USDG default.
   const minTrade = BigInt(guards[0]);

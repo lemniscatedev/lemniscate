@@ -60,8 +60,13 @@ if [[ ! -s "$FORK_DIR/fork-block" ]]; then
   echo "${FORK_BLOCK:-$(cast block-number --rpc-url "$UPSTREAM_RPC")}" >"$FORK_DIR/fork-block"
 fi
 FORK_BLOCK="$(cat "$FORK_DIR/fork-block")"
+# Fresh keys per fork: anvil's well-known dev accounts carry EIP-7702 sweepers on Robinhood Chain mainnet, so every fork
+# runs on its own random mnemonic (FORK_MNEMONIC to pin one), kept in FORK_DIR (mode 600), never in the repository.
+if [[ ! -s "$FORK_DIR/mnemonic" ]]; then
+  ( umask 077; if [[ -n "${FORK_MNEMONIC:-}" ]]; then printf '%s\n' "$FORK_MNEMONIC"; else (cd "$APP" && bun -e 'import { english, generateMnemonic } from "viem/accounts"; console.log(generateMnemonic(english))'); fi >"$FORK_DIR/mnemonic" )
+fi
 start anvil "rpc:$ANVIL_URL" -- anvil --host 127.0.0.1 --port "$ANVIL_PORT" --fork-url "http://127.0.0.1:$CACHE_PORT" \
-  --fork-block-number "$FORK_BLOCK" --chain-id 31337 --hardfork cancun --block-time 1 --accounts 20 --balance 10000 \
+  --fork-block-number "$FORK_BLOCK" --chain-id 31337 --hardfork cancun --block-time 1 --accounts 20 --balance 10000 --mnemonic "$(cat "$FORK_DIR/mnemonic")" \
   --state "$FORK_DIR/state.json" --state-interval 60 --config-out "$FORK_DIR/anvil-accounts.json" --no-rate-limit
 [[ "$(cast chain-id --rpc-url "$ANVIL_URL")" == 31337 ]] || { echo "up: anvil is not chain 31337" >&2; exit 1; }
 # Warm the mutable mainnet state inside the public node's ~15 minute history window (first start of a fork only).
@@ -85,6 +90,7 @@ echo "up: Postgres on $PG_PORT, database $DB_NAME"
 if [[ ! -s "$FORK_DIR/deployment.json" ]]; then
   CONFIG="${DEPLOY_CONFIG:?first run: set DEPLOY_CONFIG to the fork deploy config JSON (docs/runbooks/deploy/deploy-config.fork.json)}"
   cp "$CONFIG" "$FORK_DIR/deploy-config.json"
+  bun scripts/fork/setup.ts --remap-config
   DEPLOYER="$(jq -r '.available_accounts[0]' "$FORK_DIR/anvil-accounts.json")"
   (
     cd "$ROOT/contracts"

@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { getAddress, type Address, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { loadX402Settings } from "./config";
-import { createGate, type Settler } from "./gate";
+import { createGate, PAID_REQUEST_IDLE_SECONDS, SETTLE_RECEIPT_TIMEOUT_MS, type Settler } from "./gate";
 import { createPayingFetch, PaymentRefused, signPayment } from "./pay";
 import {
   PERMIT2_ADDRESS, WITNESS_TYPE_STRING, decodePayment, encodePayment, networkId, permitTypedData, resourceHash, resourceKey, witnessHash,
@@ -135,23 +135,89 @@ describe("R4 x402Flow", () => {
     expect(receipt).toMatchObject({ success: true, payer: payer.address, network: networkId(CHAIN_ID) });
   });
 
-  test("replay of the same payment is rejected and settles nothing", async () => {
+  test("the same payment again returns the original answer (idempotent by payment id) and settles nothing more", async () => {
+    // Fork run 2026-10-25: a settlement slower than Bun.serve's idle timeout dropped the connection; the client's retry
+    // got `replay` although the USDG had moved. A retry of the same signed payment now gets the paid answer again.
     const h = harness();
     const header = await pay(await challengeFor(h, "/v1/pool"));
-    expect((await withPayment(h, "/v1/pool", header)).status).toBe(200);
+    const first = await withPayment(h, "/v1/pool", header);
+    expect(first.status).toBe(200);
     const again = await withPayment(h, "/v1/pool", header);
-    expect(again.status).toBe(402);
-    expect(await errorOf(again)).toBe("replay");
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ nav: "1" });
+    expect(again.headers.get("x-payment-response")).toBe(first.headers.get("x-payment-response"));
+    expect(again.headers.get("cache-control")).toContain("no-store");
     expect(h.settled).toHaveLength(1);
     expect(h.state.handlerCalls).toBe(1);
   });
 
-  test("concurrent use of one payment settles once", async () => {
+  test("a retry that arrives while the first request is still settling waits for it and gets the same answer", async () => {
+    const h = harness();
+    let release!: () => void;
+    const gateOpen = new Promise<void>((resolve) => { release = resolve; });
+    const settle = h.gate.settlerAddress; // unchanged settler identity
+    expect(settle).toBe(settlerAccount.address);
+    const slow = createGate({
+      chainId: CHAIN_ID, usdg: USDG, payTo: PAY_TO, routes: loadX402Settings({}).routes, challengeTtlSeconds: 300, now: () => h.state.now,
+      settler: { address: settlerAccount.address, settle: async (args) => { await gateOpen; h.settled.push(args); return { txHash: `0x${"ab".repeat(32)}` as Hex }; } },
+    });
+    const app = new Hono();
+    registerX402(app, { ...slow, routes: loadX402Settings({}).routes });
+    let calls = 0;
+    app.get("/v1/pool", (c) => { calls++; return c.json({ nav: "2" }); });
+    const header = await pay(await (await app.request("/v1/pool")).json());
+    const first = app.request("/v1/pool", { headers: { "x-payment": header } });
+    await Bun.sleep(20);
+    const retry = app.request("/v1/pool", { headers: { "x-payment": header } });
+    await Bun.sleep(20);
+    release();
+    const [a, b] = await Promise.all([first, retry]);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    expect(await b.json()).toEqual({ nav: "2" });
+    expect(h.settled).toHaveLength(1);
+    expect(calls).toBe(1);
+  });
+
+  test("concurrent use of one payment settles once and every copy gets the one answer", async () => {
     const h = harness();
     const header = await pay(await challengeFor(h, "/v1/pool"));
     const results = await Promise.all([withPayment(h, "/v1/pool", header), withPayment(h, "/v1/pool", header), withPayment(h, "/v1/pool", header)]);
-    expect(results.filter((r) => r.status === 200)).toHaveLength(1);
+    expect(results.map((r) => r.status)).toEqual([200, 200, 200]);
     expect(h.settled).toHaveLength(1);
+    expect(h.state.handlerCalls).toBe(1);
+  });
+
+  test("a retry never reaches another resource, and a failed settlement answers the same failure, not replay", async () => {
+    const h = harness();
+    const header = await pay(await challengeFor(h, "/v1/pool"));
+    expect((await withPayment(h, "/v1/pool", header)).status).toBe(200);
+    const elsewhere = await withPayment(h, "/v1/chains/NVDA", header);
+    expect(elsewhere.status).toBe(402);
+    expect(["wrong_witness", "wrong_amount"]).toContain(await errorOf(elsewhere)); // bound to /v1/pool and its price
+    expect(h.settled).toHaveLength(1);
+
+    const h2 = harness();
+    h2.state.failSettle = true;
+    const header2 = await pay(await challengeFor(h2, "/v1/pool"));
+    expect(await errorOf(await withPayment(h2, "/v1/pool", header2))).toBe("settlement_failed");
+    const retry = await withPayment(h2, "/v1/pool", header2);
+    expect(await errorOf(retry)).toBe("settlement_failed");
+    expect(h2.state.handlerCalls).toBe(1);
+  });
+
+  test("a paid request asks the server for a longer idle timeout than Bun.serve's 10 s default; an unpaid one does not", async () => {
+    const h = harness();
+    const calls: number[] = [];
+    const server = { timeout: (_request: Request, seconds: number) => { calls.push(seconds); } };
+    const challengeRes = await h.app.fetch(new Request("http://x/v1/pool"), server);
+    expect(challengeRes.status).toBe(402);
+    expect(calls).toEqual([]);
+    const header = await pay(await challengeRes.json());
+    const paid = await h.app.fetch(new Request("http://x/v1/pool", { headers: { "x-payment": header } }), server);
+    expect(paid.status).toBe(200);
+    expect(calls).toEqual([PAID_REQUEST_IDLE_SECONDS]);
+    expect(PAID_REQUEST_IDLE_SECONDS).toBeGreaterThan(SETTLE_RECEIPT_TIMEOUT_MS / 1000);
+    expect(PAID_REQUEST_IDLE_SECONDS).toBeLessThanOrEqual(255); // Bun's per-request maximum
   });
 
   test("an on-chain nonce check (Permit2 bitmap) also counts as replay", async () => {

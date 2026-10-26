@@ -46,6 +46,15 @@ export interface GateOptions {
 }
 
 const SALT_BYTES = 16;
+/** Idle timeout (seconds) for a paid request: Bun.serve drops a request after 10 idle seconds by default, and a paid read
+ * waits for its settlement receipt. Bun's per-request maximum is 255. */
+export const PAID_REQUEST_IDLE_SECONDS = 120;
+/** The settler gives up waiting for a receipt well inside that window. */
+export const SETTLE_RECEIPT_TIMEOUT_MS = 90_000;
+
+/** The answer to a paid request, kept until the payment's deadline so a retry of the same payment gets it again. */
+interface StoredOutcome { readonly status: number; readonly headers: [string, string][]; readonly body: ArrayBuffer }
+interface Outcome { readonly key: string; readonly deadline: bigint; readonly done: Promise<StoredOutcome | undefined> }
 
 export function createGate(options: GateOptions) {
   const now = options.now ?? Date.now;
@@ -57,12 +66,22 @@ export function createGate(options: GateOptions) {
     internalDigest !== undefined && supplied !== undefined && supplied.length > 0 && timingSafeEqual(digest(supplied), internalDigest);
   /** nonce -> deadline (s). A nonce is consumed when a payment is accepted for settlement and never freed after success. */
   const consumed = new Map<bigint, bigint>();
+  /** payment id (owner, nonce, signature) -> the answer it got. A client whose connection dropped while the payment
+   * settled retries with the same X-PAYMENT; it gets the original answer back instead of `replay` (the USDG has moved). */
+  const outcomes = new Map<string, Outcome>();
   const nowSeconds = () => BigInt(Math.floor(now() / 1000));
 
   function sweep(at: bigint) {
     for (const [nonce, deadline] of consumed) if (deadline < at) consumed.delete(nonce);
     while (consumed.size >= maxTracked) { const oldest = consumed.keys().next().value; if (oldest === undefined) break; consumed.delete(oldest); }
+    for (const [id, outcome] of outcomes) if (outcome.deadline < at) outcomes.delete(id);
+    while (outcomes.size >= maxTracked) { const oldest = outcomes.keys().next().value; if (oldest === undefined) break; outcomes.delete(oldest); }
   }
+  const paymentId = (header: string): string | undefined => {
+    const p = decodePayment(header);
+    return p ? `${p.owner.toLowerCase()}:${p.nonce}:${p.signature.toLowerCase()}` : undefined;
+  };
+  const replayed = (stored: StoredOutcome) => new Response(stored.body.slice(0), { status: stored.status, headers: stored.headers });
 
   /** nonce = salt(128 bits) || HMAC128(salt, binding). The server stores nothing when it issues a challenge. */
   function mac(salt: Buffer, route: { amount: bigint }, resource: Hex, deadline: bigint): Buffer {
@@ -153,18 +172,43 @@ export function createGate(options: GateOptions) {
       const key = resourceKey(context.req.method, `${url.pathname}${url.search}`);
       const header = context.req.header("x-payment");
       if (!header) return challenge(context, route, "payment_required", "Payment required.");
+      // The same signed payment again (a retry after a dropped connection): the original answer, waiting for it if the
+      // first request is still settling. Only for the resource it paid for; anything else goes through verify().
+      const id = paymentId(header);
+      sweep(nowSeconds());
+      // Registered before verify(), so a concurrent duplicate waits for this request's answer instead of racing it.
+      let finish: (stored: StoredOutcome | undefined) => void = () => undefined;
+      for (;;) {
+        const prior = id ? outcomes.get(id) : undefined;
+        if (!prior) {
+          if (id) outcomes.set(id, { key, deadline: nowSeconds() + BigInt(options.challengeTtlSeconds), done: new Promise((resolve) => { finish = resolve; }) });
+          break;
+        }
+        if (prior.key !== key) break; // another resource: verify() refuses it (the payment is bound to its own)
+        const stored = await prior.done;
+        if (stored) return replayed(stored);
+        // The first request freed the payment (a failed read): run this one as a fresh attempt.
+      }
+      const forget = () => { if (id && outcomes.get(id)?.key === key) outcomes.delete(id); finish(undefined); };
       const verified = await verify(header, route, key);
-      if (!verified.ok) return challenge(context, route, verified.error, verified.message);
+      if (!verified.ok) { forget(); return challenge(context, route, verified.error, verified.message); }
 
       // Reserve the nonce before running anything so two concurrent requests cannot share one payment.
-      sweep(nowSeconds());
-      if (consumed.has(verified.nonce)) return challenge(context, route, "replay", "Payment nonce was already used.");
+      if (consumed.has(verified.nonce)) { forget(); return challenge(context, route, "replay", "Payment nonce was already used."); }
       consumed.set(verified.nonce, verified.deadline);
+      // Settlement waits for a receipt: keep this request's connection open past Bun.serve's 10 s idle default.
+      (context.env as { timeout?: (request: Request, seconds: number) => void } | undefined)?.timeout?.(context.req.raw, PAID_REQUEST_IDLE_SECONDS);
 
-      await next();
+      try {
+        await next();
+      } catch (error) {
+        consumed.delete(verified.nonce);
+        forget();
+        throw error;
+      }
       noStore();
       // A failed read costs nothing: free the nonce so the same signed payment can be retried until its deadline.
-      if (context.res.status >= 400) { consumed.delete(verified.nonce); return; }
+      if (context.res.status >= 400) { consumed.delete(verified.nonce); forget(); return; }
       try {
         const settlement = await options.settler.settle({
           token: options.usdg, amount: route.amount, nonce: verified.nonce, deadline: verified.deadline, owner: verified.owner,
@@ -177,16 +221,25 @@ export function createGate(options: GateOptions) {
         // Not settled: nothing was paid, so the data is withheld. The nonce stays burned (the failure may be post-broadcast).
         context.res = challenge(context, route, "settlement_failed", "Payment could not be settled.");
       }
+      try {
+        const res = context.res.clone();
+        finish({ status: res.status, headers: [...res.headers.entries()], body: await res.arrayBuffer() });
+      } catch {
+        forget();
+      }
     };
   }
 
-  return { middleware, verify, requirements, isInternal, settlerAddress: options.settler.address, consumedCount: () => consumed.size };
+  return {
+    middleware, verify, requirements, isInternal, settlerAddress: options.settler.address, consumedCount: () => consumed.size,
+    outcomeCount: () => outcomes.size,
+  };
 }
 
 export type X402Gate = ReturnType<typeof createGate> & { readonly routes: readonly PaidRoute[] };
 
 /** Real settler: a viem wallet signs `permitWitnessTransferFrom` and waits for the receipt. */
-export function viemSettler(args: { rpcUrl: string; chainId: number; key: Hex; confirmations?: number; transport?: Transport; pollingIntervalMs?: number }): Settler & { publicClient: PublicClient } {
+export function viemSettler(args: { rpcUrl: string; chainId: number; key: Hex; confirmations?: number; transport?: Transport; pollingIntervalMs?: number; receiptTimeoutMs?: number }): Settler & { publicClient: PublicClient } {
   // F42: a local nonce manager, and broadcasts go out one at a time, so parallel paid requests never share a nonce.
   const account = privateKeyToAccount(args.key, { nonceManager });
   const transport = args.transport ?? http(args.rpcUrl);
@@ -212,7 +265,9 @@ export function viemSettler(args: { rpcUrl: string; chainId: number; key: Hex; c
       const turn = sending.then(send, send);
       sending = turn.catch(() => undefined);
       const txHash = await turn;
-      const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash, confirmations: args.confirmations ?? 1 });
+      const receipt = await publicClient.waitForTransactionReceipt({
+        hash: txHash, confirmations: args.confirmations ?? 1, timeout: args.receiptTimeoutMs ?? SETTLE_RECEIPT_TIMEOUT_MS,
+      });
       if (receipt.status !== "success") throw new Error("settlement reverted");
       return { txHash };
     },
