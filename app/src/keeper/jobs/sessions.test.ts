@@ -50,3 +50,25 @@ test("pushes again when the stored horizon is closing in", async () => {
   expect((await updateSessions(context)).calendarUpdateNeeded).toBe(true);
   expect(pushes.length).toBe(1);
 });
+
+test("R3-03: before a push deletes the past sessions, a visible derived halt start is stored", async () => {
+  const chain = new FakeChain();
+  chain.nowSeconds = BigInt(Date.parse("2026-10-23T20:05:00Z") / 1000);
+  chain.kind = 3;
+  chain.prices.set(A.nvda, { s: 100n * 10n ** 18n, session: 4, fresh: false, buysPaused: true, updatedAt: 1n });
+  const derived = chain.nowSeconds - 30n * 3600n;
+  chain.derivedHalt.set(A.nvda, derived);
+  const order: string[] = [];
+  const inner = chain.tx();
+  const context = chain.context({
+    sql: Object.assign(async () => [{ meta: {} }], {}),
+    tx: { submit: async (t: { label: string; to: `0x${string}`; data: `0x${string}` }) => {
+      order.push(t.label);
+      if (t.to === A.marketHours) { chain.derivedHalt.delete(A.nvda); return { simulated: false }; }
+      return inner.submit(t);
+    } },
+  });
+  expect((await updateSessions(context)).calendarUpdateNeeded).toBe(true);
+  expect(order).toEqual(["prices:latch-halt", "sessions"]);
+  expect(chain.haltedView(A.nvda)).toBe(derived);
+});

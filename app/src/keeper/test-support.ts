@@ -51,8 +51,13 @@ export class FakeChain {
   multicalls = 0;
   /** engine.guards(): minimum trade in 6-decimal USDG ($1), hold, settle delay. */
   guards = { minTradeUsdg: 1_000_000n, holdSeconds: 1800, haltSettleDelay: 7 * 86_400 };
-  /** PriceGuard.haltedSince per stock (unix seconds) and engine.settlePrice per stock (ORC-4). */
+  /** PriceGuard's STORED halt latch per stock (stockState().haltedSince, unix seconds) and engine.settlePrice per stock (ORC-4). */
   haltedSince = new Map<Address, bigint>();
+  /** PriceGuard's halt start derived from the feed and PAST calendar sessions (R05); a calendar push can delete it (R3-03).
+   * The haltedSince() view is the earlier of this and the stored latch. */
+  derivedHalt = new Map<Address, bigint>();
+  /** Stocks whose continuity pause is latched (stockState().contPaused): a live poke does not clear their halt latch. */
+  contPaused = new Set<Address>();
   /** MarketHours.kindAt(now): 0 REGULAR, 1 EXTENDED, 2 CLOSED, 3 UNKNOWN (R05: the halt latch only writes in session). */
   kind = 0;
   /** ERC-20 balanceOf answers by `${token}:${holder}`. */
@@ -108,7 +113,15 @@ export class FakeChain {
       return [g?.s ?? 0n, g?.at ?? 0n];
     }
     if (functionName === "kindAt") return this.kind;
-    if (functionName === "haltedSince") return this.haltedSince.get(args[0] as Address) ?? 0n;
+    if (functionName === "haltedSince") return this.haltedView(args[0] as Address);
+    if (functionName === "stockState") {
+      const stock = args[0] as Address;
+      const g = this.lastGood.get(stock);
+      return {
+        lastGoodS: g?.s ?? 0n, lastGoodAt: g?.at ?? 0n, splitPauseUntil: 0n, lastGoodMult: WAD, pendingS: 0n, pendingMult: 0n, pendingAt: 0n,
+        confirmations: 0, manualPaused: false, contPaused: this.contPaused.has(stock), haltedSince: Number(this.haltedSince.get(stock) ?? 0n),
+      };
+    }
     if (functionName === "settlePrice") return this.settlePrices.get(args[0] as Address) ?? 0n;
     if (functionName === "read" || functionName === "readLite") {
       const price = this.prices.get(args[0] as Address);
@@ -186,7 +199,7 @@ export class FakeChain {
         else if (name === "accrue") this.series.get(args[0] as Hex)!.lastAccrual = this.nowSeconds;
         else if (name === "settleHalted") {
           const stock = args[0] as Address;
-          const since = this.haltedSince.get(stock) ?? 0n;
+          const since = this.haltedView(stock);
           const price = this.prices.get(stock);
           if (since === 0n || this.nowSeconds < since + BigInt(this.guards.haltSettleDelay) || price?.session !== 4) {
             this.sent.pop();
@@ -204,15 +217,37 @@ export class FakeChain {
           }
         }
         else if (name === "poke") {
-          const price = this.prices.get(args[0] as Address);
-          if (price && price.fresh && price.session <= 1) this.lastGood.set(args[0] as Address, { s: price.s, at: price.updatedAt });
-          // PriceGuard.poke: a HALTED reading in a REGULAR or EXTENDED session latches haltedSince once; a live one clears it.
-          else if (price && price.session === 4 && this.kind <= 1 && (this.haltedSince.get(args[0] as Address) ?? 0n) === 0n) this.haltedSince.set(args[0] as Address, this.nowSeconds);
-          if (price && price.fresh && price.session <= 1) this.haltedSince.delete(args[0] as Address);
+          const stock = args[0] as Address;
+          const price = this.prices.get(stock);
+          if (price && price.fresh && price.session <= 1) {
+            // PriceGuard.poke on a live reading: the last good price is (re)written and the halt latch cleared, unless a
+            // continuity pause is latched (then only confirmations count).
+            if (!this.contPaused.has(stock)) {
+              this.lastGood.set(stock, { s: price.s, at: price.updatedAt });
+              this.haltedSince.delete(stock);
+            }
+          } else if (price && price.session === 4) {
+            // R3-03: a HALTED reading stores the derived start in ANY session (only ever moving the latch earlier); with no
+            // derived start it latches now, in a REGULAR or EXTENDED session only.
+            const stored = this.haltedSince.get(stock) ?? 0n;
+            const derived = this.derivedHalt.get(stock) ?? 0n;
+            let next = stored;
+            if (derived !== 0n && (next === 0n || derived < next)) next = derived;
+            if (next === 0n && this.kind <= 1) next = this.nowSeconds;
+            if (next !== 0n) this.haltedSince.set(stock, next);
+          }
         }
         return { simulated: false, hash: keccak256(t.data), receipt: { status: "success", blockNumber: BigInt(this.sent.length) } };
       },
     };
+  }
+
+  /** PriceGuard.haltedSince(): the earlier non-zero of the stored latch and the derived start. */
+  haltedView(stock: Address): bigint {
+    const stored = this.haltedSince.get(stock) ?? 0n;
+    const derived = this.derivedHalt.get(stock) ?? 0n;
+    if (stored === 0n) return derived;
+    return derived !== 0n && derived < stored ? derived : stored;
   }
 
   /** A KeeperContext over this chain. `sql` is a stub unless given. */

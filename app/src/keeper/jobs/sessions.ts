@@ -4,6 +4,7 @@ import {
   computeKindedSessions, mergeWindows, parseStoredKinded, type KindedSession, type Session,
 } from "../sessions";
 import type { KeeperContext } from "../context";
+import { keepLastGoodPrices } from "./prices";
 
 export function sessionHash(sessions: readonly (Session & { kind?: number })[]): string {
   return keccak256(stringToHex(JSON.stringify(sessions.map((s) =>
@@ -55,6 +56,9 @@ export async function updateSessions(context: KeeperContext): Promise<Record<str
     // Preserve the actual pushed calendar/hash/horizon for boundary timers.
     return { calendarUpdateNeeded: false };
   }
+  // Review R3-03: the push deletes every past session, which is what PriceGuard derives a halt start from. Store any
+  // visible derived start first (the price upkeep pokes such a stock in any session), so the halt start never moves later.
+  if (context.deployment.contracts.priceGuard && context.deployment.stocks.length > 0) await keepLastGoodPrices(context);
   const result = await context.tx.submit({
     label: "sessions", to: marketHours,
     data: encodeFunctionData({

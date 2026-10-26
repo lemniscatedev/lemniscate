@@ -455,6 +455,15 @@ Each has a regression test that fails without it and a property or fuzz test of 
   upkeep skipped every stock that did not read live. It now pokes a stock that reads HALTED in session with no latch, once, so the
   CLOSED-price refusal and the settle clock start with only the operator's keeper running (property test over random session
   patterns and stop times in `prices.test.ts`).
+- **Halt start survives calendar pushes (R3-03).** The derived halt start is read from PAST calendar sessions, and the keeper's
+  sessions job replaces the calendar with future-only sessions; the price upkeep also decided from the `haltedSince()` view, so while
+  a derived start was visible nothing was stored and a push erased the halt (a stale CLOSED/UNKNOWN price, and a restarted settle
+  clock). `poke` now stores the derived start in any session and only ever moves the latch earlier; the upkeep decides from the
+  stored latch (`stockState`), and the sessions job runs the upkeep before every push. Property tests with the real MarketHours and
+  the push rule in `R3_03HaltStartPersists.t.sol` and `prices.test.ts`.
+- **Transient halt latch cleared (R3-04).** A latch set by a short in-session halt (issuer pause, sequencer) that ended without a new
+  feed round stayed set, because the upkeep pokes a live stock only for a newer round; the weekend then read HALTED. The upkeep now
+  also pokes a live, fresh stock that still carries a latch (not one under a continuity pause), which clears it.
 - **Queued sells keep a floor (R06).** The sell intent used `minProceeds = 0` whenever the indexed snapshot said HALTED, so a
   permissionless `fillQueued` could be lined up with a pushed TWAP at the settle time or a resumption. The intent now sets the floor from
   the indexed quote minus the caller's slippage plus a wider queued band (1,500 bps), shows it in `queuedBandBps` and the note, and
@@ -522,6 +531,9 @@ These amend the bullets above where they differ (decisions 54-64).
 - Halts (R05): PriceGuard derives the halt start from the feed's own staleness, so the CLOSED-reads-HALTED rule and the ORC-4
   settle clock work with nobody calling `poke`. Accepted: the derived start can be up to 6 hours late when the first stale moment
   falls in a closure.
+- Halt start (R3-03): `poke` stores the derived start in any session and the latch only moves earlier, so a calendar push cannot move
+  the start later. Accepted: if the keeper is down from the moment the start becomes visible until a push deletes those sessions,
+  the start is set again at the next in-session halted read (anyone can poke to store it earlier).
 - Paymaster (R17/R18): anyone can register a deployed standard Kernel account (`registerKernelAccount`), so deploying a user's
   account first cannot make it unsponsorable; `DeployPaymaster` passes with the mainnet config (deposit funded after deploy).
   Service side (28-merge): when the API sees a deployed account the paymaster does not know and its address is the standard
