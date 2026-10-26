@@ -70,7 +70,10 @@ async function main() {
   for (const t of exTxs) exByRole.set(t.from ?? "?", (exByRole.get(t.from ?? "?") ?? 0n) + BigInt(t.gas!));
   // ETH a role SENDS during the exercise (a smart account's user-operation prefund, top-ups), on top of its gas.
   const valueByRole = new Map<string, bigint>();
-  for (const t of exTxs) if (t.value) valueByRole.set(t.from ?? "?", (valueByRole.get(t.from ?? "?") ?? 0n) + BigInt(t.value));
+  for (const t of exTxs) {
+    const value = t.value ? BigInt(t.value) : (await pub.getTransaction({ hash: t.hash! }).catch(() => null))?.value ?? 0n;
+    if (value) valueByRole.set(t.from ?? "?", (valueByRole.get(t.from ?? "?") ?? 0n) + value);
+  }
   const exGas = [...exByRole.values()].reduce((a, b) => a + b, 0n);
   const startBlock = BigInt(JSON.parse(readFileSync(join(TESTNET_DIR, "deployment.json"), "utf8")).deployBlock);
   const head = await pub.getBlockNumber();
