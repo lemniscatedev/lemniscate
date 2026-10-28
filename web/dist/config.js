@@ -6,9 +6,9 @@ window.LM_CONFIG=Object.freeze({
  apiBase:'',
  // Public site origin used for og:url, canonical links and og:image (no trailing slash). Empty: none are emitted.
  // After changing it, run `npm run stamp` so the static HTML heads carry it too.
- siteUrl:'',
+ siteUrl:'https://get-lemniscate.tech',
  // Reown (WalletConnect) Cloud project id. Empty: the WalletConnect option is shown as unavailable.
- walletConnectProjectId:'',
+ walletConnectProjectId:'ab5758fea0354eecb4525ca830826c83',
  // Pinned Reown AppKit CDN build, loaded only when someone picks WalletConnect.
  appKitUrl:'https://cdn.jsdelivr.net/npm/@reown/appkit-cdn@1.8.24/dist/appkit.js',
  // Robinhood Chain mainnet. The API's /v1/config chainId must match, or trading stays disabled.
