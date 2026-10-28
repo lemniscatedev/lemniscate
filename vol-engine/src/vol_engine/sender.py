@@ -73,10 +73,15 @@ def read_oracle_timers(oracle: str, transport: Transport) -> dict[str, int]:
     return out
 
 
+# Public RPCs behind a CDN (the Robinhood Chain testnet RPC, 2026-10-28) answer 403 to urllib's default
+# "Python-urllib/x.y" User-Agent, so every post failed against the real network while local anvil accepted it.
+USER_AGENT = "lemniscate-vol-engine/1"
+
+
 def http_transport(url: str) -> Transport:
     def call(method: str, params: list) -> object:
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
-        req = urllib.request.Request(url, body, {"Content-Type": "application/json"})
+        req = urllib.request.Request(url, body, {"Content-Type": "application/json", "User-Agent": USER_AGENT})
         with urllib.request.urlopen(req, timeout=20) as resp:  # noqa: S310 (operator-configured RPC URL)
             payload = json.loads(resp.read())
         if "error" in payload:

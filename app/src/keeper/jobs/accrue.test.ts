@@ -192,6 +192,22 @@ describe("F11/F34 fixed 5-minute accrual grid (decision 35)", () => {
     expect(result.retryAfterMs).toBe((300 - 10 + 5) * 1000);
   });
 
+  test("a longer configured slot (testnet faucet budget) samples once per that slot", async () => {
+    const { chain, ids } = gridChain();
+    chain.nowSeconds = 1_800_000_000n - (1_800_000_000n % 1800n) + 10n; // 10 s into a 30-minute slot
+    for (const id of ids) chain.series.get(id as `0x${string}`)!.lastAccrual = chain.nowSeconds - 5n;
+    const job = createAccrueJob(chain.context({}, { KEEPER_ACCRUE_GRID_SECONDS: 1800 }));
+    const first = await job();
+    expect(first.retryAfterMs).toBe((1800 - 10 + 5) * 1000);
+    expect(accrued(chain).length).toBe(2);
+    chain.nowSeconds += 600n; // past a 5-minute boundary, same 30-minute slot: nothing
+    await job();
+    expect(accrued(chain).length).toBe(2);
+    chain.nowSeconds += 1200n; // next 30-minute slot
+    await job();
+    expect(accrued(chain).length).toBe(4);
+  });
+
   test("dust and closed or unreadable names are not grid sampled (the hourly catch-up still covers them)", async () => {
     const { chain, ids } = gridChain(2);
     expect((await createAccrueJob(chain.context())()).gridSampled).toBe(0);

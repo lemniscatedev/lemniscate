@@ -66,6 +66,9 @@ const envSchema = z.object({
   // at most MAX_SERIES per slot; a name that does not fit whole keeps only its non-archived series worth MIN_VALUE or more (an ALERT).
   KEEPER_ACCRUE_GRID_MIN_VALUE_USDG: z.coerce.number().min(0).default(100),
   KEEPER_ACCRUE_GRID_MAX_SERIES: z.coerce.number().int().min(0).max(5000).default(450),
+  // Length of one funding-grid slot (F11). 300 s everywhere real money is at stake; a longer slot (up to an hour, the hourly
+  // catch-up's own bound) only for a gas-starved testnet whose faucet gives 0.01 ETH a day (testnet run 2026-10-28).
+  KEEPER_ACCRUE_GRID_SECONDS: z.coerce.number().int().min(300).max(3600).default(300),
   // USDG (whole) the buy-burn job offers LmnsBuyBurn.buyAndBurn per call (the contract also caps it, decision 43).
   KEEPER_BUY_BURN_MAX_USDG: z.coerce.number().min(1).max(1_000_000).default(1_000),
   // The lister sends at most this many listing/archive transactions per run; the rest follows on the next run.

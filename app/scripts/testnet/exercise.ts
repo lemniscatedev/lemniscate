@@ -833,7 +833,9 @@ async function main() {
     const tiny = await f.expectRevert("engine.buy (under $1)", "carol", { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "buy", args: [ruleRow.id, WAD / 1000n, 10n ** 9n, deadline, addressOf("carol")] }) }, "BelowMinimum");
     const q2 = await engineRead<{ usdg: bigint }>("quote", [ruleRow.id, 2n * WAD, true]);
     await f.send("engine.buy (2 units)", "carol", { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "buy", args: [ruleRow.id, 2n * WAD, (q2.usdg * 103n) / 100n, deadline, addressOf("carol")] }) });
-    const held = await tokenBalance(ruleRow.token, addressOf("carol"));
+    // A load-balanced public RPC can answer a read from a node one block behind the receipt (real testnet 2026-10-28: the
+    // balance read 0 right after the buy, so the "part" was 0 tokens and the whole-balance sell was 0 tokens too).
+    const held = await waitFor("carol's 2-unit buy visible to reads", async () => { const b = await tokenBalance(ruleRow.token, addressOf("carol")); return b >= 2n * WAD ? b : false; }, 60_000, 1000);
     const part = await f.expectRevert("engine.sell (part under $1)", "carol", { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "sell", args: [ruleRow.id, held / 100_000n, 0n, deadline, addressOf("carol")] }) }, "BelowMinimum");
     await f.send("engine.sell (leaves dust -> whole balance)", "carol", { to: C.engine, data: encodeFunctionData({ abi: OptionEngineAbi, functionName: "sell", args: [ruleRow.id, held - held / 100_000n, 0n, deadline, addressOf("carol")] }) });
     assert((await tokenBalance(ruleRow.token, addressOf("carol"))) === 0n, "a sub-minimum remainder was left");

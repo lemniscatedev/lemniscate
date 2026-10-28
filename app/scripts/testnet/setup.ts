@@ -46,7 +46,9 @@ export function serviceEnv(): Record<string, Record<string, string | number>> {
       ...shared, API_PORT: PORTS.api, API_RATE_LIMIT_PER_MINUTE: 1200, INVITES_REQUIRED: 0, CORS_ORIGINS: web,
       BUNDLER_URL: `http://127.0.0.1:${PORTS.bundler}`, AA_BUNDLER_TIMEOUT_MS: "30000", AA_RPC_CALLS_PER_SECOND: 20, AA_RPC_CLIENT_CALLS_PER_SECOND: 10,
     },
-    keeper: { ...shared, ...keyEnv("KEEPER", "keeper"), KEEPER_DRY_RUN: 0, KEEPER_LISTER_MAX_TX: 250 },
+    // Faucet budget (0.01 ETH a day): the funding grid every TESTNET_KEEPER_GRID_SECONDS (default 1800) instead of 300.
+    keeper: { ...shared, ...keyEnv("KEEPER", "keeper"), KEEPER_DRY_RUN: 0, KEEPER_LISTER_MAX_TX: 250,
+      KEEPER_ACCRUE_GRID_SECONDS: Number(process.env.TESTNET_KEEPER_GRID_SECONDS ?? 1800) },
     hedger: { ...shared, ...keyEnv("HEDGER", "hedger"), HEDGER_DRY_RUN: 0, HEDGER_CYCLE_SECONDS: 60, HEDGER_INTERVAL_SECONDS: 600, HEDGER_COOLDOWN_SECONDS: 60 },
     "vol-engine": {
       NODE_ENV: "production", DATABASE_URL, ...keyEnv("VOL_SIGNER", "vol-signer"), VOL_SEND: 1, VOL_CLOCK: "wall",
@@ -62,7 +64,7 @@ export function serviceEnv(): Record<string, Record<string, string | number>> {
     bundler: { BUNDLER_PORT: PORTS.bundler, TESTNET_RPC_URL: RPC, TESTNET_KEYS_DIR: KEYS_DIR, TESTNET_DIR },
     "feed-mirror": {
       TESTNET_RPC_URL: RPC, TESTNET_KEYS_DIR: KEYS_DIR, TESTNET_DIR, MIRROR_SOURCE_RPC: cfg.mirror?.sourceRpc ?? "",
-      MIRROR_SOURCES: Object.entries(cfg.mirror?.feeds ?? {}).map(([n, a]) => `${n}=${a}`).join(","), MIRROR_INTERVAL_SECONDS: 120,
+      MIRROR_SOURCES: Object.entries(cfg.mirror?.feeds ?? {}).map(([n, a]) => `${n}=${a}`).join(","), MIRROR_INTERVAL_SECONDS: Number(process.env.TESTNET_MIRROR_SECONDS ?? 300),
     },
   };
   for (const [name, vars] of Object.entries(files)) {

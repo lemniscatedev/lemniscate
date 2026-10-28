@@ -115,7 +115,7 @@ async function latestMarks(context: KeeperContext, ids: readonly Hex[]): Promise
  * neither bill the keeper's gas past the budget nor push any name's honest positions off the grid. A name that does not fit
  * whole is reported with an ALERT (its pass is hourly until the budget is raised). */
 export const ACCRUE_GRID_SECONDS = 300n;
-/** R3-01 alert: a name in session whose oldest tier-0 mark is older than this has a stale live-tier NAV pass. */
+/** R3-01 alert: a name in session whose oldest tier-0 mark is older than this has a stale live-tier NAV pass (at the default slot). */
 export const GRID_STALE_SECONDS = 2n * ACCRUE_GRID_SECONDS;
 
 export interface GridEntry { id: Hex; stock: Address; value: bigint; archived: boolean }
@@ -188,8 +188,9 @@ export function createAccrueJob(context: KeeperContext) {
     const metadata = await context.metadata();
     const nowMs = context.now(metadata).getTime();
     const nowSeconds = BigInt(Math.floor(nowMs / 1000));
-    const slot = nowSeconds / ACCRUE_GRID_SECONDS;
-    const retryAfterMs = Number((slot + 1n) * ACCRUE_GRID_SECONDS * 1000n) - nowMs + GRID_SETTLE_MS;
+    const gridSeconds = BigInt(context.config.KEEPER_ACCRUE_GRID_SECONDS ?? Number(ACCRUE_GRID_SECONDS));
+    const slot = nowSeconds / gridSeconds;
+    const retryAfterMs = Number((slot + 1n) * gridSeconds * 1000n) - nowMs + GRID_SETTLE_MS;
     const maxAge = BigInt(context.config.KEEPER_ACCRUE_MAX_AGE_SECONDS);
     const threshold = force ? BOUNDARY_MIN_ELAPSED_SECONDS : maxAge;
     // PriceGuard's last good price first: it is what sells use once the session closes (keepLastGoodPrices).
@@ -231,7 +232,7 @@ export function createAccrueJob(context: KeeperContext) {
       gridSkipped = selection.skipped;
       gridSplit = selection.split;
       if (gridSplit.length) context.logger.warn({ names: gridSplit, budget, skipped: gridSkipped },
-        "ALERT: names in session do not fit the 5-minute funding grid whole (KEEPER_ACCRUE_GRID_MAX_SERIES); their live-tier NAV pass is hourly, raise the budget");
+        "ALERT: names in session do not fit the funding grid whole (KEEPER_ACCRUE_GRID_MAX_SERIES); their live-tier NAV pass is hourly, raise the budget");
       // R3-01 (3): a name in session whose oldest tier-0 mark is more than two grid intervals old (checked once the keeper
       // has been gridding: the first run after a start sees every mark as old).
       if (lastGridSlot !== undefined) {
@@ -243,8 +244,8 @@ export function createAccrueJob(context: KeeperContext) {
           const prev = oldest.get(key);
           if (prev === undefined || at < prev) oldest.set(key, at);
         }
-        staleTier0 = [...oldest.entries()].filter(([, at]) => nowSeconds - at > GRID_STALE_SECONDS).map(([stock]) => stock);
-        if (staleTier0.length) context.logger.warn({ names: staleTier0, maxAgeSeconds: Number(GRID_STALE_SECONDS) },
+        staleTier0 = [...oldest.entries()].filter(([, at]) => nowSeconds - at > 2n * gridSeconds).map(([stock]) => stock);
+        if (staleTier0.length) context.logger.warn({ names: staleTier0, maxAgeSeconds: Number(2n * gridSeconds) },
           "ALERT: a live-tier series of a name in session was not re-marked for two grid intervals; the name's NAV bounds are stale");
       }
     }

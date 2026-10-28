@@ -74,8 +74,10 @@ start keeper none -- bun src/bin/keeper.ts
 if [[ "${TESTNET_HEDGER:-0}" == 1 ]]; then start hedger none -- bun src/bin/hedger.ts; else echo "up: hedger not started (no Uniswap v3 on testnet; TESTNET_HEDGER=1 to try)"; fi
 start mcp none -- bun src/bin/mcp.ts --http
 VOL_PY="${VOL_ENGINE_PYTHON:-$ROOT/vol-engine/.venv/bin/python}"
+# Vol posts: a pass every TESTNET_VOL_INTERVAL s (default 480); it posts on a real sigma change or in the last third of the
+# 30-minute validity, so a pass every 8 minutes keeps every name fresh at the lowest gas (faucet budget, 2026-10-28).
 if [[ -x "$VOL_PY" ]] && "$VOL_PY" -c "import numpy, eth_account, psycopg" 2>/dev/null; then
-  start vol-engine none -- env PYTHONPATH="$ROOT/vol-engine/src" "$VOL_PY" -m vol_engine.cli post --loop --interval 120
+  start vol-engine none -- env PYTHONPATH="$ROOT/vol-engine/src" "$VOL_PY" -m vol_engine.cli post --loop --interval "${TESTNET_VOL_INTERVAL:-480}"
 else
   echo "up: vol-engine NOT started: no Python with numpy, eth-account, psycopg (python3 -m venv vol-engine/.venv && vol-engine/.venv/bin/pip install -e vol-engine, or VOL_ENGINE_PYTHON)"
 fi
