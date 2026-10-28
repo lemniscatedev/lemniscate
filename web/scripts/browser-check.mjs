@@ -534,7 +534,7 @@ await section('L',async()=>{
  await page.click('[data-action="pool-review"]');
  await page.waitForSelector('[data-action="confirm-pool"]');
  const pool=(await (await fetch(`http://127.0.0.1:${API_PORT}/v1/config`)).json()).contracts.pool;
- await page.evaluate(({me,pool})=>{const w=n=>BigInt(n).toString(16).padStart(64,'0');window.__receiptLogs=[{address:pool,topics:['0xbc1e9f1fe73cadc805864f37c2a9b99bcd6f8d00af936197460f64d127ca91c1','0x'+me.slice(2).padStart(64,'0'),'0x'+w(7)],data:'0x'+w(1e12)+w(window.__claimAt)}]},{me:NEW,pool});
+ await page.evaluate(({me,pool})=>{const w=n=>BigInt(n).toString(16).padStart(64,'0');window.__receiptLogs=[{address:pool,topics:['0xbc1e9f1fe73cadc805864f37c2a9b99bcd6f8d00af936197460f64d127ca91c1','0x'+me.slice(2).padStart(64,'0'),'0x'+w(7)],data:'0x'+w(1e12)+w(window.__claimAt)}]},{me:NEW,pool}); // not-a-key (event topic)
  await page.click('[data-action="confirm-pool"]');
  await page.waitForFunction(()=>/Ticket #7/.test(document.querySelector('#tx-status')?.innerText||''),null,{timeout:15_000}).catch(()=>{});
  const sent=await page.evaluate(()=>window.__sent||[]);

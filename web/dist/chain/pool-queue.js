@@ -1,8 +1,8 @@
 // Writer Pool withdrawals go through a queue: requestWithdraw(shares) returns a ticket, the ticket matures after
 // QUEUE_DELAY, then claim(ticket) pays (WriterPool.sol; redeem and withdraw always revert with UseWithdrawalQueue).
 // Pure helpers: reading tickets out of receipts and logs, a per-wallet list kept in this browser, and ticket state.
-export const TOPIC_QUEUED='0xbc1e9f1fe73cadc805864f37c2a9b99bcd6f8d00af936197460f64d127ca91c1';// WithdrawalQueued(address,uint256,uint256,uint64)
-export const TOPIC_CLAIMED='0x2d43eb174787155132b52ddb6b346e2dca99302eac3df4466dbeff953d3c84d1';// WithdrawalClaimed(address,uint256,uint256)
+export const TOPIC_QUEUED='0xbc1e9f1fe73cadc805864f37c2a9b99bcd6f8d00af936197460f64d127ca91c1';// not-a-key (event topic) WithdrawalQueued(address,uint256,uint256,uint64)
+export const TOPIC_CLAIMED='0x2d43eb174787155132b52ddb6b346e2dca99302eac3df4466dbeff953d3c84d1';// not-a-key (event topic) WithdrawalClaimed(address,uint256,uint256)
 export const STORE_KEY='lemniscate.pool-tickets.v1';
 export const CLAIM_WINDOW_SECONDS=7*86400;
 
