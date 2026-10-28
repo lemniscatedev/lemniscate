@@ -47,3 +47,24 @@ html[data-lm-dashboard="true"] body{background:#edf0f0!important}.lm-dashboard{m
 @media(max-width:809px){.dash-connect span:nth-child(2){display:inline!important;font-size:11px}}.dash-policy-names{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 0}.dash-name-chip{padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600;letter-spacing:.02em;background:#ffffff8c;border:1px solid #0000001f}
 
 .dash-invite{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:0 0 18px;padding:14px 18px}.dash-invite div{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1 1 220px}.dash-invite strong{font-size:14px}.dash-invite span{font-size:12px;line-height:1.55;color:#4a556c}
+
+/* Guided first trade (todo 37 L1) */
+.dash-onboarding{padding:24px;margin-bottom:22px;display:grid;gap:14px}
+.dash-onb-head{display:flex;justify-content:space-between;align-items:flex-start;gap:14px}
+.dash-onb-head h2{margin:6px 0 0;font-size:24px;line-height:1.15}
+.dash-onb-access{margin:0;font-size:14px;line-height:1.55;color:#505d73}
+.dash-onb-steps{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+.dash-onb-steps li{display:flex;gap:12px;align-items:flex-start;color:#68738a;min-width:0}
+.dash-onb-steps li>div{min-width:0;flex:1}
+.dash-onb-steps li.current,.dash-onb-steps li.done{color:#16233d}
+.dash-onb-mark{flex:none;width:26px;height:26px;border-radius:50%;border:1px solid #c9d2df;display:grid;place-items:center;font-size:12px}
+.dash-onb-steps li.done .dash-onb-mark{background:#16233d;color:#fff;border-color:#16233d}
+.dash-onb-steps li.current .dash-onb-mark{border-color:#b8873d;color:#b8873d}
+.dash-onb-body{margin-top:8px;font-size:14px;line-height:1.55;color:#505d73}
+.dash-onb-body p{margin:0 0 10px}
+.dash-onb-address code{display:block;overflow-wrap:anywhere;word-break:break-all;font-size:12px;padding:8px 10px;border-radius:10px;background:rgba(22,35,61,.06)}
+@media(max-width:560px){.dash-onboarding{padding:18px}.dash-onb-head h2{font-size:20px}}
+.dash-ticket-sub{margin:22px 0 8px;font-size:16px}
+.dash-ticket-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-top:1px solid rgba(22,35,61,.1)}
+.dash-ticket-row>div{min-width:0}
+.dash-ticket-row small{display:block;color:#505d73;overflow-wrap:anywhere}

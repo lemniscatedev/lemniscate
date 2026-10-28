@@ -36,23 +36,24 @@ const FAKE_WALLET=`(()=>{const ACCOUNT='0x00000000000000000000000000000000000a11
   if(method==='eth_requestAccounts'||method==='eth_accounts')return [ACCOUNT];
   if(method==='eth_chainId')return '0x1237';
   if(method==='wallet_switchEthereumChain')return null;
-  if(method==='eth_call')return '0x'+'0'.repeat(64);
+  if(method==='eth_call'){const m=window.__calls&&window.__calls[(params[0].data||'').slice(0,10)];const v=typeof m==='function'?m(params[0].data):m;return v||'0x'+'0'.repeat(64)}
   if(method==='eth_blockNumber')return '0x10';
+  if(method==='eth_getBalance')return window.__eth||'0x0';
   if(method==='eth_getLogs')return [];
   if(method==='eth_sendTransaction'){window.__sent=(window.__sent||[]).concat(params[0]);const h='0x'+(BigInt(Date.now())*1000n+BigInt(++n)).toString(16).padStart(64,'0');await fetch('http://127.0.0.1:${API_PORT}/__test/settle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:params[0].data,hash:h})});return h}
   if(method==='personal_sign'){const hex=params[0].slice(2);const msg=new TextDecoder().decode(Uint8Array.from(hex.match(/../g)||[],b=>parseInt(b,16)));if(window.__rejectLaneProof&&/Action: sell-lane/.test(msg))throw Object.assign(new Error('User rejected the request.'),{code:4001});window.__signed=(window.__signed||[]).concat(msg);return '0x'+'11'.repeat(65)}
-  if(method==='eth_getTransactionReceipt')return {status:'0x1',transactionHash:params[0],blockNumber:'0x10'};
+  if(method==='eth_getTransactionReceipt')return {status:'0x1',transactionHash:params[0],blockNumber:'0x10',logs:window.__receiptLogs||[]};
   throw Object.assign(new Error('unsupported '+method),{code:4200})},on(){},removeListener(){}};
  const info={uuid:'test-wallet-uuid',name:'Test Wallet',icon:'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22/%3E',rdns:'test.wallet'};
  const announce=()=>window.dispatchEvent(new CustomEvent('eip6963:announceProvider',{detail:Object.freeze({info,provider})}));
  window.addEventListener('eip6963:requestProvider',announce);announce();})();`;
 
 const browser=await chromium.launch();
-async function newPage({apiBase=null,declared=true,wallet=false,config={}}={}){
- const context=await browser.newContext({viewport:{width:WIDTH,height:HEIGHT},deviceScaleFactor:1});
+async function newPage({apiBase=null,declared=true,wallet=false,config={},account=null,js=true}={}){
+ const context=await browser.newContext({viewport:{width:WIDTH,height:HEIGHT},deviceScaleFactor:1,javaScriptEnabled:js});
  if(apiBase!==null)await context.route('**/config.js*',route=>route.fulfill({status:200,contentType:'application/javascript',body:configWith(apiBase,config)}));
  if(declared)await context.addInitScript(()=>{try{localStorage.setItem('lemniscate.region.v1',JSON.stringify({resident:false,at:1}))}catch{}});
- if(wallet)await context.addInitScript(FAKE_WALLET);
+ if(wallet)await context.addInitScript(account?FAKE_WALLET.replaceAll('0x00000000000000000000000000000000000a11ce',account):FAKE_WALLET);
  const page=await context.newPage();
  const errors=[],network=[];
  page.on('pageerror',e=>errors.push('pageerror: '+e.message));
@@ -399,6 +400,163 @@ await section('G',async()=>{
  ok('G desktop shows the full address',(await wp.locator('#token-bar .tb-full').isVisible().catch(()=>false)),'');
  ok('G desktop no page errors',werr.length===0,werr.join(' | '));
  await wide.close();
+});
+
+
+// ---- I. /contracts page (todo 37 L5)
+await section('I',async()=>{
+ {
+  const {page,context,errors,network}=await newPage();
+  await page.goto(base+'/contracts',{waitUntil:'load'});await settle(page);await page.waitForSelector('.lm-contracts-empty',{timeout:10_000}).catch(()=>{});
+  ok('I /contracts before launch: "Addresses are published at launch"',/Addresses are published at launch/.test(await text(page)),'');
+  ok('I /contracts empty 390px',(await width(page))===WIDTH,'');
+  ok('I /contracts empty console clean',errors.length===0&&network.length===0,[...errors,...network].join(' | ').slice(0,300));
+  ok('I footer links /contracts and /exit',(await page.locator('#lm-footer a[href="/contracts"]').count())===1&&(await page.locator('#lm-footer a[href="/exit"]').count())===1,'');
+  await context.close();
+ }
+ {
+  const {page,context,errors}=await newPage({apiBase:`http://127.0.0.1:${API_PORT}`});
+  await context.route('https://sourcify.dev/**',r=>r.fulfill({status:200,contentType:'application/json',headers:{'access-control-allow-origin':'*'},body:JSON.stringify({match:'exact_match'})}));
+  await page.goto(base+'/contracts',{waitUntil:'load'});await settle(page);await page.waitForSelector('.lm-contract',{timeout:10_000}).catch(()=>{});
+  const cards=await page.locator('.lm-contract').count();
+  const explorer=await page.locator('.lm-contract a:text("Explorer")').first().getAttribute('href').catch(()=>'');
+  const sourcify=await page.locator('.lm-contract a:text("Verified on Sourcify")').first().getAttribute('href').catch(()=>'');
+  ok('I /contracts lists every address from /v1/config',cards===4,'cards='+cards);
+  ok('I explorer link opens the address on Blockscout',/^https:\/\/robinhoodchain\.blockscout\.com\/address\/0x[0-9a-f]{40}$/.test(explorer),explorer);
+  ok('I Sourcify link per contract',/^https:\/\/repo\.sourcify\.dev\/4663\/0x[0-9a-f]{40}$/.test(sourcify)&&(await page.locator('.lm-contract a:text("Verified on Sourcify")').count())===4,sourcify);
+  await page.waitForFunction(()=>document.querySelectorAll('[data-state=verified]').length===4,null,{timeout:8000}).catch(()=>{});
+  ok('I Sourcify badge shows Verified',(await page.locator('[data-state=verified]').count())===4,'');
+  ok('I /contracts with addresses 390px',(await width(page))===WIDTH,'scrollWidth '+await width(page));
+  ok('I /contracts with addresses console clean',errors.length===0,errors.join(' | ').slice(0,300));
+  await context.close();
+ }
+});
+
+// ---- J. /exit page (todo 37 L2): static, no scripts, works with JavaScript off and saved locally
+await section('J',async()=>{
+ const {page,context,errors}=await newPage({js:false});
+ const requests=[];page.on('request',r=>requests.push(r.url()));
+ await page.goto(base+'/exit',{waitUntil:'load'});
+ const body=await text(page);
+ ok('J /exit renders with JavaScript off',/How to get your money out if this website is down/.test(body)&&/requestWithdraw\(uint256 shares\)/.test(body)&&/sell\(bytes32 id, uint128 tokens/.test(body),'');
+ ok('J /exit 390px',(await width(page))===WIDTH,'scrollWidth '+await width(page));
+ ok('J /exit loads nothing but itself',requests.length===1,requests.join(' '));
+ ok('J /exit has no script element',(await page.locator('script').count())===0,'');
+ await context.close();
+ const local=await newPage();
+ await local.page.goto('file://'+path.resolve('dist/lemniscate-exit.html'),{waitUntil:'load'});
+ ok('J one-file copy renders from file://',/Withdraw from the Writer Pool/.test(await text(local.page)),'');
+ ok('J one-file copy 390px',(await width(local.page))===WIDTH,'scrollWidth '+await width(local.page));
+ ok('J one-file copy console clean',local.errors.length===0&&errors.length===0,local.errors.join(' | '));
+ await local.context.close();
+ const wide=await browser.newContext({viewport:{width:1440,height:900}});
+ const wp=await wide.newPage();await wp.goto(base+'/exit',{waitUntil:'load'});
+ ok('J /exit desktop renders',/Read your position/.test(await wp.evaluate(()=>document.body.innerText)),'');
+ await wide.close();
+});
+
+// ---- K. guided first trade (todo 37 L1)
+await section('K',async()=>{
+ const NEW='0x0000000000000000000000000000000000000b0b';
+ const open=async(extra={})=>{
+  const s=await newPage({apiBase:`http://127.0.0.1:${API_PORT}`,wallet:true,account:NEW,...extra});
+  await s.page.goto(`${base}/dashboard?tab=overview`,{waitUntil:'load'});await settle(s.page);
+  await s.page.waitForSelector('[data-action="connect"]',{timeout:10_000});
+  await s.page.click('.dash-header [data-action="connect"]');await s.page.waitForSelector('.dash-wallet-option');
+  await s.page.locator('.dash-wallet-option',{hasText:'Test Wallet'}).click();
+  await s.page.waitForSelector('.dash-onb-steps li:nth-child(3).current',{timeout:15_000}).catch(()=>{});
+  return s;
+ };
+ overrides.session='REGULAR';
+ let s=await open();
+ let t=await s.page.locator('.dash-onboarding').innerText().catch(()=>'');
+ ok('K new wallet sees the guided first trade, at the funding step',/Five steps to your first option/.test(t)&&/Add USDG and a little ETH for gas/.test(t)&&t.includes(NEW),t.replace(/\n/g,' | '));
+ ok('K funding step states the $1 minimum and the region note',/\$1 /.test(t)&&/United Kingdom, Canada or Switzerland/.test(t),'');
+ ok('K open access wording has no invite talk',!/invite/i.test(t),'');
+ ok('K onboarding 390px',(await width(s.page))===WIDTH,'scrollWidth '+await width(s.page));
+ await s.page.click('[data-action="onb-dismiss"]');
+ ok('K dismissing hides it',(await s.page.locator('.dash-onboarding').count())===0,'');
+ const stored=await s.page.evaluate(()=>localStorage.getItem('lemniscate.onboarding.v1'));
+ ok('K dismissal is stored per wallet',!!stored&&JSON.parse(stored)[NEW]?.dismissed===true,stored);
+ await s.page.reload({waitUntil:'load'});await settle(s.page);await s.page.waitForTimeout(1500);
+ ok('K dismissal survives a reload',(await s.page.locator('.dash-onboarding').count())===0,'');
+ ok('K console clean',s.errors.length===0,s.errors.join(' | ').slice(0,300));
+ await s.context.close();
+ // an existing trader gets no tour
+ s=await newPage({apiBase:`http://127.0.0.1:${API_PORT}`,wallet:true});
+ await s.page.goto(`${base}/dashboard?tab=overview`,{waitUntil:'load'});await settle(s.page);
+ await s.page.click('.dash-header [data-action="connect"]');await s.page.locator('.dash-wallet-option',{hasText:'Test Wallet'}).click();
+ await s.page.waitForTimeout(2000);
+ ok('K a wallet with positions gets no tour',(await s.page.locator('.dash-onboarding').count())===0,'');
+ await s.context.close();
+ // invite-only wording
+ overrides.invites=true;
+ s=await open();
+ t=await s.page.locator('.dash-onboarding').innerText().catch(()=>'');
+ ok('K invite-only wording: first 24 hours, then open outside UK, CA, CH',/invite-only for the first 24 hours/.test(t)&&/everyone except residents of the United Kingdom/.test(t),t.slice(0,300).replace(/\n/g,' '));
+ ok('K invite-only 390px',(await width(s.page))===WIDTH,'');
+ await s.context.close();delete overrides.invites;
+ // one-tap sponsorship: ETH becomes optional
+ overrides.sponsoring=true;overrides.sponsorMin=8;
+ s=await open({config:{oneTap:'true'}});
+ t=await s.page.locator('.dash-onboarding').innerText().catch(()=>'');
+ ok('K sponsored gas: the fund step says ETH is optional and suggests the API minimum ($8)',/Add USDG$/m.test(t)&&/ETH is optional/.test(t)&&/first trade of \$8/.test(t)&&/\$1 minimum also works/.test(t),t.slice(0,300).replace(/\n/g,' '));
+ await s.context.close();delete overrides.sponsorMin;
+ s=await open({config:{oneTap:'true'}});
+ t=await s.page.locator('.dash-onboarding').innerText().catch(()=>'');
+ ok('K sponsored gas without the API field defaults to $5',/first trade of \$5/.test(t),t.slice(0,200));
+ await s.context.close();delete overrides.sponsoring;
+});
+
+
+// ---- L. Writer Pool withdrawals use the queue: requestWithdraw -> ticket -> claim (never redeem)
+await section('L',async()=>{
+ const NEW='0x0000000000000000000000000000000000000b0b';
+ const word=n=>BigInt(n).toString(16).padStart(64,'0');
+ const {page,context,errors}=await newPage({apiBase:`http://127.0.0.1:${API_PORT}`,wallet:true,account:NEW});
+ await context.addInitScript(({me})=>{
+  const word=n=>BigInt(n).toString(16).padStart(64,'0');
+  window.__claimAt=Math.floor(Date.now()/1000)+259200;
+  window.__calls={'0x70a08231':'0x'+word(5e12),'0xc0a096b8':'0x'+word(259200),
+   '0x8bba0958':data=>BigInt('0x'+data.slice(10))===7n?'0x'+word(BigInt(me))+word(1e12)+word(window.__claimAt):'0x'+'0'.repeat(192)};
+ },{me:NEW});
+ const openWithdraw=async()=>{
+  await page.waitForSelector('[data-action="pool-mode"][data-mode="withdraw"]',{timeout:10_000});
+  await page.click('[data-action="pool-mode"][data-mode="withdraw"]');
+ };
+ await page.goto(`${base}/dashboard?tab=pool`,{waitUntil:'load'});await settle(page);
+ await page.click('.dash-header [data-action="connect"]');await page.locator('.dash-wallet-option',{hasText:'Test Wallet'}).click();
+ await openWithdraw();
+ let body=await text(page);
+ ok('L withdraw tab explains the queue and the wait read from the chain',/Withdrawals use a queue/.test(body)&&/after 3 days/.test(body)&&!/\bredeem\b/i.test(body),'');
+ ok('L pool withdraw 390px',(await width(page))===WIDTH,'');
+ await page.fill('#pool-amount','1');
+ await page.click('[data-action="pool-review"]');
+ await page.waitForSelector('[data-action="confirm-pool"]');
+ const pool=(await (await fetch(`http://127.0.0.1:${API_PORT}/v1/config`)).json()).contracts.pool;
+ await page.evaluate(({me,pool})=>{const w=n=>BigInt(n).toString(16).padStart(64,'0');window.__receiptLogs=[{address:pool,topics:['0xbc1e9f1fe73cadc805864f37c2a9b99bcd6f8d00af936197460f64d127ca91c1','0x'+me.slice(2).padStart(64,'0'),'0x'+w(7)],data:'0x'+w(1e12)+w(window.__claimAt)}]},{me:NEW,pool});
+ await page.click('[data-action="confirm-pool"]');
+ await page.waitForFunction(()=>/Ticket #7/.test(document.querySelector('#tx-status')?.innerText||''),null,{timeout:15_000}).catch(()=>{});
+ const sent=await page.evaluate(()=>window.__sent||[]);
+ ok('L withdrawal sends requestWithdraw(shares), not redeem',sent.length===1&&sent[0].data===('0x745400c9'+word(1e12)),JSON.stringify(sent.map(x=>x.data)).slice(0,160));
+ ok('L the ticket and its claim time are shown',/Ticket #7/.test(await page.locator('#tx-status').innerText().catch(()=>'')),'');
+ ok('L the ticket is saved for this wallet',(await page.evaluate(()=>localStorage.getItem('lemniscate.pool-tickets.v1')||'')).includes('"7"'),'');
+ await page.reload({waitUntil:'load'});await settle(page);await openWithdraw();
+ await page.waitForSelector('.dash-ticket-row',{timeout:10_000}).catch(()=>{});
+ body=await text(page);
+ ok('L open ticket listed with claim disabled until it matures',/Ticket #7/.test(body)&&(await page.locator('[data-action="pool-claim"][disabled]').count())===1,'');
+ ok('L ticket list 390px',(await width(page))===WIDTH,'');
+ await context.addInitScript(()=>{window.__claimAt=Math.floor(Date.now()/1000)-60});
+ await page.reload({waitUntil:'load'});await settle(page);await openWithdraw();
+ await page.waitForSelector('.dash-ticket-row',{timeout:10_000}).catch(()=>{});
+ ok('L a matured ticket is claimable',(await page.locator('[data-action="pool-claim"]:not([disabled])').count())===1,'');
+ await page.evaluate(()=>{window.__sent=[]});
+ await page.click('[data-action="pool-claim"]');
+ await page.waitForFunction(()=>/Done\./.test(document.querySelector('#tx-status')?.innerText||''),null,{timeout:15_000}).catch(()=>{});
+ const claim=await page.evaluate(()=>window.__sent||[]);
+ ok('L claim sends claim(ticket)',claim.length===1&&claim[0].data==='0x379607f5'+word(7),JSON.stringify(claim.map(x=>x.data)).slice(0,160));
+ ok('L pool queue console clean',errors.length===0,errors.join(' | ').slice(0,300));
+ await context.close();
 });
 
 await browser.close();await mock.close();site.close();

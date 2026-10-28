@@ -11,7 +11,7 @@ export function devWalletAllowed(config,host=location.hostname){
 async function rpc(url,method,params=[]){
  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:Date.now(),method,params})});
  const j=await r.json();
- if(j.error)throw Object.assign(new Error(j.error.message||'RPC error'),{code:j.error.code});
+ if(j.error)throw Object.assign(new Error(j.error.message||'RPC error'),{code:j.error.code,data:j.error.data});// keep the revert data so a failed buy shows its real reason
  return j.result;
 }
 

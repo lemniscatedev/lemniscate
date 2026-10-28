@@ -101,6 +101,7 @@ export function startMockApi({port=4190,overrides={},seed=false}={}){
    if(p==='/v1/corporate-actions')return send(res,200,market.corporateActions((url.searchParams.get('symbol')||'').toUpperCase()));
    if((m=p.match(/^\/v1\/accounts\/(0x[0-9a-fA-F]{40})\/positions$/)))return send(res,200,positions(m[1].toLowerCase()));
    if((m=p.match(/^\/v1\/series\/(0x[0-9a-f]{64})$/))){const s=market.series.get(m[1]);return s?send(res,200,{...s,strike:String(s.strike)}):send(res,404,{error:'NOT_FOUND',message:'Unknown series.'})}
+   if(p==='/v1/userop/config'&&overrides.sponsoring)return send(res,200,{chainId:cfg.chainId,sponsoring:true,...(overrides.sponsorMin?{sponsorMinNotionalUsdg:overrides.sponsorMin}:{}),paymaster:'0x00000000000000000000000000000000000fa7e0'});
    if(p==='/v1/userop/config')return send(res,503,{error:'AA_UNAVAILABLE',message:'One-tap flows are not configured on this server. Use the plain transaction.'});
   }
   if(req.method==='POST'){

@@ -4,7 +4,9 @@
 import {createApi,plainError,SESSION_LABEL,SESSION_NOTE,BLOCK_REASON,sponsorNote} from '/chain/api.js?v=11';
 import {createLaneProofCache} from '/chain/lane-proof.js?v=1';
 import {createDemoApi} from '/chain/demo.js?v=10';
-import * as W from '/chain/wallet.js?v=11';
+import * as W from '/chain/wallet.js?v=12';
+import * as Onb from '/chain/onboarding.js?v=2';
+import * as PQ from '/chain/pool-queue.js?v=1';
 import {regionStatus,declare,regionList} from '/chain/region.js?v=10';
 import {call,toRaw,fromRaw,decodeUint,decodeBool,isAddress} from '/chain/abi.js?v=10';
 
@@ -32,7 +34,7 @@ let receipts=DEMO?[]:load(RECEIPTS_KEY,[]);
 try{localStorage.removeItem('lemniscate.policies.v2')}catch{}// old browser-local policy list, no longer a source of truth
 
 // ---------------------------------------------------------------- data from the API
-const data={config:null,names:[],chains:{},vol:{},corp:{},pool:null,positions:null,account:{},activity:null,agents:null,smart:null,invites:{required:false,approved:null},error:null,loading:true};
+const data={config:null,names:[],chains:{},vol:{},corp:{},pool:null,positions:null,account:{},activity:null,agents:null,smart:null,invites:{required:false,approved:null},useropCfg:null,error:null,loading:true};
 let region={status:'pending'};
 let selected=params.get('name')||'NVDA',side='call',speed='WEEKLY',strike=null,units='10',shieldName=null,shieldUnits='',shieldStrike=null,poolMode='deposit';
 let quoteState={key:'',result:null,error:null,loading:false};let quoteTimer=null;
@@ -102,8 +104,12 @@ async function loadAgents(){
  if(!w||MODE!=='live'){data.agents=null;return}
  try{data.agents=await api.agents(w)}catch(error){data.agents={error:plainError(error)}}
 }
+async function loadUseropCfg(){
+ if(DEMO||MODE!=='live'||!CFG.oneTap||data.useropCfg)return;
+ try{data.useropCfg=await api.useropConfig()}catch{data.useropCfg={sponsoring:false}}
+}
 async function loadAccount(){
- await loadInvites();
+ await loadInvites();await loadUseropCfg();
  await loadSmart();
  const who=owner();
  if(!who||MODE==='offline'){data.positions=null;data.account={};data.activity=null;data.agents=null;return}
@@ -113,18 +119,37 @@ async function loadAccount(){
  ]);
  if(!DEMO&&data.config)await loadPoolAccount(who);
 }
+/** QUEUE_DELAY in seconds, read from the pool; null when it cannot be read. */
+async function readQueueDelay(pool){try{return Number(decodeUint(await W.ethCall(CFG,pool,call('queueDelay'))))}catch{return null}}
+/** Open withdrawal tickets of this wallet. Sources: the activity feed, tickets this browser saved, and WithdrawalQueued logs.
+ * Each id is then read with ticketOf, so the chain decides what is still open. */
+async function loadTickets(pool,who){
+ const fromFeed=(data.activity?.items||[]).filter(i=>i.kind==='withdraw_requested'&&i.ticket!=null).map(i=>i.ticket);
+ let fromLogs=[];
+ try{
+  const logs=await W.getLogs(CFG,{address:pool,fromBlock:'0x0',toBlock:'latest',topics:[PQ.TOPIC_QUEUED,'0x'+who.slice(2).padStart(64,'0')]});
+  fromLogs=PQ.queuedFromLogs(logs,pool,who).map(x=>x.id);
+ }catch{/* some nodes limit log ranges: the saved and feed tickets still work */}
+ const ids=PQ.mergeIds(PQ.readTickets(who),fromFeed,fromLogs);
+ const open=[];
+ for(const id of ids.slice(0,30)){
+  try{const t=PQ.parseTicketOf(await W.ethCall(CFG,pool,call('ticketOf',[['uint',id]])));if(t&&t.owner.toLowerCase()===who.toLowerCase())open.push({id,shares:t.shares,claimableAt:t.claimableAt});else PQ.dropTicket(who,id)}catch{/* keep it for the next read */}
+ }
+ return open;
+}
 async function loadPoolAccount(who){
  const pool=data.config.contracts?.pool,usdg=data.config.contracts?.usdg;if(!pool)return;
  try{
-  const [shares,unlock,maxRedeem,depositor,isPublic,usdgBal]=await Promise.all([
+  const [shares,unlock,depositor,isPublic,usdgBal]=await Promise.all([
    W.ethCall(CFG,pool,call('balanceOf',[['address',who]])),W.ethCall(CFG,pool,call('unlockTime',[['address',who]])),
-   W.ethCall(CFG,pool,call('maxRedeem',[['address',who]])),W.ethCall(CFG,pool,call('isDepositor',[['address',who]])),
+   W.ethCall(CFG,pool,call('isDepositor',[['address',who]])),
    W.ethCall(CFG,pool,call('publicDeposits')),usdg?W.ethCall(CFG,usdg,call('balanceOf',[['address',who]])):'0x']);
+  const eth=await W.ethBalance(CFG,who).catch(()=>null);
   const s=decodeUint(shares);
   const value=s>0n?decodeUint(await W.ethCall(CFG,pool,call('previewRedeem',[['uint',s]]))):0n;
   const stockBalance={};
   await Promise.all((data.config.stocks||[]).map(async st=>{try{stockBalance[st.name]=decodeUint(await W.ethCall(CFG,st.stock,call('balanceOf',[['address',who]])))}catch{}}));
-  data.account={shares:s,value,unlock:Number(decodeUint(unlock)),maxRedeem:decodeUint(maxRedeem),depositor:decodeBool(depositor),publicDeposits:decodeBool(isPublic),usdg:decodeUint(usdgBal),stockBalance,error:null};
+  data.account={shares:s,value,unlock:Number(decodeUint(unlock)),queueDelay:await readQueueDelay(pool),tickets:await loadTickets(pool,who),depositor:decodeBool(depositor),publicDeposits:decodeBool(isPublic),usdg:decodeUint(usdgBal),eth,stockBalance,error:null};
  }catch{data.account={error:'Your pool balance could not be read from the chain right now.'}}
 }
 
@@ -171,12 +196,45 @@ function walletChip(){
 }
 const canTrade=()=>MODE!=='offline'&&!data.error&&!chainMismatch()&&!!data.config;
 
+
+// ---------------------------------------------------------------- guided first trade (todo 37 L1)
+let seenPositionsNow=false;
+function onboardingCard(){
+ if(DEMO||MODE!=='live'||data.error||!data.config)return '';
+ const addr=W.wallet().address||'';
+ const stored=Onb.readWallet(addr);
+ if(stored.dismissed)return '';
+ const nPos=data.positions&&!data.positions.error?data.positions.positions.length:null;
+ if(addr&&nPos===null&&owner())return '';// wait for the positions read before deciding this is a new wallet
+ const seen=stored.seenPositions===true||(seenPositionsNow&&nPos>0);
+ if(addr&&nPos>0&&!stored.sawEmpty&&!seenPositionsNow)return '';// an existing trader: no tour
+ if(addr&&nPos===0&&!stored.sawEmpty)Onb.writeWallet(addr,{sawEmpty:true});
+ const sponsoring=!!CFG.oneTap&&data.useropCfg?.sponsoring===true;
+ const fundAddr=owner()||addr;
+ const {steps,current}=Onb.buildSteps({address:addr,chainOk:!!addr&&Number(W.wallet().chainId)===Number(CFG.chainId),chainName:CFG.chainName,
+  usdgRaw:data.account?.usdg??null,ethWei:data.account?.eth??null,sponsoring,positions:nPos,seenPositions:seen,sponsorMin:Onb.sponsorMin(data.useropCfg)});
+ const sMin=Onb.sponsorMin(data.useropCfg),suggested=Onb.suggestedTrade({sponsoring,sponsorMin:sMin});
+ const fc=Onb.fundCopy({sponsoring,fundAddress:fundAddr,chainName:CFG.chainName,sponsorMin:sMin});
+ const invite=data.invites;
+ const access=Onb.accessLine({required:invite.required,approved:invite.approved,regions:regionList(CFG.blockedRegions)});
+ const body={
+  connect:`<p>Pick the wallet you will hold your options in. Lemniscate never asks for a seed phrase or private key.</p>${button('Connect wallet','connect','gold')}`,
+  network:`<p>Your wallet needs to be on ${esc(CFG.chainName)} (chain ${esc(CFG.chainId)}). Options and USDG sent on another network will not show up here.</p>${button('Switch network','onb-switch','gold')}`,
+  fund:`<p>${esc(fc.usdg)}</p><p>${esc(fc.gas)}</p>${fundAddr?`<p class="dash-onb-address"><code>${esc(fundAddr)}</code></p>`:''}<p class="dash-muted">USDG: ${data.account?.usdg!=null?money(Number(data.account.usdg)/1e6):'not read yet'}${sponsoring?'':` · ETH: ${data.account?.eth!=null?fmt(Number(data.account.eth)/1e18,5):'not read yet'}`}</p>`,
+  trade:`<p>Open the option chain, choose a name, direction and strike, and spend $${suggested} to start${sponsoring?` (gas is sponsored from $${suggested}; $${Onb.MIN_TRADE_USDG} is the smallest and uses ETH for gas)`:''}. You see the cost before you sign, and the most you can lose is the amount you pay.</p>${needsInvite()?button('Enter invite code','invite','gold'):button('Open the option chain ↗','tab','gold','data-tab="trade"')}`,
+  position:`<p>Your position is an option token in your wallet. Open Positions to see its value at the bid, its daily holding cost and how to sell it.</p>${button('View positions','onb-positions','gold')}`,
+ };
+ const list=steps.map((s,i)=>`<li class="${s.done?'done':i===current?'current':''}"><span class="dash-onb-mark" aria-hidden="true">${s.done?'✓':i+1}</span><div><strong>${esc(s.title)}</strong>${i===current?`<div class="dash-onb-body">${body[s.key]}</div>`:''}</div></li>`).join('');
+ const finished=current===-1;
+ return `<section class="glass dash-onboarding" aria-label="Your first trade"><div class="dash-onb-head"><div><span class="lm-eyebrow">Your first trade</span><h2>${finished?'You are set up.':'Five steps to your first option.'}</h2></div><button class="lm-button ghost small" data-action="onb-dismiss">${finished?'Done':'Dismiss'}</button></div><p class="dash-onb-access">${esc(access)}</p><ol class="dash-onb-steps">${list}</ol></section>`;
+}
+
 // ---------------------------------------------------------------- tabs
 function overview(){
  const t=data.positions?.totals,pool=data.pool;
  const connected=!!owner();
  const rows=names().map(n=>{const c=chainOf(n);return `<div class="dash-market-row">${symbol(n)}<div><h3>${esc(n)}</h3><p>${esc(meta(n).name)}</p></div><strong>${c?money(num(c.spot)):'—'}</strong><span class="dash-row-session">${c?SESSION_LABEL[c.session]||c.session:'No price yet'}</span><button class="dash-star" data-action="open-name" data-name="${esc(n)}" aria-label="Open the ${esc(n)} option chain">${window.LM_ICON_SVGS.arrow}</button></div>`}).join('');
- return heading('A little more room to grow.','Your options, the Writer Pool and the markets, in one view.',button('Open the option chain ↗','tab','gold','data-tab="trade"')+button('View positions','tab','','data-tab="positions"'))
+ return onboardingCard()+heading('A little more room to grow.','Your options, the Writer Pool and the markets, in one view.',button('Open the option chain ↗','tab','gold','data-tab="trade"')+button('View positions','tab','','data-tab="positions"'))
  +`<div class="dash-hero-grid"><section class="glass dash-portfolio"><div class="dash-portfolio-top"><div><span class="lm-eyebrow">Open option value</span><h2>${t?money(num(t.valueAtBidUsdg)):connected?'—':'Connect a wallet'}</h2><span class="dash-change">${t?`${data.positions.positions.length} open ${data.positions.positions.length===1?'position':'positions'} <span>·</span> valued at the bid`:'Positions are read from the chain for your wallet'}</span></div></div>${chart(payoffShape(selected,true,num(chainOf(selected)?.spot)),'#b8873d','payoff')}<div class="dash-chart-labels"><span>Up call payoff shape on ${esc(selected)} at today’s price, before costs</span><span>75% → 125%</span></div></section>
  <section class="glass dash-orbits"><div class="dash-orbit gold"><span>Holding cost</span><strong>${t?money(num(t.dailyCostUsdg)):'—'}</strong><small>per day, today’s rate</small></div><div class="dash-orbit blue"><span>Profit and loss</span><strong>${t?(num(t.pnlUsdg)<0?'−':'')+money(Math.abs(num(t.pnlUsdg))):'—'}</strong><small>value at bid plus sales, minus cost</small></div><div class="dash-orbit blue"><span>Writer Pool NAV</span><strong>${pool?money(num(pool.nav)):'—'}</strong><small>USDG</small></div><div class="dash-orbit gold"><span>Share NAV</span><strong>${pool&&num(pool.navPerShare)>0?'$'+fmt(num(pool.navPerShare),4):'—'}</strong><small>per pool share</small></div></section></div>
  <div class="dash-under-grid"><section class="glass dash-panel"><div class="dash-panel-title"><h2>Markets</h2>${button('Open option chain ↗','tab','ghost small','data-tab="trade"')}</div>${rows||`<p class="dash-muted">${data.loading?'Loading markets…':'Markets are not available right now.'}</p>`}</section><section class="glass dash-panel"><div class="dash-panel-title"><h2>More time. Clearer choices.</h2><span class="lm-sparkle">${window.LM_ICON_SVGS.star}</span></div><article class="dash-principle"><span class="lm-eyebrow">Protection, with a purpose</span><h3 style="margin-top:12px">Shield a holding.</h3><p>Shield adds a Weekly Down option to a Stock Token holding. Choose a listed protection strike and see its daily cost.</p>${button('Explore Shield '+icons.arrow,'tab','small','data-tab="shield"')}</article><article class="dash-principle"><h3>Your pace is yours.</h3><p>Daily and Weekly describe pricing speeds. Neither is an expiry date.</p><a class="lm-button small" href="/learn/daily-holding-cost">Read the mechanics ${icons.arrow}</a></article></section></div>`;
@@ -189,7 +247,7 @@ function trade(){
  const list=names().map(n=>`<button class="dash-instrument ${n===selected?'active':''}" data-action="market" data-market="${esc(n)}"><strong>${esc(n)}</strong><span>${esc(meta(n).name)}</span><small>${chainOf(n)?money(num(chainOf(n).spot)):'—'}</small></button>`).join('');
  const table=rows.length?`<div class="dash-table-scroll"><table class="dash-chain-table"><thead><tr><th>Strike</th><th>Up call</th><th>Down put</th><th>${speed==='WEEKLY'?'Weekly':'Daily'} cost / day</th><th></th></tr></thead><tbody>${rows.map(r=>{const o=optionAt(r,side==='call');return `<tr class="${r.strike===strike?'selected':''}"><td data-label="Strike">${money(num(r.strike))} ${Math.abs(r.moneynessPct)<.5?'<small style="color:#9b772f">ATM</small>':`<small>${r.moneynessPct>0?'+':''}${fmt(r.moneynessPct,1)}%</small>`}</td><td data-label="Up call">${r.call?money(num(r.call.ask)):'—'}</td><td data-label="Down put">${r.put?money(num(r.put.ask)):'—'}</td><td data-label="Cost / day">${o?esc(o.displayCost.replace('costs about ','')):'—'}</td><td data-label=""><button data-action="strike" data-strike="${esc(r.strike)}" aria-label="Select strike ${money(num(r.strike))}">Select ${window.LM_ICON_SVGS.arrow}</button></td></tr>`}).join('')}</tbody></table></div>`
   :`<p class="dash-muted" style="margin:24px 0">${MODE==='offline'?'The option chain appears here when the site is connected to the Lemniscate service.':data.loading?'Loading the option chain…':'No options are listed on this name right now.'}</p>`;
- return inviteBar()+heading('A view, without the deadline.','Choose an underlying, direction, strike, and pace.',button('Understand costs '+icons.arrow,'cost-help','ghost'))
+ return onboardingCard()+inviteBar()+heading('A view, without the deadline.','Choose an underlying, direction, strike, and pace.',button('Understand costs '+icons.arrow,'cost-help','ghost'))
  +`<div class="dash-trade-layout"><section class="glass dash-chain"><div class="dash-search"><span>${names().length} underlyings</span></div><div class="dash-instruments" id="market-results">${list}</div><div class="dash-chain-head"><div><h2>${esc(meta(selected).name)}</h2><p>${esc(selected)} · Underlying ${c?money(num(c.spot)):'—'}${c?.priceUpdatedAt?` · price ${fmtTime(Date.parse(c.priceUpdatedAt))}`:''}</p></div>${sessionPill(selected)}</div>${blockNotes(selected).map(t=>notice(t,'warn')).join('')}${notice(sessionNote(selected))}${chart(payoffShape(selected,side==='call',num(row?.strike)),'#b8873d','option-value')}<div class="dash-chart-caption"><span>${side==='call'?'Up call':'Down put'} payoff at the strike, before costs</span><span>75% of today’s price → 125%</span></div><div class="lm-segmented" aria-label="Pricing speed" style="margin:18px 0 6px"><button class="${speed==='DAILY'?'selected':''}" data-action="speed" data-speed="DAILY">Daily</button><button class="${speed==='WEEKLY'?'selected':''}" data-action="speed" data-speed="WEEKLY">Weekly</button></div>${table}</section>${ticket(row,opt)}</div>`;
 }
 function ticket(row,opt){
@@ -230,6 +288,7 @@ function positions(){
  if(!p)return head+`<p class="dash-muted">Loading positions…</p>`;
  if(p.error)return head+notice(p.error,'warn');
  const queued=p.queuedSells?.length?notice(`${p.queuedSells.length} sell${p.queuedSells.length===1?' is':'s are'} queued and will fill at the first fresh price.`):'';
+ if(p.positions.length&&Onb.readWallet(W.wallet().address||'').sawEmpty)Onb.writeWallet(W.wallet().address||'',{seenPositions:true});
  if(!p.positions.length)return head+queued+empty('Room for your first view.','Choose an everlasting Up or Down option.<br>Your position will appear here after the purchase.');
  return head+queued+`<div class="dash-info-strip"><div><strong>${p.positions.length} open ${p.positions.length===1?'position':'positions'}</strong> · ${money(num(p.totals.valueAtBidUsdg))} at the bid</div><span>${money(num(p.totals.dailyCostUsdg))} / day holding cost</span></div><div class="dash-position-grid">${p.positions.map(x=>{const pnl=x.pnlUsdg===null?null:num(x.pnlUsdg);return `<article class="glass dash-position"><div class="dash-position-head">${symbol(x.name||'?')}<div><h2>${esc(x.name||'Option')} ${x.isCall?'Up':'Down'}</h2><p>${x.speed==='WEEKLY'?'Weekly':'Daily'} · Strike ${money(num(x.strike))} · No expiry</p></div></div><div class="dash-position-value">${x.valueAtBidUsdg===null?'—':money(num(x.valueAtBidUsdg))}</div>${pnl===null?'':`<span class="dash-change" style="${pnl<0?'color:#af7a62;background:#f1e1d3':''}">${pnl>=0?'+':'−'}${money(Math.abs(pnl))} <span>since purchase</span></span>`}${line('Effective units',fmt(num(x.units),4))}${line('Holding cost',x.displayCost?esc(x.displayCost.replace('costs about ','')):'—')}${line('Paid in',money(num(x.costBasisUsdg)))}${x.sellQueued?notice('A sell on this option would queue for a fresh price.'):''}<div class="dash-position-actions">${button('Position details','position-detail','',`data-id="${esc(x.seriesId)}"`)}${button('Sell position ↗','sell','gold',`data-id="${esc(x.seriesId)}" ${canTrade()?'':'disabled'}`)}</div></article>`}).join('')}</div>`;
 }
@@ -261,6 +320,15 @@ function requestShieldQuote(){
 function updateShield(){const el=root.querySelector('#shield-summary');const name=shieldName||selected;if(el)el.innerHTML=shieldSummary(name,shieldRows(name).find(r=>r.row.strike===shieldStrike))}
 
 function meter(pct,cap){const w=cap>0&&pct!==null?Math.min(100,Math.max(0,pct/cap*100)):0;return `<div class="dash-meter"><span style="width:${w.toFixed(1)}%"></span></div>`}
+function ticketList(a){
+ if(!a.tickets?.length)return '<p class="dash-ticket-note">You have no open withdrawal tickets.</p>';
+ const now=Math.floor(Date.now()/1000),dec=data.config?.poolShareDecimals??12;
+ return `<h3 class="dash-ticket-sub">Your withdrawal tickets</h3>`+a.tickets.map(t=>{
+  const st=PQ.ticketState(t.claimableAt,now);
+  const when=st==='waiting'?`Claimable ${fmtTime(t.claimableAt*1000)} (in ${PQ.waitText(t.claimableAt-now)})`:st==='ready'?'Ready to claim':'Past the 7-day claim window: claiming puts it back in the queue and pays nothing this time';
+  return `<div class="dash-ticket-row" data-ticket="${esc(t.id)}"><div><strong>Ticket #${esc(t.id)}</strong><small>${fmt(Number(fromRaw(t.shares,dec,4)),4)} shares · ${esc(when)}</small></div>${button(st==='late'?'Re-queue':'Claim','pool-claim','gold small',`data-ticket="${esc(t.id)}" ${st==='waiting'||!canTrade()?'disabled':''}`)}</div>`;
+ }).join('');
+}
 function pool(){
  const p=data.pool,a=data.account,caps=p?.caps;
  const perName=p?Math.max(0,...p.exposures.map(e=>e.outstandingPctOfNav??0)):null;
@@ -275,10 +343,10 @@ function pool(){
  else{
   const unlocked=!a.unlock||a.unlock*1000<=Date.now();
   body=`${line('Your pool shares',a.shares!==undefined?fmt(Number(fromRaw(a.shares,data.config?.poolShareDecimals??12,4)),4):'—')}${line('Your pool value',a.value!==undefined?money(Number(fromRaw(a.value,6,2))):'—')}${line('USDG in wallet',a.usdg!==undefined?money(Number(fromRaw(a.usdg,6,2))):'—')}${a.unlock?line('Withdrawals unlock',unlocked?'Now':fmtTime(a.unlock*1000)):''}
-  <label class="dash-label" for="pool-amount">${deposit?'Deposit amount in USDG':'Shares to redeem'}</label><input id="pool-amount" class="dash-field" inputmode="decimal" placeholder="0.00">
-  ${deposit?(allowed?`<p class="dash-ticket-note">Deposits mint shares at the current NAV. New shares are locked for a short period before they can be redeemed.</p>`:notice('Deposits are open to allowlisted writers during the closed beta. Your address is not on the list yet.','warn'))
-   :`<p class="dash-ticket-note">You can redeem up to ${a.maxRedeem!==undefined?fmt(Number(fromRaw(a.maxRedeem,data.config?.poolShareDecimals??12,4)),4):'—'} shares now. Withdrawals are limited by the pool’s free collateral: when many writers exit at once, each exit can be filled only in part (pro rata) and the rest waits until collateral frees up.</p>`}
-  ${button(deposit?'Review deposit '+icons.arrow:'Review withdrawal '+icons.arrow,'pool-review','gold',(deposit&&!allowed)||!canTrade()?'disabled':'')}`;
+  <label class="dash-label" for="pool-amount">${deposit?'Deposit amount in USDG':'Shares to withdraw'}</label><input id="pool-amount" class="dash-field" inputmode="decimal" placeholder="0.00">
+  ${deposit?(allowed?`<p class="dash-ticket-note">Deposits mint shares at the current NAV. New shares are locked for a short period before they can be withdrawn.</p>`:notice('Deposits are open to allowlisted writers during the closed beta. Your address is not on the list yet.','warn'))
+   :`<p class="dash-ticket-note">Withdrawals use a queue. Asking to withdraw gives you a ticket${a.queueDelay!=null?`; it can be claimed after ${PQ.waitText(a.queueDelay)}`:''}. Then you claim it here. When many writers exit at once, a claim can be paid in part (pro rata) and the rest stays claimable.</p>${a.unlock&&!unlocked?notice('Your latest deposit is still locked until '+fmtTime(a.unlock*1000)+'.','warn'):''}`}
+  ${button(deposit?'Review deposit '+icons.arrow:'Request withdrawal '+icons.arrow,'pool-review','gold',(deposit&&!allowed)||!canTrade()?'disabled':'')}${deposit?'':ticketList(a)}`;
  }
  const vaultsOpen=!!data.config?.caps?.writerVaultsOpen;
  return heading('Collateral with a clear role.','The counterparty pool, measured by NAV.',button('Pool mechanics '+icons.arrow,'pool-help','ghost'))
@@ -541,25 +609,41 @@ function sell(seriesId){
  d.querySelector('[data-action="confirm-sell"]').onclick=()=>{if(current)runIntent('sell',{series:seriesId,units:current.v},label,p.name)};
 }
 
+async function poolClaim(id){
+ const pool=data.config.contracts.pool,who=W.wallet().address;
+ const ui=progress('Claim withdrawal',['Confirm in your wallet','Wait for the network']);
+ try{
+  ui.step(0);ui.status('Confirm in your wallet.');
+  const hash=await W.sendTransaction(CFG,{to:pool,data:call('claim',[['uint',id]])});
+  ui.step(1);ui.status('Waiting for the network…');await W.waitForReceipt(CFG,hash);
+  record({hash,kind:'pool',description:'Writer Pool withdrawal claimed · ticket #'+id,name:'Writer Pool'});
+  ui.step(9);ui.status(`Done. If the pool could pay only part today, the ticket stays listed and you can claim again tomorrow. <a href="${esc(explorerTx(hash))}" target="_blank" rel="noopener">View the receipt ↗</a>`);
+  await loadAccount();render();
+ }catch(error){ui.status(`<span class="dash-error" role="alert">${esc(W.walletErrorText(error))}</span>`)}
+}
 async function poolReview(){
  const input=document.getElementById('pool-amount')?.value||'';const pool=data.config.contracts.pool,usdg=data.config.contracts.usdg,who=W.wallet().address;
  const deposit=poolMode==='deposit',dec=deposit?6:(data.config.poolShareDecimals??12);
  let raw;try{raw=toRaw(input,dec)}catch(error){return toast(error.message)}
  if(raw<=0n)return toast('Enter an amount above zero.');
  if(deposit&&data.account.usdg!==undefined&&raw>data.account.usdg)return toast('Your wallet holds less USDG than this deposit.');
- if(!deposit&&data.account.maxRedeem!==undefined&&raw>data.account.maxRedeem)return toast('That is more than you can redeem right now.');
+ if(!deposit&&data.account.shares!==undefined&&raw>data.account.shares)return toast('That is more than your pool shares.');
+ if(!deposit&&data.account.unlock&&data.account.unlock*1000>Date.now())return toast('Your latest deposit is still locked. Try again after '+fmtTime(data.account.unlock*1000)+'.');
  let preview=0n;try{preview=decodeUint(await W.ethCall(CFG,pool,call(deposit?'previewDeposit':'previewRedeem',[['uint',raw]])))}catch{}
- const d=modal(deposit?'Review pool deposit':'Review pool withdrawal',`<div class="dash-modal-total"><small>${deposit?'USDG deposit':'Shares to redeem'}</small><strong>${deposit?money(Number(fromRaw(raw,6,2))):fmt(Number(fromRaw(raw,dec,4)),4)}</strong></div>${line(deposit?'Shares you receive (estimate)':'USDG you receive (estimate)',deposit?fmt(Number(fromRaw(preview,data.config.poolShareDecimals??12,4)),4):money(Number(fromRaw(preview,6,2))))}<p style="margin-top:20px">${deposit?'Deposits mint shares at NAV. Pool NAV can fall with losses, and writers can lose more than they earn.':'Redemptions settle at NAV when the transaction runs. When many writers exit at once, an exit can be filled only in part and the rest waits for free collateral.'}</p>`,button('Go back','modal-cancel','ghost')+button(deposit?'Deposit':'Redeem','confirm-pool','gold'));
+ const d=modal(deposit?'Review pool deposit':'Review pool withdrawal',`<div class="dash-modal-total"><small>${deposit?'USDG deposit':'Shares to queue for withdrawal'}</small><strong>${deposit?money(Number(fromRaw(raw,6,2))):fmt(Number(fromRaw(raw,dec,4)),4)}</strong></div>${line(deposit?'Shares you receive (estimate)':'Worth now (estimate, paid at claim)',deposit?fmt(Number(fromRaw(preview,data.config.poolShareDecimals??12,4)),4):money(Number(fromRaw(preview,6,2))))}<p style="margin-top:20px">${deposit?'Deposits mint shares at NAV. Pool NAV can fall with losses, and writers can lose more than they earn.':`This puts your shares in the withdrawal queue and gives you a ticket. You claim it${data.account.queueDelay!=null?' after '+PQ.waitText(data.account.queueDelay):' once it matures'}, and the USDG is paid at NAV when you claim. When many writers exit at once, a claim can be paid in part and the rest stays claimable.`}</p>`,button('Go back','modal-cancel','ghost')+button(deposit?'Deposit':'Request withdrawal','confirm-pool','gold'));
  d.querySelector('[data-action="modal-cancel"]').onclick=closeModal;
  d.querySelector('[data-action="confirm-pool"]').onclick=async()=>{
-  const ui=progress(deposit?'Writer Pool deposit':'Writer Pool withdrawal',deposit?['Approve USDG if needed','Confirm the deposit','Wait for the network']:['Confirm the redemption','Wait for the network']);
+  const ui=progress(deposit?'Writer Pool deposit':'Writer Pool withdrawal',deposit?['Approve USDG if needed','Confirm the deposit','Wait for the network']:['Confirm the request','Wait for the network']);
   try{
    if(deposit)await ensureAllowance(usdg,pool,raw,ui,0);
    ui.step(deposit?1:0);ui.status('Confirm in your wallet.');
-   const hash=await W.sendTransaction(CFG,{to:pool,data:deposit?call('deposit',[['uint',raw],['address',who]]):call('redeem',[['uint',raw],['address',who],['address',who]])});
-   ui.step(deposit?2:1);ui.status('Waiting for the network…');await W.waitForReceipt(CFG,hash);
-   record({hash,kind:'pool',description:deposit?'Writer Pool deposit':'Writer Pool withdrawal',usdg:deposit?fromRaw(raw,6):fromRaw(preview,6),name:'Writer Pool'});
-   ui.step(9);ui.status(`Done. <a href="${esc(explorerTx(hash))}" target="_blank" rel="noopener">View the receipt ↗</a>`);
+   const hash=await W.sendTransaction(CFG,{to:pool,data:deposit?call('deposit',[['uint',raw],['address',who]]):call('requestWithdraw',[['uint',raw]])});
+   ui.step(deposit?2:1);ui.status('Waiting for the network…');if(deposit)await W.waitForReceipt(CFG,hash);
+   let queued=null;
+   if(!deposit){const receipt=await W.waitForReceipt(CFG,hash).catch(()=>null);queued=PQ.queuedFromReceipt(receipt,pool,who)[0]||null;if(queued)PQ.addTickets(who,[queued.id])}
+   record({hash,kind:'pool',description:deposit?'Writer Pool deposit':'Writer Pool withdrawal requested'+(queued?' · ticket #'+queued.id:''),usdg:deposit?fromRaw(raw,6):fromRaw(preview,6),name:'Writer Pool'});
+   const wait=queued?.claimableAt?`Ticket #${esc(queued.id)}. You can claim it ${esc(fmtTime(queued.claimableAt*1000))}.`:'Your ticket is listed under Withdraw once the network has it.';
+   ui.step(9);ui.status(`Done. ${deposit?'':wait+' '}<a href="${esc(explorerTx(hash))}" target="_blank" rel="noopener">View the receipt ↗</a>`);
    data.pool=await api.pool().catch(()=>data.pool);await loadAccount();render();
   }catch(error){ui.status(`<span class="dash-error" role="alert">${esc(W.walletErrorText(error))}</span>`)}
  };
@@ -626,6 +710,9 @@ listen('click',async e=>{const b=e.target.closest('[data-action]');if(!b||b.disa
  if(a==='tab')changeTab(b.dataset.tab);
  else if(a==='mobile-menu')mobileMenu();
  else if(a==='connect')connect();
+ else if(a==='onb-dismiss'){Onb.dismiss(W.wallet().address||'');render()}
+ else if(a==='onb-switch'){try{await W.switchChain(CFG)}catch(error){toast(W.walletErrorText(error))}render()}
+ else if(a==='onb-positions'){seenPositionsNow=true;Onb.writeWallet(W.wallet().address||'',{seenPositions:true});changeTab('positions')}
  else if(a==='invite'){if(await inviteModal())await loadAccount()}
  else if(a==='disconnect'){W.disconnect();toast('Wallet disconnected.')}
  else if(a==='retry'){data.loading=true;render();await loadMarkets();await loadAccount();render();requestQuote()}
@@ -644,6 +731,7 @@ listen('click',async e=>{const b=e.target.closest('[data-action]');if(!b||b.disa
  else if(a==='position-detail'){const p=data.positions?.positions?.find(x=>x.seriesId===b.dataset.id);if(p)modal(p.name+' position details',`${line('Direction',p.isCall?'Up call':'Down put')}${line('Pricing speed',p.speed==='WEEKLY'?'Weekly':'Daily')}${line('Strike',money(num(p.strike)))}${line('Token balance',fmt(num(p.balance),6))}${line('Normalization factor',fmt(num(p.norm),6))}${line('Effective units',fmt(num(p.units),6))}${line('Paid in',money(num(p.costBasisUsdg)))}${line('Received from sales',money(num(p.proceedsUsdg)))}<p style="overflow-wrap:anywhere;margin-top:18px;font-size:11px">Option token ${esc(p.token)}</p><p style="margin-top:14px">The normalization factor reduces effective option units with continuing funding. The option has no scheduled expiry.</p>`)}
  else if(a==='pool-mode'){poolMode=b.dataset.mode;render()}
  else if(a==='pool-review')poolReview();
+ else if(a==='pool-claim')poolClaim(b.dataset.ticket);
  else if(a==='create-policy')createPolicy();
  else if(a==='revoke-policy')revokePolicy(b.dataset.agent);
  else if(a==='agent-trades'){await loadAgents();render()}

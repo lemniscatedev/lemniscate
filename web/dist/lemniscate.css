@@ -139,3 +139,22 @@ html[data-lm-dashboard="true"] #lm-nav,html[data-lm-dashboard="true"] #lm-footer
 html[data-lm-loading-mode="prepared"]::view-transition-old(root){display:block!important;animation:lm-vt-exit .12s ease-out both!important}
 html[data-lm-loading-mode="prepared"]::view-transition-new(root){animation:lm-vt-enter .12s ease-out both!important;opacity:1!important}
 .lm-guides-panel{font-family:Inter,LMUrban,Arial,sans-serif}.lm-guides-panel .lm-button{font-family:inherit;text-decoration:none!important;line-height:1.4}.lm-guides-panel .lm-eyebrow{font-family:inherit}
+
+/* /contracts (todo 37 L5) */
+.lm-contracts{max-width:1100px;margin:0 auto;padding:0 60px 80px}
+.lm-contract-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px}
+.lm-contract{background:rgba(255,255,255,.7);border:1px solid rgba(22,35,61,.1);border-radius:20px;padding:22px;min-width:0}
+.lm-contract-head{display:flex;justify-content:space-between;gap:10px;align-items:center}
+.lm-contract h3{margin:0;font-size:20px}
+.lm-contract p{margin:10px 0;font-size:14px;line-height:1.55;color:#505d73}
+.lm-contract code,.lm-contract-stocks code{display:block;overflow-wrap:anywhere;word-break:break-all;font-size:12px;background:rgba(22,35,61,.06);padding:8px 10px;border-radius:10px}
+.lm-contract-links{display:flex;gap:16px;margin-top:12px;font-size:14px}
+.lm-contract-badge{flex:none;font-size:11px;letter-spacing:.04em;padding:4px 9px;border-radius:99px;background:rgba(22,35,61,.08);color:#505d73}
+.lm-contract-badge[data-state=verified]{background:#dff0e2;color:#1f5d2c}
+.lm-contracts-empty{max-width:640px;margin:20px auto 80px;padding:30px;border-radius:20px;background:rgba(255,255,255,.7);border:1px solid rgba(22,35,61,.1)}
+.lm-contracts-empty h2{margin:0 0 10px}
+.lm-contracts-note,.lm-contracts-empty p{color:#505d73;line-height:1.6}
+.lm-contracts-sub{margin:40px 0 6px}
+.lm-contract-stocks{list-style:none;margin:14px 0 0;padding:0;display:grid;gap:10px}
+.lm-contract-stocks li{overflow-wrap:anywhere}
+@media(max-width:809px){.lm-contracts{padding:0 20px 60px}.lm-contract-grid{grid-template-columns:1fr}}

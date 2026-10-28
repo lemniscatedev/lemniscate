@@ -1,6 +1,6 @@
 // Wallet connection: EIP-6963 browser wallets (always listed) and WalletConnect through Reown AppKit (pinned CDN build,
 // loaded only when chosen and only when a project id is configured). The site never sees keys or seed phrases.
-import {devWalletEntry} from '/chain/devwallet.js?v=10';
+import {devWalletEntry} from '/chain/devwallet.js?v=11';
 const LAST_KEY='lemniscate.wallet.v1';
 const listeners=new Set();
 const discovered=new Map();
@@ -40,6 +40,11 @@ async function ensureChain(provider,config){
   await provider.request({method:'wallet_addEthereumChain',params:[{chainId:hexChain(config.chainId),chainName:config.chainName,nativeCurrency:{name:'Ether',symbol:'ETH',decimals:18},rpcUrls:[config.rpcUrl],blockExplorerUrls:[config.explorerUrl]}]});
  }
  return Number(config.chainId);
+}
+
+export async function switchChain(config){
+ if(!state.provider)throw new Error('Connect a wallet first.');
+ const id=await ensureChain(state.provider,config);state={...state,chainId:id};emit();return id;
 }
 
 function attach(provider,kind,name,address,chainId){
@@ -137,6 +142,7 @@ async function rpc(config,method,params){
 }
 export const ethCall=(config,to,data)=>rpc(config,'eth_call',[{to,data},'latest']);
 export const getLogs=(config,filter)=>rpc(config,'eth_getLogs',[filter]);
+export const ethBalance=async(config,address)=>BigInt(await rpc(config,'eth_getBalance',[address,'latest']));
 export const blockNumber=async config=>parseInt(await rpc(config,'eth_blockNumber',[]),16);
 
 export async function sendTransaction(config,{to,data,value='0'}){

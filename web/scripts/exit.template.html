@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>How to get your money out if this website is down | Lemniscate</title>
+<meta name="description" content="Step by step: sell your options and withdraw from the Writer Pool straight on the block explorer, without the Lemniscate website.">
+<style>
+:root{color-scheme:light dark;--ink:#16233d;--mute:#505d73;--line:#d5dce6;--bg:#f6f3ee;--card:#fff;--gold:#b8873d;--code:#eef1f6}
+@media(prefers-color-scheme:dark){:root{--ink:#e9edf4;--mute:#aab4c5;--line:#2c3850;--bg:#0f1626;--card:#16203a;--gold:#d9a85a;--code:#1d2946}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+main{max-width:780px;margin:0 auto;padding:28px 18px 72px}
+h1{font-size:clamp(26px,6vw,38px);line-height:1.15;margin:8px 0 12px}
+h2{font-size:clamp(20px,4.5vw,26px);margin:38px 0 10px;line-height:1.25}
+h3{font-size:18px;margin:24px 0 6px}
+p,li{color:var(--mute)}
+strong{color:var(--ink)}
+a{color:var(--gold)}
+code{font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--code);padding:2px 6px;border-radius:6px;overflow-wrap:anywhere;word-break:break-word}
+pre{background:var(--code);padding:14px;border-radius:12px;overflow-x:auto;max-width:100%;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--ink)}
+pre code{background:none;padding:0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin:14px 0}
+.card p:first-child{margin-top:0}.card p:last-child{margin-bottom:0}
+.tag{display:inline-block;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--gold)}
+.top{display:flex;justify-content:space-between;gap:12px;font-size:14px}
+table{width:100%;border-collapse:collapse;font-size:14px;display:block;overflow-x:auto}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+ol,ul{padding-left:22px}
+li{margin:6px 0}
+.warn{border-left:4px solid var(--gold)}
+footer{margin-top:48px;font-size:13px;color:var(--mute)}
+</style>
+</head>
+<body>
+<main>
+<div class="top"><span class="tag">Lemniscate</span><!--LM:NAV--></div>
+<h1>How to get your money out if this website is down</h1>
+<p>Lemniscate runs on smart contracts on Robinhood Chain. They keep working when the website is offline, so you can always sell your options and withdraw from the Writer Pool by calling the contracts directly on the block explorer. This page is one file with no scripts. Save it (in your browser: File, then Save Page As) so you have it when you need it.</p>
+
+<div class="card warn">
+<p><strong>Before you start.</strong> You need a wallet (the one you used on Lemniscate), a little ETH on Robinhood Chain for network gas, and the block explorer at <a href="<!--LM:EXPLORER-->"><!--LM:EXPLORER--></a>. Nobody from Lemniscate will ever ask for your seed phrase or private key, and nobody needs them to help you. Do not connect your wallet to any site you were sent in a message.</p>
+</div>
+
+<h2>The network</h2>
+<table>
+<tr><th>Name</th><td>Robinhood Chain</td></tr>
+<tr><th>Chain ID</th><td><!--LM:CHAINID--></td></tr>
+<tr><th>Public RPC</th><td><!--LM:RPC--></td></tr>
+<tr><th>Explorer</th><td><!--LM:EXPLORER--></td></tr>
+<tr><th>Currency</th><td>ETH</td></tr>
+</table>
+
+<h2>The contracts</h2>
+<!--LM:ADDRESSES-->
+<p>Check every address you use against the list on the Lemniscate <strong>Contracts</strong> page and in the public project repository. If they differ, stop.</p>
+
+<h2>How to call a function on the explorer</h2>
+<ol>
+<li>Open the contract's address page on the explorer.</li>
+<li>Open the <strong>Contract</strong> tab, then <strong>Read contract</strong> (or <strong>Read as proxy</strong>) to look things up, or <strong>Write contract</strong> (or <strong>Write as proxy</strong>) to send a transaction. Lemniscate's engine and pool are upgradeable proxies, so use the proxy tabs when you see them.</li>
+<li>Click <strong>Connect wallet</strong> on the Write tab and choose the same wallet you used on Lemniscate. Make sure it is on the network above.</li>
+<li>Fill in the fields exactly as shown below. Amounts are plain whole numbers with no decimal point: an option token amount has 18 decimals, USDG has 6, Writer Pool shares have 12.</li>
+<li>Click <strong>Write</strong>, confirm in your wallet, then open the transaction to check it says Success and look at its Logs tab.</li>
+</ol>
+
+<h2>1. Read your position</h2>
+<p>Your options are ERC-20 tokens in your wallet. On the explorer, open your own address, then the <strong>Tokens</strong> tab. Option tokens are named like <code>Lemniscate NVDA Up 180 Weekly</code> with symbol <code>eNVDA-C-180-W</code> (C is an Up call, P is a Down put, W is Weekly, D is Daily). Open the token, then read:</p>
+<table>
+<tr><th>Where</th><th>Function</th><th>What it gives you</th></tr>
+<tr><td>the option token</td><td><code>balanceOf(address)</code></td><td>Your token balance, 18 decimals. This is the <code>tokens</code> amount you sell.</td></tr>
+<tr><td>the option token</td><td><code>seriesId()</code></td><td>The series id (a 32-byte value). You pass it to the engine as <code>id</code>.</td></tr>
+<tr><td>Series Registry</td><td><code>seriesOf(bytes32 id)</code></td><td>Whether it is a call or a put, the strike (18 decimals), the speed, and <code>norm</code>.</td></tr>
+<tr><td>Engine</td><td><code>quoteFor(bytes32 id, uint256 units, bool isBuy, address account)</code></td><td>What selling would pay now. Use <code>isBuy</code> false, your address, and your units. <code>usdg</code> in the answer is the payout in USDG with 6 decimals.</td></tr>
+<tr><td>Engine</td><td><code>holdOf(bytes32 id, address account)</code></td><td>Any open 30-minute hold after a purchase. Selling is still open during it.</td></tr>
+</table>
+<p><strong>Units.</strong> Your effective units are <code>balance x norm / 1e18</code>. The daily holding cost is paid by <code>norm</code> getting smaller over time, so your units fall while your token balance stays the same. To quote a sale of everything you hold, work out units that way and pass it to <code>quoteFor</code>.</p>
+<p><strong>Writer Pool.</strong> Your share balance is <code>balanceOf(address)</code> on the Writer Pool contract (12 decimals). <code>previewRedeem(uint256 shares)</code> shows roughly what they are worth in USDG (6 decimals).</p>
+
+<h2>2. Sell your options</h2>
+<p>Selling is never blocked by a pause. On the <strong>Engine</strong> contract, Write tab, call:</p>
+<pre><code>sell(bytes32 id, uint128 tokens, uint128 minProceedsUsdg, uint64 deadline, address recipient)</code></pre>
+<table>
+<tr><th>Field</th><th>What to enter</th></tr>
+<tr><td><code>id</code></td><td>The <code>seriesId()</code> value from your option token.</td></tr>
+<tr><td><code>tokens</code></td><td>Your token <code>balanceOf</code>, as the raw 18-decimal number. Selling your whole balance is always accepted. A partial sale that would leave a tiny remainder is refused or rounded up to all of it.</td></tr>
+<tr><td><code>minProceedsUsdg</code></td><td>The least USDG you will accept, with 6 decimals (1 USDG is 1000000). Use about 95 percent of the <code>usdg</code> from <code>quoteFor</code> to protect yourself from a price move. Entering 0 accepts any price.</td></tr>
+<tr><td><code>deadline</code></td><td>A unix time in seconds after which the sale is refused. Current time plus 600 is a good value. If you cannot work that out, <code>4102444800</code> (the year 2100) always works.</td></tr>
+<tr><td><code>recipient</code></td><td>Your own wallet address. The USDG is paid here.</td></tr>
+</table>
+<p>Done: the transaction logs show a <code>Sold</code> event and your USDG balance goes up.</p>
+<h3>If the sale is queued</h3>
+<p>When the price feed is halted, or the payout cannot be made right then, the engine does not lose your sale. It holds your tokens and logs a <code>SellQueued</code> event with a ticket number. Then:</p>
+<ul>
+<li>Read <code>queuedSell(uint256 ticket)</code> on the Engine to see it.</li>
+<li>When trading resumes, anyone can call <code>fillQueued(uint256 ticket)</code> and the proceeds go to your <code>recipient</code>. You can call it yourself.</li>
+<li>To take your tokens back instead, call <code>cancelQueued(uint256 ticket)</code> from the same wallet.</li>
+</ul>
+
+<h2>3. Withdraw from the Writer Pool</h2>
+<p>The pool pays withdrawals through a queue, so this takes two steps with a wait between them. Do not use <code>redeem</code> or <code>withdraw</code> on the pool: they always refuse and point you to the queue.</p>
+<ol>
+<li><strong>Check the lock.</strong> Read <code>unlockTime(address account)</code> on the Writer Pool with your address. Shares from a recent deposit are locked until that unix time (24 hours after your last deposit). Asking to withdraw before then is refused.</li>
+<li><strong>Join the queue.</strong> On the Writer Pool, Write tab, call <code>requestWithdraw(uint256 shares)</code> with your share balance (12 decimals). It moves your shares into the queue and logs <code>WithdrawalQueued</code> with your <strong>ticket</strong> number and <code>claimableAt</code>. Open the transaction's Logs tab and note the ticket number.</li>
+<li><strong>Wait.</strong> Read <code>ticketOf(uint256 ticket)</code> to see <code>owner</code>, <code>shares</code> and <code>claimableAt</code> (unix time). The queue delay is set when the pool is deployed (read <code>QUEUE_DELAY()</code>, in seconds; the mainnet setting is 72 hours).</li>
+<li><strong>Claim.</strong> After <code>claimableAt</code>, from the same wallet, call <code>claim(uint256 ticket)</code>. Only the ticket owner can claim. USDG is sent to your wallet and the logs show <code>WithdrawalClaimed</code>.</li>
+</ol>
+<div class="card">
+<p><strong>Good to know.</strong> Claim within 7 days of <code>claimableAt</code>. If you are later than that, the claim puts your ticket back in the queue for a fresh wait and pays nothing; nothing is lost, you just claim again after the new <code>claimableAt</code>. If the pool does not have enough cash to pay every queued ticket at once, each ticket receives a share of that day's amount, at most once per day, and the rest stays claimable. Call <code>claim</code> again the next day.</p>
+</div>
+
+<h2>4. Writer vaults, if you used them</h2>
+<p>Writer vaults are a later phase and are closed at launch. If you hold vault shares, open the vault contract (its address is in the project's deployment file in the public repository). Call <code>requestWithdraw(uint256 shares)</code>. Once the vault's epoch has ended, anyone can call <code>roll()</code> on it. Then call <code>claim()</code> from your wallet. <code>claimable(address account)</code> shows what is waiting for you.</p>
+
+<h2>5. Stop an agent</h2>
+<p>If you gave an agent key a budget, you can cancel it at any time. On the <strong>Agent Router</strong> contract, Write tab, call <code>revoke(address agent)</code> with the agent's address.</p>
+
+<h2>For developers: the same calls with Foundry</h2>
+<p>If you prefer a command line, these send the same transactions with <code>cast</code> from Foundry. Replace the placeholders. The key stays in your own keystore.</p>
+<pre><code>RPC=<!--LM:RPC-->
+
+# sell everything in one series
+cast send &lt;ENGINE&gt; "sell(bytes32,uint128,uint128,uint64,address)" \
+  &lt;SERIES_ID&gt; &lt;TOKENS&gt; &lt;MIN_USDG&gt; 4102444800 &lt;YOUR_ADDRESS&gt; \
+  --rpc-url $RPC --account &lt;your-keystore&gt;
+
+# leave the Writer Pool, then claim after claimableAt
+cast send &lt;POOL&gt; "requestWithdraw(uint256)" &lt;SHARES&gt; --rpc-url $RPC --account &lt;your-keystore&gt;
+cast call &lt;POOL&gt; "ticketOf(uint256)(address,uint256,uint64)" &lt;TICKET&gt; --rpc-url $RPC
+cast send &lt;POOL&gt; "claim(uint256)" &lt;TICKET&gt; --rpc-url $RPC --account &lt;your-keystore&gt;</code></pre>
+
+<footer>
+<p>Options can lose their entire purchase amount. This page explains how to use the contracts; it is not investment advice and it does not promise any amount. Function names above are those of the deployed contracts.</p>
+</footer>
+</main>
+</body>
+</html>

@@ -1,4 +1,4 @@
-// Minimal ABI encoding for the few calls the website builds itself (pool deposit/redeem, agent policies, reads).
+// Minimal ABI encoding for the few calls the website builds itself (pool deposit and withdrawal queue, agent policies, reads).
 // Option trades never use this: their calldata comes from the API intents. Selectors were computed with viem's
 // toFunctionSelector from the backend ABIs (backend app/src/abi) on 2026-10-16. The AgentRouter selectors match the deployed
 // contract's interface (IAgentRouter); setPolicy takes the allowed names as its last argument.
@@ -7,8 +7,10 @@ export const SELECTORS=Object.freeze({
  allowance:'0xdd62ed3e',               // allowance(address,address)
  balanceOf:'0x70a08231',               // balanceOf(address)
  deposit:'0x6e553f65',                 // deposit(uint256,address)
- redeem:'0xba087652',                  // redeem(uint256,address,address)
- maxRedeem:'0xd905777e',               // maxRedeem(address)
+ requestWithdraw:'0x745400c9',        // requestWithdraw(uint256): joins the Writer Pool withdrawal queue
+ claim:'0x379607f5',                   // claim(uint256 ticket)
+ ticketOf:'0x8bba0958',                // ticketOf(uint256): (owner, shares, claimableAt)
+ queueDelay:'0xc0a096b8',              // QUEUE_DELAY(): seconds a ticket waits
  maxDeposit:'0x402d267d',              // maxDeposit(address)
  unlockTime:'0x76b467b7',              // unlockTime(address)
  isDepositor:'0x2f70d1ba',             // isDepositor(address)
