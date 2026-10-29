@@ -4,11 +4,25 @@ Website: [get-lemniscate.tech](https://get-lemniscate.tech) | Contracts: [get-le
 
 ## Contracts (Robinhood Chain mainnet, 4663)
 
-Filled from `app/deployments/4663.json` after the mainnet deployment is verified. Until then no address is listed.
+Deployed 29 Oct 2026. Source verified on Sourcify (exact match, contracts and libraries). Full list: `app/deployments/4663.json`.
 
 | Contract | Address | Explorer |
 | --- | --- | --- |
-| (to be filled) | | |
+| Engine (proxy) | `0x1C1f41721fe49c8dee117B17De1006817C974687` | [explorer](https://robinhoodchain.blockscout.com/address/0x1C1f41721fe49c8dee117B17De1006817C974687) |
+| Writer Pool (proxy) | `0x67fF1306201bCbEBCBB749DcF0cb2686ec11B58A` | [explorer](https://robinhoodchain.blockscout.com/address/0x67fF1306201bCbEBCBB749DcF0cb2686ec11B58A) |
+| Series Registry | `0x34f1847Fef45375451F6159550eEf3f99D87a0B4` | [explorer](https://robinhoodchain.blockscout.com/address/0x34f1847Fef45375451F6159550eEf3f99D87a0B4) |
+| Price Guard | `0x1a28fF86386ca0d2eCA3bD1257a7142aAA32A924` | [explorer](https://robinhoodchain.blockscout.com/address/0x1a28fF86386ca0d2eCA3bD1257a7142aAA32A924) |
+| Vol Oracle | `0x676AB592F4cb9178DA26C2747D21aE36530253c9` | [explorer](https://robinhoodchain.blockscout.com/address/0x676AB592F4cb9178DA26C2747D21aE36530253c9) |
+| Market Hours (proxy) | `0x46688460d14E5694Eb2f4fCe1647cA3aF163eEdD` | [explorer](https://robinhoodchain.blockscout.com/address/0x46688460d14E5694Eb2f4fCe1647cA3aF163eEdD) |
+| Agent Router | `0x0Dd88438A7d5Aa39141240BC846482cB3a74D0c9` | [explorer](https://robinhoodchain.blockscout.com/address/0x0Dd88438A7d5Aa39141240BC846482cB3a74D0c9) |
+| Reserve | `0x2f719703BF5D569975c5Cf32748b64d1926762B7` | [explorer](https://robinhoodchain.blockscout.com/address/0x2f719703BF5D569975c5Cf32748b64d1926762B7) |
+| Fee Router | `0x01DCF620EbD6b4Db8Cba7834bd0F2245855eea6e` | [explorer](https://robinhoodchain.blockscout.com/address/0x01DCF620EbD6b4Db8Cba7834bd0F2245855eea6e) |
+| Hedge Adapter | `0xFAc940243D21618853669585175373af8A98dd11` | [explorer](https://robinhoodchain.blockscout.com/address/0xFAc940243D21618853669585175373af8A98dd11) |
+| Price Reference | `0x337BFE1710373889869F270277ea8dDfbA4EE4C0` | [explorer](https://robinhoodchain.blockscout.com/address/0x337BFE1710373889869F270277ea8dDfbA4EE4C0) |
+| Timelock (48 h, admin) | `0x58C276f4A75602fCf722b0119Dc774466884A94E` | [explorer](https://robinhoodchain.blockscout.com/address/0x58C276f4A75602fCf722b0119Dc774466884A94E) |
+| Engine implementation | `0x65699d7b586B31976C10EC9e990Ae2a881D46af5` | [explorer](https://robinhoodchain.blockscout.com/address/0x65699d7b586B31976C10EC9e990Ae2a881D46af5) |
+| Pool implementation | `0xF69F0Be7599e02DCf8B4494c6841845FC54994aC` | [explorer](https://robinhoodchain.blockscout.com/address/0xF69F0Be7599e02DCf8B4494c6841845FC54994aC) |
+| Market Hours implementation | `0x754F85456867AC60F072C4bcE186e262C3215B0B` | [explorer](https://robinhoodchain.blockscout.com/address/0x754F85456867AC60F072C4bcE186e262C3215B0B) |
 
 Smart contracts and backend services for Lemniscate: everlasting call and put options on Stock Tokens, settled in USDG, on Robinhood Chain (chain ID `4663`).
 
@@ -18,7 +32,7 @@ Lemniscate is an independent project. Robinhood Chain, Chainlink and Uniswap are
 
 ## Status
 
-Mainnet deployment in progress (Robinhood Chain 4663); addresses will appear here and at get-lemniscate.tech/contracts.
+Deployed on Robinhood Chain mainnet (4663) on 29 Oct 2026. Every admin action goes through a 48-hour timelock. Addresses: above and at get-lemniscate.tech/contracts.
 
 ## Layout
 
