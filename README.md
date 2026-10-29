@@ -1,5 +1,15 @@
 # Lemniscate Backend
 
+Website: [get-lemniscate.tech](https://get-lemniscate.tech) | Contracts: [get-lemniscate.tech/contracts](https://get-lemniscate.tech/contracts) | Exit (withdraw without the app): [get-lemniscate.tech/exit](https://get-lemniscate.tech/exit) | Security: [SECURITY.md](.github/SECURITY.md) | License: MIT
+
+## Contracts (Robinhood Chain mainnet, 4663)
+
+Filled from `app/deployments/4663.json` after the mainnet deployment is verified. Until then no address is listed.
+
+| Contract | Address | Explorer |
+| --- | --- | --- |
+| (to be filled) | | |
+
 Smart contracts and backend services for Lemniscate: everlasting call and put options on Stock Tokens, settled in USDG, on Robinhood Chain (chain ID `4663`).
 
 An option has no expiry and no liquidation, and the most a buyer can lose is the premium. The daily cost is paid in kind: the option token's `norm` factor shrinks, so the holder's units fall instead of being billed. The price is the Black-Scholes value with an exponentially distributed expiry (closed form), for a one-day (Daily) or seven-day (Weekly) speed. A USDG Writer Pool takes the other side of every trade and hedges its delta with spot positions.
