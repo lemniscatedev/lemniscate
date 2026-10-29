@@ -8,15 +8,37 @@
 -- Part 2 creates the spec's data model (Backend spec section 5) plus the event logs the indexer needs to stay
 -- idempotent and reorg safe. Amounts are decimal values: USDG/1e6, option tokens/1e18, WAD values/1e18.
 
--- Remove the old product's Timescale policy jobs first. Each policy job starts as soon as it is added (0001, 0003), so
--- without this a refresh can run while the DROPs below delete the same aggregate ("tuple concurrently deleted", seen on
--- CI and on a fresh install that applies 0001..0008 in one go). delete_job waits for a running job to finish. The ticks
--- retention policy is added again at the end of this file. Servers without TimescaleDB have no jobs view, so skip.
+-- Remove the old product's Timescale policy jobs first, and stop any run of them already in flight. Each policy job
+-- starts as soon as it is added (0001, 0003), so a refresh can be running when this migration begins. delete_job stops
+-- new runs but not a running one, and that run then either races the DROPs below ("tuple concurrently deleted") or
+-- waits on this transaction's locks while the DROPs wait on its own (deadlock); both were seen on CI. So after the
+-- delete, every job worker of this database (pg_stat_activity backend_type "<job name> [<job id>]") is terminated and
+-- this waits until they are gone: they only refresh or trim aggregates that are dropped right below. Terminating a
+-- backend of the same role needs no extra privilege. pg_stat_activity is cached per transaction, so the snapshot is
+-- cleared on every check. Bounded: past 30 s it fails loudly. The ticks retention policy is added again at the end of
+-- this file. Servers without TimescaleDB have no jobs view, so skip.
 DO $$
+DECLARE
+  tries int := 0;
 BEGIN
   IF to_regclass('timescaledb_information.jobs') IS NOT NULL THEN
     PERFORM delete_job(job_id) FROM timescaledb_information.jobs
       WHERE proc_name IN ('policy_refresh_continuous_aggregate', 'policy_retention');
+    LOOP
+      PERFORM pg_stat_clear_snapshot();
+      EXIT WHEN NOT EXISTS (
+        SELECT 1 FROM pg_stat_activity
+         WHERE datname = current_database() AND pid <> pg_backend_pid()
+           AND backend_type ~ '^(Refresh Continuous Aggregate Policy|Retention Policy) \[[0-9]+\]$');
+      IF tries >= 300 THEN
+        RAISE EXCEPTION 'a TimescaleDB policy job of this database is still running after 30 s';
+      END IF;
+      PERFORM pg_terminate_backend(pid) FROM pg_stat_activity
+        WHERE datname = current_database() AND pid <> pg_backend_pid()
+          AND backend_type ~ '^(Refresh Continuous Aggregate Policy|Retention Policy) \[[0-9]+\]$';
+      PERFORM pg_sleep(0.1);
+      tries := tries + 1;
+    END LOOP;
   END IF;
 END $$;
 --> statement-breakpoint
