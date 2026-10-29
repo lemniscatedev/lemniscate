@@ -433,3 +433,20 @@ def test_force_block_window_is_renewed_when_less_than_23h_remain():
     st.tick_rows[NVDA].append(Tick(later.timestamp() - 30, st.tick_rows[NVDA][-1].spot, "REGULAR", True))
     plans = run_cycle(later, st, DryRunSender(), s, History(), force=True)
     assert plans[0].post.buy_block_to == int(later.timestamp()) + 86_400  # it never lapses while the sources disagree
+
+
+def test_RpcSender_pays_headroom_over_the_reported_gas_price():
+    st = store_with_ticks()
+    s = settings(send=True, rpc_url="http://unused", sender_key=ANVIL_KEY)
+    raws = []
+
+    def transport(method, params):
+        if method == "eth_sendRawTransaction":
+            raws.append(params[0])
+        return {"eth_getTransactionCount": "0x5", "eth_gasPrice": hex(20_630_000), "eth_estimateGas": "0x30d40",
+                "eth_sendRawTransaction": "0x" + "ab" * 32, "eth_getTransactionReceipt": {"status": "0x1"}}[method]
+
+    run_cycle(NOW, st, make_sender(s, transport), s, History(), force=True)
+    import rlp  # type: ignore[import-untyped]  (a dependency of eth-account)
+    fields = rlp.decode(bytes.fromhex(raws[0][2:]))
+    assert int.from_bytes(fields[1], "big") == 20_630_000 * 150 // 100

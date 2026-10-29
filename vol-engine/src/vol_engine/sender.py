@@ -91,6 +91,9 @@ def http_transport(url: str) -> Transport:
     return call
 
 
+GAS_PRICE_HEADROOM_PCT = 150
+
+
 class RpcSender:
     """Signs a legacy transaction with the gas key and submits it. Only constructible with allow_send=True."""
 
@@ -119,7 +122,9 @@ class RpcSender:
         try:
             data = encode_post_call(signed)
             nonce = int(self._rpc("eth_getTransactionCount", [self._from, "pending"]), 16)
-            gas_price = int(self._rpc("eth_gasPrice", []), 16)
+            # Headroom over eth_gasPrice: the base fee can rise between the read and inclusion, and a gasPrice below it is
+            # refused ("max fee per gas less than block base fee"). On Arbitrum chains only the base fee is charged.
+            gas_price = int(self._rpc("eth_gasPrice", []), 16) * GAS_PRICE_HEADROOM_PCT // 100
             call = {"from": self._from, "to": self._oracle, "data": "0x" + data.hex()}
             gas = int(int(self._rpc("eth_estimateGas", [call]), 16) * 1.25)
             tx = {"nonce": nonce, "gasPrice": gas_price, "gas": gas, "to": self._oracle, "value": 0,
