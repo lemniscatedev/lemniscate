@@ -15,8 +15,11 @@ interface IEntryPointDepositInfo {
 /// @title DeployPaymaster
 /// @notice Deploys LemniscatePaymaster for an existing system (security review F39): immutables from the deployment file
 /// (engine, USDG, AgentRouter) and the `.paymaster` section of the deploy config (EntryPoint, Kernel factory, signer,
-/// caps, stake), stakes it in the EntryPoint, optionally funds it, hands ownership to the Safe (2-step) and runs the
-/// post-deploy check below. `check(address)` re-runs that check on a live paymaster (after the Safe accepted).
+/// caps, stake), stakes it in the EntryPoint, optionally funds it, hands ownership to the timelock owner (2-step) and
+/// runs the post-deploy check below. `check(address)` re-runs that check on a live paymaster (after the owner accepted).
+/// Owner (decision 2026-10-28, skeptic L1): the paymaster is owned DIRECTLY by the timelock owner, not by the timelock,
+/// because only its sponsored-gas ETH is at risk and an instant pause matters. The owner follows the deploy's rule: a
+/// Safe, or a plain EOA only with ALLOW_EOA_OWNER=1 on fork and mainnet; an EIP-7702 delegated owner is always refused.
 ///   DEPLOYMENT_FILE=deployments/<profile>.json DEPLOY_CONFIG_JSON="$(cat <config.json>)" \
 ///     forge script script/DeployPaymaster.s.sol --rpc-url <rpc> [--broadcast]
 ///   ... forge script script/DeployPaymaster.s.sol --sig "check(address)" <paymaster> --rpc-url <rpc>
@@ -29,7 +32,7 @@ contract DeployPaymaster is LemniscateScript {
         address entryPoint;
         address kernelFactory;
         address signer;
-        address owner; // the deployment's Safe (fork, mainnet) or roles.owner (testnet)
+        address owner; // the deployment's timelock owner `safe` (fork, mainnet) or roles.owner (testnet)
         uint256 maxCostPerOp;
         uint256 accountDailyCap;
         uint256 globalDailyCap;
@@ -51,7 +54,7 @@ contract DeployPaymaster is LemniscateScript {
         vm.stopBroadcast();
         _report(paymasterFailures(pm, p, c, d, true));
         console2.log("  paymaster", address(pm));
-        console2.log("Next: the Safe calls acceptOwnership(), then run check(address) and set PAYMASTER_ADDRESS on the API host.");
+        console2.log("Next: the owner calls acceptOwnership(), then run check(address) and set PAYMASTER_ADDRESS on the API host.");
     }
 
     function check(address paymaster) external {
@@ -86,6 +89,10 @@ contract DeployPaymaster is LemniscateScript {
         require(block.chainid == chainOf(c.profile), "DeployPaymaster: chain id does not match the profile");
         require(p.entryPoint.code.length != 0 && p.kernelFactory.code.length != 0, "DeployPaymaster: EntryPoint or Kernel factory has no code");
         require(p.signer != address(0) && p.owner != address(0), "DeployPaymaster: signer and owner are required");
+        string memory problem = c.profile == PROFILE_TESTNET
+            ? (isDelegatedEoa(p.owner) ? "OWNER_IS_DELEGATED_EOA" : "")
+            : timelockOwnerProblem(p.owner, c.profile, c.allowEoaOwner);
+        require(bytes(problem).length == 0, string.concat("DeployPaymaster: owner refused: ", problem));
         Roles memory r = c.roles;
         require(
             p.signer != r.keeper && p.signer != r.hedger && p.signer != r.volSigner && p.signer != p.owner,
@@ -159,6 +166,8 @@ contract DeployPaymaster is LemniscateScript {
             f[n++] = "PM_SIGNER_IS_BOT";
         }
         if (pm.owner() != p.owner && !(allowPending && pm.pendingOwner() == p.owner)) f[n++] = "PM_OWNER";
+        // An owner that later signs an EIP-7702 delegation hands its delegate the paymaster (and, on fork/mainnet, the timelock).
+        if (isDelegatedEoa(p.owner) || isDelegatedEoa(pm.owner())) f[n++] = "PM_OWNER_DELEGATED";
         if (pm.maxCostPerOp() != p.maxCostPerOp || pm.accountDailyCap() != p.accountDailyCap || pm.globalDailyCap() != p.globalDailyCap) {
             f[n++] = "PM_CAPS";
         }

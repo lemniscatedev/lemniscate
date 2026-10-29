@@ -26,6 +26,10 @@ contract DeployPaymasterHarness is DeployPaymaster {
     function checkDeposit(PaymasterCfg memory p) external pure {
         validateDeposit(p);
     }
+
+    function validate(Config memory c, PaymasterCfg memory p) external view {
+        validatePaymasterCfg(c, p);
+    }
 }
 
 /// @notice Security review F39: the paymaster is deployed by script with reviewed caps and a post-deploy check that
@@ -162,5 +166,58 @@ contract DeployPaymasterTest is Test {
         vm.prank(safe);
         pm.unlockStake();
         assertTrue(_has(h.failures(pm, p, c, d, false), "PM_NOT_STAKED"));
+    }
+
+    // ------------------------------------------------------------- EOA owner (skeptic L1, decision 2026-10-28)
+
+    /// @dev Mainnet profile with the owner EOA as `d.safe` (the timelock owner), as the mainnet deploy will have it.
+    function _mainnetEoa(bool allowEoa) internal returns (DeployPaymaster.Config memory m) {
+        vm.chainId(4663);
+        vm.etch(p.kernelFactory, hex"00");
+        m = c;
+        m.profileName = "mainnet";
+        m.profile = 2; // PROFILE_MAINNET
+        m.allowEoaOwner = allowEoa;
+    }
+
+    /// @dev The paymaster is owned directly by the owner EOA (only sponsored-gas ETH at risk, instant pause): accepted
+    /// with ALLOW_EOA_OWNER=1, deployed, accepted, and its check passes; the owner pauses at once.
+    function test_L1_eoaOwnerDeploysAndPasses() public {
+        DeployPaymaster.Config memory m = _mainnetEoa(true);
+        assertEq(safe.code.length, 0, "the owner is a plain EOA");
+        h.validate(m, p);
+        LemniscatePaymaster pm = h.deploy(p, d, deployer);
+        assertEq(h.failures(pm, p, m, d, true).length, 0);
+        vm.prank(safe);
+        pm.acceptOwnership();
+        assertEq(pm.owner(), safe);
+        assertEq(h.failures(pm, p, m, d, false).length, 0);
+        vm.prank(safe);
+        pm.setPaused(true); // instant, no timelock
+        assertTrue(pm.paused());
+    }
+
+    function test_L1_eoaOwnerRefusedWithoutTheFlag() public {
+        DeployPaymaster.Config memory m = _mainnetEoa(false);
+        vm.expectRevert(
+            bytes("DeployPaymaster: owner refused: OWNER_IS_EOA (deploy the owner Safe first, or ALLOW_EOA_OWNER=1)")
+        );
+        h.validate(m, p);
+    }
+
+    function test_L1_delegatedOwnerRefusedAndFlagged() public {
+        DeployPaymaster.Config memory m = _mainnetEoa(true);
+        LemniscatePaymaster pm = h.deploy(p, d, deployer);
+        vm.prank(safe);
+        pm.acceptOwnership();
+        vm.etch(safe, abi.encodePacked(hex"ef0100", makeAddr("sweeper")));
+        vm.expectRevert(bytes("DeployPaymaster: owner refused: OWNER_IS_DELEGATED_EOA"));
+        h.validate(m, p);
+        assertTrue(_has(h.failures(pm, p, m, d, false), "PM_OWNER_DELEGATED"));
+        // Testnet refuses a delegated owner too.
+        m.profile = 1;
+        vm.chainId(46_630);
+        vm.expectRevert(bytes("DeployPaymaster: owner refused: OWNER_IS_DELEGATED_EOA"));
+        h.validate(m, p);
     }
 }
