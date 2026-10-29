@@ -3,9 +3,15 @@ src/WriterPool.sol | if (unlockTime(from) > block.timestamp) revert WithdrawalLo
 src/WriterPool.sol | return gross.mulDiv(BPS, BPS + DEPOSIT_PREMIUM_BPS); | return gross; | deposit premium dropped
 src/WriterPool.sol | uint256 value = _assetsFor(shares, v.navLow, v.supply); | uint256 value = _assetsFor(shares, v.navHigh, v.supply); | claims priced at the entry edge
 src/WriterPool.sol | if (block.timestamp < t.claimableAt) revert NotClaimable(t.claimableAt); | if (false) revert NotClaimable(t.claimableAt); | 72h queue dropped
-src/WriterPool.sol | if (ref == bytes32(0) && equityUsdg != prev) { | if (false) { | hedge equity jump check dropped
-src/WriterPool.sol | if (!hedgeStale()) gross += | if (true) gross += | stale perp equity counted
-src/WriterPool.sol | return deficit < bal ? deficit : bal; | return deficit; | reserve share not capped by the reserve
+src/libs/PoolHedging.sol | if ((equityUsdg > prev ? equityUsdg - prev : prev - equityUsdg) > allowed) revert HedgeJump(prev, equityUsdg); | if (false) revert HedgeJump(prev, equityUsdg); | hedge equity jump check dropped
+src/libs/PoolHedging.sol | if (asOf == 0 || block.timestamp > uint256(asOf) + EQUITY_STALE_AFTER) return 0; | if (asOf == 0) return 0; | stale perp equity counted
+src/libs/PoolHedging.sol | return deficit < bal ? deficit : bal; | return deficit; | reserve share not capped by the reserve
 src/libs/PoolHedging.sol | uint256 ref = twap != 0 && twap < s ? twap : s; | uint256 ref = s; | TWAP floor dropped on hedge buys
 src/libs/PoolHedging.sol | b.units[stock] = units - sold; | b.units[stock] = units; | forced sale leaves phantom hedge
 src/MarketHours.sol | return low != 0 && timestamp < _sessions[low - 1].close; | return low != 0 && timestamp <= _sessions[low - 1].close; | session close inclusive
+# Round-3 review fixes (security-review-round3-2026-10-25)
+src/engine/EngineMarkLib.sol | fs.b = fs.b + c * block.timestamp - old * f.at; | fs.b = fs.b + c * block.timestamp; | R3-01 per-series funding sum never removes the old term
+src/engine/EngineMarkLib.sol | a -= int256(block.timestamp * fs.a - fs.b); | a -= int256(block.timestamp * fs.a); | R3-01 funding bound charges every series from time zero
+src/engine/EngineMarkLib.sol | if (r.session == SessionKind.HALTED && $.settleS[stock] != 0) r.s = $.settleS[stock]; | if (false) r.s = $.settleS[stock]; | R3-02 halted name not bounded at its settlement price
+src/PriceGuard.sol | if (derived != 0 && (next == 0 || derived < next)) next = derived; | if (false) next = derived; | R3-03 halt latch ignores the feed-derived start
+src/engine/EngineOpsLib.sol | if (!_calendarInSession(address($.priceGuard))) revert NotSettleable(stock); | if (false) revert NotSettleable(stock); | R3-03 follow-up: settle allowed out of session
