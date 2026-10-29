@@ -21,7 +21,7 @@ test('the guide is self-contained',()=>{
 });
 test('the guide names the exact functions',()=>{
  for(const sig of ['sell(bytes32 id, uint128 tokens, uint128 minProceedsUsdg, uint64 deadline, address recipient)','requestWithdraw(uint256 shares)','claim(uint256 ticket)','fillQueued(uint256 ticket)','cancelQueued(uint256 ticket)','revoke(address agent)'])assert.ok(page.includes(sig),sig);
- assert.match(page,/Addresses are published at launch/);
+ assert.match(page,/0x1C1f41721fe49c8dee117B17De1006817C974687/);assert.match(page,/0x67fF1306201bCbEBCBB749DcF0cb2686ec11B58A/);
 });
 test('the local copy has no link back to the site',()=>{
  assert.doesNotMatch(local,/href="\//);

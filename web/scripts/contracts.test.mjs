@@ -21,7 +21,11 @@ test('verified only on a source match',()=>{
  assert.equal(isVerified({match:'exact_match'}),true);assert.equal(isVerified({match:null}),false);assert.equal(isVerified(null),false);
 });
 test('stocks',()=>assert.deepEqual(stocksFrom([{name:'NVDA',stock:a(9)},{name:'bad',stock:'x'}]),[{name:'NVDA',address:a(9)}]));
-test('the shipped deployment file has no addresses before launch',async()=>{
+test('the shipped deployment file is the mainnet deployment',async()=>{
  const f=JSON.parse(await readFile(new URL('../dist/contracts.json',import.meta.url),'utf8'));
- assert.deepEqual(rowsFrom(f.contracts),[]);
+ assert.equal(f.chainId,4663);
+ const rows=rowsFrom(f.contracts);
+ assert.equal(rows[0].key,'engine');
+ for(const k of ['engine','pool','registry','agentRouter','timelock'])assert.ok(rows.some(r=>r.key===k),k);
+ assert.ok(rows.every(r=>!/^0x0{40}$/.test(r.address)),'no zero address');
 });
