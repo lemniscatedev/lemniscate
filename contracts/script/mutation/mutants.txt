@@ -15,3 +15,10 @@ src/engine/EngineMarkLib.sol | a -= int256(block.timestamp * fs.a - fs.b); | a -
 src/engine/EngineMarkLib.sol | if (r.session == SessionKind.HALTED && $.settleS[stock] != 0) r.s = $.settleS[stock]; | if (false) r.s = $.settleS[stock]; | R3-02 halted name not bounded at its settlement price
 src/PriceGuard.sol | if (derived != 0 && (next == 0 || derived < next)) next = derived; | if (false) next = derived; | R3-03 halt latch ignores the feed-derived start
 src/engine/EngineOpsLib.sol | if (!_calendarInSession(address($.priceGuard))) revert NotSettleable(stock); | if (false) revert NotSettleable(stock); | R3-03 follow-up: settle allowed out of session
+# Audit 2026-10-29 fixes (M-1, M-2, L-1, L-2)
+src/engine/EngineCore.sol | nav -= int256(fee * 1e12); | nav -= 0; | M-1 quote ignores the funding protocol fee
+src/PriceGuard.sol | if (age < MIN_TRADE_TWAP_WINDOW || age >= src.window) return 0; | return 0; | M-2 longest-window TWAP fallback dropped
+src/engine/EngineSellLib.sol | if (!EngineCore.sellable(c) || EngineCore.twapLost(c.stock)) {\n            escrow( | if (!EngineCore.sellable(c)) {\n            escrow( | M-2 sell not escrowed when the TWAP is lost
+src/engine/EngineMarkLib.sol | if (ok2 && r2.length >= 32 && abi.decode(r2, (address)) != address(0)) revert TwapLost(stock); | if (false) revert TwapLost(stock); | M-2 LP boundary not paused when the TWAP is lost
+src/libs/PoolLayers.sol | uint256 need = target > slice ? target - slice : 0; | uint256 need = target - slice; | L-1 reserve slice underflow
+src/WriterPool.sol | if (!ok && data.length != 0) { | if (false) { | M-2 pool swallows the engine's TwapLost and falls back to book value
