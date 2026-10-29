@@ -1,5 +1,5 @@
 // Switches the invite gate and verifies the result against the running API, reverting on any failure.
-// The launch autopilot calls this: `on` at launch, `off` at the time Kal picks (default launch + 24 h).
+// The launch autopilot calls this: `on` at launch, `off` at the time Kal picks (default launch + 8 h).
 //   DATABASE_URL=... bun run scripts/invites/verify.ts on|off --api https://api.example [--codes <codes-file>] [--sample 20]
 // Exit 0 = the new state is live and verified. Exit 1 = a check failed and the previous state was restored.
 // Checks: status endpoint agrees; a never-approved wallet is refused (on) or let through (off) on buy and shield;
