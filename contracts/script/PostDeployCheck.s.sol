@@ -12,6 +12,7 @@ import {LemniscateScript} from "./lib/LemniscateScript.sol";
 ///     forge script script/PostDeployCheck.s.sol --rpc-url <rpc>
 /// It never broadcasts. Without a config only the profile-independent part could run, so the config is required.
 contract PostDeployCheck is LemniscateScript {
+    /// @notice Runs every read-only check and reverts with the list of failures if any.
     function run() external {
         Config memory c = loadConfig();
         Deployed memory d = loadDeploymentFile();

@@ -42,6 +42,8 @@ contract DeployPaymaster is LemniscateScript {
         uint256 minDepositWei; // the check fails below this
     }
 
+    /// @notice Deploys the paymaster, deposits its EntryPoint stake and hands admin to the configured owner.
+    /// @return pm the deployed paymaster
     function run() external returns (LemniscatePaymaster pm) {
         requireRealDeployArmed("DeployPaymaster");
         string memory json = _configJson();
@@ -58,6 +60,8 @@ contract DeployPaymaster is LemniscateScript {
         console2.log("Next: the owner calls acceptOwnership(), then run check(address) and set PAYMASTER_ADDRESS on the API host.");
     }
 
+    /// @notice Read-only check of a deployed paymaster: signer, owner, caps and EntryPoint deposit above the minimum.
+    /// @param paymaster the paymaster address to check
     function check(address paymaster) external {
         string memory json = _configJson();
         Config memory c = parseConfig(json);

@@ -14,6 +14,11 @@ contract ForkSafe {
         owner = owner_;
     }
 
+    /// @notice Fork-only stand-in for a Safe: forwards one call from this address.
+    /// @param target the called contract
+    /// @param value ETH sent with the call
+    /// @param data the calldata
+    /// @return out the call's return data
     function exec(address target, uint256 value, bytes calldata data) external payable returns (bytes memory out) {
         if (msg.sender != owner) revert NotOwner();
         bool ok;
@@ -23,10 +28,14 @@ contract ForkSafe {
         if (!ok) revert CallFailed(out);
     }
 
+    /// @notice Safe-compatible threshold read (always 1 on the fork stand-in).
+    /// @return the threshold
     function getThreshold() external pure returns (uint256) {
         return 1;
     }
 
+    /// @notice Safe-compatible owners read.
+    /// @return owners the single owner
     function getOwners() external view returns (address[] memory owners) {
         owners = new address[](1);
         owners[0] = owner;

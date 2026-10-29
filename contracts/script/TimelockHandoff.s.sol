@@ -22,6 +22,8 @@ import {LemniscateScript} from "./lib/LemniscateScript.sol";
 ///     --account <deployer keystore> [--broadcast]
 /// @dev Testnet (46630) has no timelock by design (decision: Safe/timelock only on mainnet); the script refuses it.
 contract TimelockHandoff is LemniscateScript {
+    /// @notice Grants DEFAULT_ADMIN_ROLE to the timelock on all eight contracts; with REVOKE_EOA_ADMIN=1 the deployer
+    /// then renounces it (refused unless the timelock already holds it everywhere).
     function run() external {
         requireRealDeployArmed("TimelockHandoff");
         require(block.chainid != CHAIN_TESTNET, "TimelockHandoff: testnet has no timelock (admin is the owner)");

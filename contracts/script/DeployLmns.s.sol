@@ -36,6 +36,10 @@ contract DeployLmns is Script, SystemConfig {
         uint256 minClaimAge; // testnet only
     }
 
+    /// @notice Deploys the $LMNS staking and buy-and-burn contracts with the timelock as admin (refused on a real
+    /// chain unless the armed flag is set).
+    /// @return staking the staking contract
+    /// @return burn the buy-and-burn contract
     function run() external returns (LmnsStaking staking, LmnsBuyBurn burn) {
         requireRealDeployArmed("DeployLmns");
         LmnsParams memory p;

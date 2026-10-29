@@ -15,6 +15,8 @@ import {LemniscateScript} from "./lib/LemniscateScript.sol";
 /// Without --broadcast Forge only simulates. Profiles and their chains: fork 31337, testnet 46630, mainnet 4663; any
 /// other chain is refused before the first transaction. `DEPLOYMENT_OUT` overrides the output path.
 contract DeploySystem is LemniscateScript {
+    /// @notice Deploys and wires the whole system from the config, then runs the post-deploy checks.
+    /// @return d every deployed address
     function run() external returns (Deployed memory d) {
         requireRealDeployArmed("DeploySystem");
         Config memory c = loadConfig();
