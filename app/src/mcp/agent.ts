@@ -1,3 +1,4 @@
+import { keeperGasLimit } from "../keeper/tx";
 import { decodeFunctionData, encodeFunctionData, getAddress, type Address, type Hex } from "viem";
 import { createPublicClient, createWalletClient, http } from "viem";
 import { privateKeyToAccount, type LocalAccount } from "viem/accounts";
@@ -121,7 +122,9 @@ export function viemExecutor(args: { rpcUrl: string; chainId: number; account: L
   return {
     async send({ to, data }) {
       try {
-        const txHash = await wallet.sendTransaction({ to, data, account: args.account, chain });
+        // An explicit limit with the keeper's headroom: a bare estimate trips the engine's out-of-gas guard.
+        const estimate = await client.estimateGas({ to, data, account: args.account });
+        const txHash = await wallet.sendTransaction({ to, data, account: args.account, chain, gas: keeperGasLimit(estimate) });
         const receipt = await client.waitForTransactionReceipt({ hash: txHash, timeout: 60_000 });
         if (receipt.status !== "success") throw new ToolError("TX_REVERTED", "The AgentRouter refused the transaction.", { txHash });
         return { txHash };

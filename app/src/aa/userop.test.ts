@@ -43,7 +43,7 @@ describe("userOpBuilder (R1)", () => {
     const { services, mock } = createTestServices();
     const built = await buildUserOp(services, { account: ACCOUNT, calls: buyCalls, sponsor: true });
     expect(built.estimated).toBe(true);
-    expect(built.userOp.callGasLimit).toBe(480_000n); // 400k x 1.2
+    expect(built.userOp.callGasLimit).toBe(900_000n); // 400k + 500k headroom (keeper policy), not the bare x1.2 that reverted
     expect(built.userOp.verificationGasLimit).toBe(300_000n); // 250k x 1.2
     expect(built.userOp.preVerificationGas).toBe(66_000n); // 60k x 1.1
     expect(mock.estimated).toHaveLength(1); // one estimation call

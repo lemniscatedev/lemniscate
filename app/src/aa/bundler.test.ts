@@ -19,7 +19,7 @@ describe("bundlerInterface (R4): HTTP client against a Rundler-compatible stub",
     expect(wire.sender?.toLowerCase()).toBe(ACCOUNT);
     expect(wire.callGasLimit).toMatch(/^0x[0-9a-f]+$/); // hex quantities, as bundlers expect
     expect(wire.paymaster).toBeDefined();
-    expect(built.userOp.callGasLimit).toBe(0x61a80n * 120n / 100n);
+    expect(built.userOp.callGasLimit).toBe(900_000n); // 400k: the larger of x1.5 and +500k
 
     const hash = await bundler.sendUserOperation({ ...built.userOp, signature: DUMMY_ACCOUNT_SIGNATURE }, entryPoint07Address);
     expect(hash).toMatch(/^0x[0-9a-f]{64}$/);

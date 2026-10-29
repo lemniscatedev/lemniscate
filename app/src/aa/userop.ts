@@ -5,6 +5,7 @@ import type { Bundler, GasEstimate } from "./bundler";
 import { toRpcUserOp } from "./bundler";
 import { RpcBudgetError, type AaChain } from "./chain";
 import { DEFAULT_MAX_COST_PER_OP_WEI } from "./config";
+import { keeperGasLimit } from "../keeper/tx";
 import { DUMMY_ACCOUNT_SIGNATURE, encodeKernelExecute, kernelFactoryData, kernelInitData, kernelNonceKey, approveCall, type Call } from "./kernel";
 import { callsAreSponsorable, type Op, type Sponsor, type SponsorPolicy } from "./paymaster";
 
@@ -143,7 +144,9 @@ export async function buildUserOp(services: AaServices, input: BuildInput): Prom
       ...op,
       preVerificationGas: buffer(estimate.preVerificationGas, 110n),
       verificationGasLimit: buffer(estimate.verificationGasLimit, 120n),
-      callGasLimit: buffer(estimate.callGasLimit, 120n),
+      // The engine's out-of-gas guard reverts a buy or sell run just under its need (the estimate is taken in an earlier
+      // block), so the call gets the keeper's headroom, not a bare x1.2.
+      callGasLimit: keeperGasLimit(estimate.callGasLimit),
     };
     if (useSponsor) {
       op = await withSponsor(

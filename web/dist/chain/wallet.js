@@ -1,5 +1,6 @@
 // Wallet connection: EIP-6963 browser wallets (always listed) and WalletConnect through Reown AppKit (pinned CDN build,
 // loaded only when chosen and only when a project id is configured). The site never sees keys or seed phrases.
+import {paddedGasLimit,txParams} from '/chain/gas.js?v=1';
 import {devWalletEntry} from '/chain/devwallet.js?v=11';
 const LAST_KEY='lemniscate.wallet.v1';
 const listeners=new Set();
@@ -145,10 +146,12 @@ export const getLogs=(config,filter)=>rpc(config,'eth_getLogs',[filter]);
 export const ethBalance=async(config,address)=>BigInt(await rpc(config,'eth_getBalance',[address,'latest']));
 export const blockNumber=async config=>parseInt(await rpc(config,'eth_blockNumber',[]),16);
 
+export {paddedGasLimit,txParams};
 export async function sendTransaction(config,{to,data,value='0'}){
  if(!state.address)throw new Error('Connect a wallet first.');
  if(state.chainId!==Number(config.chainId))await ensureChain(state.provider,config).then(id=>{state={...state,chainId:id}});
- return state.provider.request({method:'eth_sendTransaction',params:[{from:state.address,to,data,value:'0x'+BigInt(value).toString(16)}]});
+ const tx=await txParams(state.address,{to,data,value},t=>rpc(config,'eth_estimateGas',[t]).then(h=>BigInt(h)));
+ return state.provider.request({method:'eth_sendTransaction',params:[tx]});
 }
 
 export async function waitForReceipt(config,hash,{timeoutMs=180_000}={}){

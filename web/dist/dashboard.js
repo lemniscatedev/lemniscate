@@ -4,7 +4,7 @@
 import {createApi,plainError,SESSION_LABEL,SESSION_NOTE,BLOCK_REASON,sponsorNote} from '/chain/api.js?v=12';
 import {createLaneProofCache} from '/chain/lane-proof.js?v=1';
 import {createDemoApi} from '/chain/demo.js?v=11';
-import * as W from '/chain/wallet.js?v=12';
+import * as W from '/chain/wallet.js?v=13';
 import * as Onb from '/chain/onboarding.js?v=2';
 import * as PQ from '/chain/pool-queue.js?v=1';
 import {regionStatus,declare,regionList} from '/chain/region.js?v=10';
