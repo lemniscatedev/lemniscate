@@ -91,4 +91,45 @@ describe("writer points from a fake indexer history", () => {
     expect(fixed("0.000000000001", 18)).toBe(1_000_000n);
     expect(fixed("7", 18)).toBe(7n * S);
   });
+
+  test("a transfer out to a third party mixed with a transfer in: only the wallet's own deposit counts, the out takes basis pro rata", () => {
+    // a deposits 4,000; receives 1,000 shares from b (ignored); sends 3,000 shares to c (takes 3/4 of a's own basis)
+    // flows are built in chain order (block numbers grow with time)
+    const flows = [dep("a", 4_000, START), dep("b", 1_000, START), out("b", 1_000, START + DAY), out("a", 3_000, START + 2 * DAY)];
+    const w = walletWeights(flows, START, END);
+    // a: 4,000 x 2 days + 1,000 x 5 days = 13,000; the 1,000 shares a received never add to its basis
+    expect(usdgDays(w.get("a")!.weight)).toBe("13000.00");
+    expect(w.get("a")!.basisEnd).toBe(1_000n * M);
+    // b: 1,000 x 1 day, then it sent everything
+    expect(usdgDays(w.get("b")!.weight)).toBe("1000.00");
+    expect(w.has("c")).toBe(false); // c only received shares
+    // moving more than it deposited cannot push a below zero
+    const over = walletWeights([dep("a", 1_000, START), out("a", 5_000, START + DAY)], START, END);
+    expect(over.get("a")!.basisEnd).toBe(0n);
+  });
+
+  test("flows exactly at the week's start count from the start; flows exactly at its end belong to the next week", () => {
+    const w = walletWeights([dep("a", 1_000, START), out("d", 1, START), dep("c", 1_000, END - 1), dep("b", 1_000, END)], START, END);
+    expect(usdgDays(w.get("a")!.weight)).toBe("7000.00");
+    expect(w.has("b")).toBe(false);
+    expect(w.get("c")!.weight).toBe(1_000n * M); // one second
+    const exit = walletWeights([dep("e", 1_000, START - DAY), out("e", 1_000, START)], START, END);
+    expect(exit.get("e")!.weight).toBe(0n); // asked to withdraw at the first second of the week: nothing counts
+    const late = walletWeights([dep("f", 1_000, START - DAY), out("f", 1_000, END)], START, END);
+    expect(usdgDays(late.get("f")!.weight)).toBe("7000.00"); // the exit at END is next week's
+  });
+
+  test("sybil split (accepted limit, decision 76): the cap is per wallet, so one person splitting into wallets collects more", () => {
+    const others = Array.from({ length: 3 }, (_, i) => dep(`o${i}`, 20_000, START));
+    const single = weekTable(input([dep("whale", 100_000, START), ...others]));
+    const split = weekTable(input([...Array.from({ length: 10 }, (_, i) => dep(`whale${i}`, 10_000, START)), ...others]));
+    const whaleSingle = single.rows.find((r) => r.address === "whale")!.units;
+    const whaleSplit = split.rows.filter((r) => r.address.startsWith("whale")).reduce((sum, r) => sum + r.units, 0n);
+    expect(whaleSingle).toBe(100_000n * TOKENS); // capped at 10%
+    expect(whaleSplit).toBe(1_000_000n * TOKENS * 100_000n / 160_000n); // 625,000: ten wallets, none capped
+    expect(whaleSplit).toBeGreaterThan(whaleSingle);
+    // the honest writers get the same pro-rata amount either way (here also capped at 10% each)
+    for (const r of split.rows.filter((row) => row.address.startsWith("o"))) expect(r.units).toBe(100_000n * TOKENS);
+  });
 });
+

@@ -25,9 +25,17 @@ export const writerRewardsSchema = z.object({
   excludeContractWallets: z.boolean(),
   projectWallets: z.record(z.string(), address),
   EXCLUDED_WALLETS: z.array(address),
+  /** Launch gate: the owner confirmed EXCLUDED_WALLETS (personal, developer and fee wallets) before the program starts. */
+  excludedWalletsReviewed: z.boolean(),
 }).strict().superRefine((value, context) => {
   if (value.tokenAddress && !value.startAt) {
     context.addIssue({ code: "custom", message: "startAt is required once tokenAddress is set", path: ["startAt"] });
+  }
+  if (value.startAt && !value.excludedWalletsReviewed) {
+    context.addIssue({
+      code: "custom", path: ["excludedWalletsReviewed"],
+      message: "startAt cannot be set until EXCLUDED_WALLETS has been reviewed: add the owner's personal, developer and fee wallets, then set excludedWalletsReviewed to true",
+    });
   }
 });
 

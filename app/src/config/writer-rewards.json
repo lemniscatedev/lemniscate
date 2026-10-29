@@ -5,9 +5,10 @@
     "startAt: the start of reward week 1 (ISO UTC). Set it together with tokenAddress. Week n runs [startAt + 7(n-1) days, startAt + 7n days).",
     "tokenTotalSupply and weeklyPoolBpsOfSupply: the weekly pool is 0.1% (10 bps) of the total supply. Default supply 1,000,000,000 gives 1,000,000 LMNS a week. If the real supply differs, set tokenTotalSupply to it and the pool scales to 0.1% of it.",
     "weeks: the program runs 8 weekly periods, then the owner reviews it.",
-    "perWalletCapBps: one wallet receives at most 10% of a week's pool. Its share above that is not paid (it stays with the owner) unless redistributeOverCap is true.",
+    "perWalletCapBps: one wallet receives at most 10% of a week's pool. Its share above that is not paid (it stays with the owner) unless redistributeOverCap is true. The cap is per WALLET: there is no identity check, so one person can split deposits across several wallets and collect more than 10% in total. That is an accepted limit (decision 76), not a fairness guarantee.",
     "minTimeWeightedUsdg: a wallet qualifies only if its deposits still in the pool averaged at least 1,000 USDG over the week (time-weighted).",
-    "projectWallets: the operator wallets from docs/runbooks/mainnet-addresses.json; never eligible. EXCLUDED_WALLETS: more wallets that are never eligible (the owner's personal and developer wallets); starts empty. Lemniscate contract addresses (deployment file), the zero address and contract wallets are excluded too."
+    "projectWallets: the operator wallets from docs/runbooks/mainnet-addresses.json; never eligible. EXCLUDED_WALLETS: more wallets that are never eligible (the owner's personal and developer wallets); starts empty. Lemniscate contract addresses (deployment file), the zero address and contract wallets are excluded too.",
+    "excludedWalletsReviewed: the launch gate. startAt cannot be set (the config refuses to load) until the owner has confirmed EXCLUDED_WALLETS (his personal, developer and fee wallets) and set this to true."
   ],
   "enabled": true,
   "tokenSymbol": "LMNS",
@@ -31,5 +32,6 @@
     "guardian-hot": "0x91041441387F1e2C4498b1a9e5BBFdDb89A8fb4D",
     "x402-settler": "0xe732D2927BB4EBA41de80Bb1d65A7fa6476617f9"
   },
-  "EXCLUDED_WALLETS": []
+  "EXCLUDED_WALLETS": [],
+  "excludedWalletsReviewed": false
 }

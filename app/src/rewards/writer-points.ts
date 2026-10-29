@@ -98,7 +98,7 @@ export function walletWeights(flows: readonly PoolFlow[], startSec: number, endS
     s.since = Math.max(s.since, until);
   };
   for (const flow of sortFlows(flows)) {
-    if (flow.ts >= endSec) break;
+    if (flow.ts >= endSec) continue; // the next week's (block times only grow, so nothing later counts either)
     let s = state.get(flow.account);
     if (!s) {
       s = { shares: 0n, basis: 0n, since: flow.ts, weight: 0n };

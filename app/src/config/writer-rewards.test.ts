@@ -29,7 +29,7 @@ describe("writer rewards config (zero-seed launch)", () => {
   test("a token address needs a start; weeks run back to back from it", () => {
     const parsed = writerRewardsSchema.safeParse({ ...writerRewards, tokenAddress: "0x00000000000000000000000000000000000001aa" as const });
     expect(parsed.success).toBe(false);
-    const config = { ...writerRewards, tokenAddress: "0x00000000000000000000000000000000000001aa" as const, startAt: "2026-11-09T00:00:00.000Z" };
+    const config = { ...writerRewards, tokenAddress: "0x00000000000000000000000000000000000001aa" as const, startAt: "2026-11-09T00:00:00.000Z", excludedWalletsReviewed: true };
     const start = Date.parse(config.startAt);
     expect(programStatus(start - 1, config)).toBe("scheduled");
     expect(programStatus(start, config)).toBe("active");
@@ -41,6 +41,21 @@ describe("writer rewards config (zero-seed launch)", () => {
     expect(currentWeek(start + WEEK + 5, config)).toBe(2);
     expect(currentWeek(start + 20 * WEEK, config)).toBe(8);
     expect(currentWeek(start - 5, config)).toBeNull();
+  });
+
+  test("launch gate (L4): startAt is refused until EXCLUDED_WALLETS has been reviewed", () => {
+    expect(writerRewards.excludedWalletsReviewed).toBe(false);
+    const start = { ...writerRewards, tokenAddress: "0x00000000000000000000000000000000000001aa" as const, startAt: "2026-11-09T00:00:00.000Z" };
+    const refused = writerRewardsSchema.safeParse(start);
+    expect(refused.success).toBe(false);
+    expect(JSON.stringify(refused.error?.issues)).toContain("excludedWalletsReviewed");
+    expect(writerRewardsSchema.safeParse({ ...start, excludedWalletsReviewed: true }).success).toBe(true);
+    // the default (no token yet) loads with the flag off
+    expect(writerRewardsSchema.safeParse(writerRewards).success).toBe(true);
+  });
+
+  test("the cap is documented as per wallet with no identity check (M1)", () => {
+    expect(writerRewards._notes!.join(" ")).toContain("no identity check");
   });
 
   test("exclusions: zero address, every deployment contract, the project wallets and EXCLUDED_WALLETS", () => {

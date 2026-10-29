@@ -9,6 +9,7 @@ import { TtlCache } from "../cache";
 import type { ApiDependencies } from "../types";
 import { writerRewards, weeklyPoolUnits, type WriterRewardsConfig } from "../../config/writer-rewards";
 import { buildWeek } from "../../rewards/writer-week";
+import { weekBasis } from "./writers";
 
 const suite = testDatabaseUrl() ? describe : describe.skip;
 const NVDA = ADDR.nvda;
@@ -186,6 +187,8 @@ suite("zero-seed launch: empty and small pool, writer rewards", () => {
     expect(body.program.minTimeWeightedUsdg).toBe(1000);
     expect(body.program.tokenAddress).toBeNull();
     expect(body.week.preview).toBe(true);
+    expect(body.week.basis).toBe("illustrative");
+    expect(body.program.rules.join(" ")).toContain("no identity check");
     expect(body.week.number).toBeNull();
     expect(body.week.eligibleWallets).toBe(2); // alice and carol
     expect(body.week.totalPointsUsdgDays).toBe("30500.00");
@@ -213,13 +216,19 @@ suite("zero-seed launch: empty and small pool, writer rewards", () => {
 
   test("a live week from the same history: bounds from startAt, only flows inside the week count, sums match the pool", async () => {
     const config: WriterRewardsConfig = {
-      ...writerRewards, tokenAddress: "0x00000000000000000000000000000000000001aa" as const, startAt: new Date(NOW - 7 * DAY).toISOString(),
+      ...writerRewards, tokenAddress: "0x00000000000000000000000000000000000001aa" as const, startAt: new Date(NOW - 7 * DAY).toISOString(), excludedWalletsReviewed: true,
     };
     const table = await buildWeek({ sql: db.sql, pool: POOL, contracts: testDeployment().contracts as Record<string, string>, week: 1, nowSec: NOW / 1000, config });
     expect(table).not.toBeNull();
     expect(table!.allocatedUnits + table!.unallocatedUnits).toBe(weeklyPoolUnits(config));
     expect(table!.rows.find((row) => row.address === OWNER)!.reason).toBe("excluded: project wallet (owner)");
     expect(await buildWeek({ sql: db.sql, pool: POOL, contracts: {}, week: 9, nowSec: NOW / 1000, config })).toBeNull();
+  });
+
+  test("L3: figures are labelled illustrative (preview), projected (running week) or final", () => {
+    expect(weekBasis(null, false)).toBe("illustrative");
+    expect(weekBasis(2, false)).toBe("projected");
+    expect(weekBasis(2, true)).toBe("final");
   });
 
   test("no copy-rule words in the new responses", async () => {

@@ -49,6 +49,9 @@ export const writerRewardsResponseSchema = z.object({
   week: z.object({
     number: z.number().int().nullable(),
     preview: z.boolean(),
+    /** "illustrative": the 7-day preview before $LMNS exists (nothing is paid); "projected": a reward week still running,
+     * counted as if every wallet stays in until it ends; "final": the indexer has read past the week's end. */
+    basis: z.enum(["illustrative", "projected", "final"]),
     start: z.string(),
     end: z.string(),
     final: z.boolean(),
@@ -79,7 +82,8 @@ export const WRITER_RULES = (): string[] => {
     `Each reward week shares ${Number(pool).toLocaleString("en-US")} ${c.tokenSymbol} (${c.weeklyPoolBpsOfSupply / 100}% of the ${Number(c.tokenTotalSupply).toLocaleString("en-US")} total supply) between qualifying writers, for ${c.weeks} weeks; then the program is reviewed.`,
     "Points are the USDG you deposited that is still in the pool, multiplied by the days it stayed there during the week (USDG-days). They come only from Writer Pool events on chain.",
     `A wallet qualifies when its deposits still in the pool averaged at least ${c.minTimeWeightedUsdg.toLocaleString("en-US")} USDG over the whole week.`,
-    `Your share of the week is your points divided by all qualifying points, and at most ${c.perWalletCapBps / 100}% of the week's ${c.tokenSymbol}.${c.redistributeOverCap ? " Anything above that cap is shared among the other qualifying wallets." : " Anything above that cap is not paid out."}`,
+    `Your share of the week is your points divided by all qualifying points, and at most ${c.perWalletCapBps / 100}% of the week's ${c.tokenSymbol} per wallet.${c.redistributeOverCap ? " Anything above that cap is shared among the other qualifying wallets." : " Anything above that cap is not paid out; it stays with the owner."}`,
+    "The cap is per wallet and there is no identity check, so one person can split deposits across several wallets and receive more than the cap in total. This is a known, accepted limit of the program.",
     "Asking to withdraw stops points for those shares at once. Shares received by transfer do not count; only USDG a wallet deposited itself does.",
     "Team and operator wallets, Lemniscate contracts, the zero address and contract wallets are excluded.",
     "Rewards are paid by the owner after each week from a list anyone can recompute. They have no cash value and are not a promise of any amount; amounts and dates are announced in the official channels.",
@@ -98,11 +102,17 @@ function statusMessage(status: ReturnType<typeof programStatus>): string {
   }
 }
 
+/** L3: how to read a week's figures. Before $LMNS: illustrative; a running week: projected as if everyone stays in. */
+export function weekBasis(number: number | null, final: boolean): "illustrative" | "projected" | "final" {
+  return number === null ? "illustrative" : final ? "final" : "projected";
+}
+
 function weekView(table: WeekTable, number: number | null, final: boolean) {
   const dec = writerRewards.tokenDecimals;
   return {
     number,
     preview: number === null,
+    basis: weekBasis(number, final),
     start: new Date(table.startSec * 1_000).toISOString(),
     end: new Date(table.endSec * 1_000).toISOString(),
     final,
@@ -159,7 +169,8 @@ export function registerWriterRoutes(app: OpenAPIHono, deps: ApiDependencies): v
     }
     const notes = [
       "Contract wallets are removed when the weekly payout list is made, so amounts here are estimates until the week is final and paid.",
-      ...(preview ? ["Preview: the last 7 days, with the weekly amount, to show how points work before the program starts. Nothing is paid for preview periods."] : []),
+      ...(preview ? ["Illustrative: the last 7 days, with the weekly amount, to show how points work before the program starts. Nothing is paid for it."] : []),
+      ...(!preview && built && !built.final ? ["Projected: this week is still running. The figures assume every wallet stays in until the week ends; a withdrawal request or a new deposit changes them."] : []),
     ];
     return context.json({
       program: {

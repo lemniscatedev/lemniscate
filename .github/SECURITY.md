@@ -432,6 +432,13 @@ script's `check(address)` asserts the owner (the Safe), signer, immutables, stak
   (Low; the alternative is an hourly accrual bill per dust position.)
 - The vol-engine's holiday calendar (a copy of the keeper's, 2026 to 2028) ends in 2028. Past it, a holiday weekend is treated as a
   full-weight closed session from the first CLOSED tick, as before the ramp existed. Update the list each year. (Low.)
+- Early-writer `$LMNS` rewards (off-chain, owner-paid; decision 76 in the project notes): the 10% cap is per WALLET and there is no
+  identity check, so one person can split deposits across several wallets and receive more than 10% of a week in total. This is
+  an accepted limit, not a fairness guarantee; the cap only stops one wallet taking most of a week. Points come only from a
+  wallet's own Writer Pool deposits still in the pool (time-weighted, 1,000 USDG minimum), so splitting gains nothing on points,
+  only on the cap. Payouts are an unsigned export the owner signs (`app/scripts/rewards/writer-payout.ts`); the code never
+  holds a key or sends tokens. `check` and `record` validate against the saved export, and `record` refuses a reused transaction,
+  a different sender or a transaction mined before the export. (Accepted.)
 - Gas sponsorship is a privilege, not a right: a denied request (no invite, dust, no balance, quota) is returned unsponsored and the
   plain transaction always works. A holder with no ETH and a dust-sized position pays gas for that exit from the account, by design.
 

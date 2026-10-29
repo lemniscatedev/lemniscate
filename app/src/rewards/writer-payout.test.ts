@@ -68,11 +68,11 @@ describe("weekly payout export (unsigned)", () => {
   });
 });
 
-describe("payout CLI guard rails", () => {
-  const run = (...args: string[]) => Bun.spawnSync(["bun", "run", "scripts/rewards/writer-payout.ts", ...args], {
-    cwd: `${import.meta.dir}/../..`, env: { ...process.env, DATABASE_URL: "", DEPLOYMENT_FILE: "" },
-  });
+describe("payout CLI wrapper", () => {
   test("refuses before $LMNS launches and on an unknown command", () => {
+    const run = (...args: string[]) => Bun.spawnSync(["bun", "run", "scripts/rewards/writer-payout.ts", ...args], {
+      cwd: `${import.meta.dir}/../..`, env: { ...process.env, DATABASE_URL: "", DEPLOYMENT_FILE: "", RPC_URL: "" },
+    });
     const pending = run("export", "--week", "1", "--out", "/tmp/lemniscate-writer-payout-test");
     expect(pending.exitCode).toBe(1);
     expect(pending.stderr.toString()).toContain("Rewards start when $LMNS launches");
