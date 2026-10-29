@@ -19,6 +19,7 @@
     "db:generate": "drizzle-kit generate",
     "typecheck": "tsc --noEmit",
     "lint:copy": "bun run scripts/lint-copy.ts",
+    "report:users": "bun run scripts/usage/real-users.ts",
     "rpc-pool:check": "bun run src/chain/rpc-pool.check.ts"
   },
   "dependencies": {
