@@ -151,7 +151,7 @@ def delay_for(gate: str) -> str:
             role = g[5:]
             parts.append(f"{role.replace('_ROLE', '').lower()} {ROLE_DELAY.get(role, 'instant')}")
         elif g == "owner":
-            parts.append("owner (a Safe, 2-step ownership, no timelock)")
+            parts.append("owner (2-step ownership, no timelock; see Roles)")
         elif g == "anyone":
             parts.append("none (permissionless)")
         elif g.startswith("contract:"):

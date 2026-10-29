@@ -49,7 +49,7 @@ hedger and vol signer are three different addresses; the services refuse to star
 | Role | Held by | Can | Cannot |
 | --- | --- | --- | --- |
 | Admin (`DEFAULT_ADMIN_ROLE`) | 48h timelock, run by the owner EOA | List stocks and set price guard parameters; set caps, fee rates and spreads inside validated bounds; rotate the vol signer and floors; set pool deposit allowlist, hedge routes and caps; upgrade the UUPS proxies; freeze engine upgrades for good | Act without the 48h delay; move user funds; mint option tokens |
-| Guardian (2-of-3) | Multisig, plus the keeper's risk monitor for automatic pauses | Pause buys, Shield and pool deposits; freeze the hedger (`rebalance` and `postHedgeEquity`) until the admin unfreezes it | Pause sells, withdrawals, claims or `fillQueued`; change parameters; upgrade |
+| Guardian | The guardian hot wallet (its own key, never the owner's), plus the keeper's risk monitor for automatic pauses | Pause buys, Shield and pool deposits; freeze the hedger (`rebalance` and `postHedgeEquity`) until the admin unfreezes it | Pause sells, withdrawals, claims or `fillQueued`; change parameters; upgrade |
 | Keeper | One hot key | List series and set them buyable or archived; push market sessions; call `accrue` and `accrueMany`; pause buys (guardian role); poke the price guard around corporate actions | Change parameters; touch pool funds; sign vol posts |
 | Hedger | One hot key | Post off-chain perp equity inside the admin cap and hourly bound; call the pool's `rebalance(stock, targetUnits, minOut)` inside its TWAP floor and slippage bound, and inside a daily budget of realised loss against the feed price (0.5% of NAV by default, admin-set 0.01% to 2%) | Withdraw pool funds; lose more than that daily budget to a pool it sandwiches, however many trades it makes; act while the guardian has frozen it; move USDG anywhere but through the pool's own swap route; post any equity while perps are off (cap 0, the launch value); post above the cap (at most 20% of NAV) or move equity more than 10% of the cap per hour, whatever the `ref` |
 | Vol signer | One hot key, off the chain | Sign sigma posts that anyone can submit | Bypass the step limit, rate limit, floor, expiry or nonce rules; move funds |
@@ -61,17 +61,28 @@ hedger and vol signer are three different addresses; the services refuse to star
 
 - **One owner EOA behind a 48 hour timelock.** On mainnet the owner (a single externally owned account, not a multisig) is the only
   proposer, executor and canceller of an OpenZeppelin `TimelockController` with a minimum delay of 48 hours. The timelock
-  administers itself and is the only holder of `DEFAULT_ADMIN_ROLE` on every contract. The owner has no direct admin role
-  anywhere, so every parameter change, role change and upgrade is public on chain for 48 hours before it can run. The deployer
-  renounces every role in the same deploy. The guardian's instant pause path is unchanged and separate from the owner.
+  administers itself and is the only holder of `DEFAULT_ADMIN_ROLE` on every contract. The owner has no direct admin role on any
+  protocol contract, so every parameter change, role change and upgrade is public on chain for 48 hours before it can run. The
+  deployer renounces every role in the same deploy. The guardian (its own hot key, never the owner) keeps its instant pause path.
+- **One exception: the gas paymaster.** `LemniscatePaymaster` is owned directly by the owner EOA (2-step ownership, no
+  timelock). It holds only the ETH that sponsors users' gas (its stake and deposit) and no user funds, and an instant pause matters
+  more there than a delay. A stolen owner key can pause sponsorship, change its signer or caps, or withdraw that ETH at once; it
+  cannot touch the protocol without the timelock. Its deploy script and check refuse an owner with an EIP-7702 delegation too.
 - **How it is enforced.** The deploy script accepts an EOA as the timelock owner only when `ALLOW_EOA_OWNER=1` is set in the
   environment (a deploy config file cannot turn it on); without it, mainnet requires a Safe of at least 3-of-5. With or without it,
   the script and the post-deploy check refuse an owner with an EIP-7702 delegation (code `0xef0100` followed by a delegate), a
-  timelock delay under 48 hours, any direct admin role held by the owner or the deployer, any timelock role held by the deployer,
-  an owner that is the deployer or a bot key, and a deployment file whose owner differs from the config. A delegation added after
-  the deploy fails the post-deploy check (`OWNER_IS_DELEGATED_EOA`).
+  timelock delay under 48 hours, any direct admin role held by the owner or the deployer, any proposer, executor or canceller role
+  held by the deployer, an owner that is the deployer, a bot key or the guardian, and a deployment file whose owner differs from
+  the config. A delegation added after the deploy fails the post-deploy check (`OWNER_IS_DELEGATED_EOA`). The `$LMNS` modules
+  (when deployed) take the same timelock as admin; their deploy script refuses anything else on fork and mainnet.
+- **The watcher behind the 48 hours.** The keeper's `admin-watch` job (read-only, every minute, on by default) reads every
+  `CallScheduled`, `CallExecuted`, `Cancelled` and `MinDelayChange` event of the timelock and raises an alert for each one, in plain
+  words (which contract, which function, when it can run), once per event (keyed by operation, transaction and log; a restart
+  resumes from a saved block cursor). It also alerts when the owner address has any code (an EIP-7702 delegation or anything else),
+  repeats that hourly while it lasts, and reports when it is gone. Alerts are `ALERT:` log lines with a `dedupeKey`, which the
+  ops-chat runner forwards to the owner and developer chat when it is set up. The watcher never pauses anything: the guardian decides.
 - **Accepted risk.** One key controls the protocol, delayed by 48 hours. If that key is stolen, the thief can schedule any admin
-  action (including an upgrade); users and the guardian then have 48 hours to see the scheduled call and react: pause buys and
+  action (including an upgrade); the watcher raises the alert within minutes, and users and the guardian then have 48 hours to react: pause buys and
   deposits, and exit (sells, withdrawals and claims cannot be paused). The owner can cancel a scheduled call only while it still
   holds the key. If the key is lost, no admin action can happen again (pauses by the guardian still work, unpausing does not). A
   multisig would remove the single point of failure; the owner chose the single EOA for operational simplicity at launch and
@@ -98,7 +109,7 @@ Every on-chain safety lever, who may call it, and which paid job calls it. A lev
 | `engine.cancelQueued` | The seller only | The seller |
 | `FeeRouter.distribute()` | Anyone, once per period | Keeper job `fee-distribute` (hourly check; sends only when the period has passed and there is USDG to split) |
 | `engine.setBuysPaused`, `setSeriesBuysPaused` | Guardian or admin to pause; admin only to unpause | Keeper job `risk` (pauses only, never unpauses) |
-| `PriceGuard.setBuysPaused(stock)`, `pool.setDepositsPaused` | Guardian or admin to pause; admin only to unpause | The Safe (guardian). No automatic caller |
+| `PriceGuard.setBuysPaused(stock)`, `pool.setDepositsPaused` | Guardian or admin to pause; admin only to unpause | The guardian hot wallet. No automatic caller |
 | `PriceGuard.poke(stock)` | Anyone | Keeper job `corp-actions` (around staged multiplier changes) |
 | `registry.listSeries`, `setBuyable`, `archive`; `marketHours.setSessions` | Keeper role | Keeper jobs `lister` and `sessions` |
 | `pool.postHedgeEquity` | Hedger role | The hedger service |
@@ -115,7 +126,8 @@ Generated by `contracts/script/ci/privileged-functions.py` from the built ABIs a
 state-changing external function, or a changed gate, fails the build until `contracts/privileged-functions.json` and this table are
 regenerated and the change is reviewed. "Delay" is how long a change takes once decided: admin actions pass the 48 hour timelock;
 guardian pauses and keeper and hedger actions are instant and bounded by what the role can do (see Roles). The paymaster and the
-option token factory have a plain owner (a Safe) with no timelock; the paymaster only holds gas funds and sponsors operations to the
+option token factory have a plain owner with no timelock (the paymaster: the owner EOA, see "Owner model"; the factory: the series
+registry); the paymaster only holds gas funds and sponsors operations to the
 engine and agent router, and the factory is owned by the series registry that created it. The paymaster sponsors only Kernel
 accounts: ones it saw deployed through the Kernel factory in a sponsored operation (the sponsor signature covers the initCode the
 server built) or ones the owner registered, because its call policy reads `execute(bytes32,bytes)` calldata that only a real Kernel
@@ -199,20 +211,20 @@ script's `check(address)` asserts the owner (the Safe), signer, immutables, stak
 | LemniscateEngine | `syncSeries(uint256)` | anyone | none (permissionless) |
 | LemniscateEngine | `upgradeToAndCall(address,bytes)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | LemniscatePaymaster | `acceptOwnership()` | pending-owner | n/a (caller's own balance, role or one-time setup) |
-| LemniscatePaymaster | `addStake(uint32)` | owner | owner (a Safe, 2-step ownership, no timelock) |
+| LemniscatePaymaster | `addStake(uint32)` | owner | owner (2-step ownership, no timelock; see Roles) |
 | LemniscatePaymaster | `deposit()` | anyone (funds the paymaster) | none (permissionless) |
 | LemniscatePaymaster | `postOp(uint8,bytes,uint256,uint256)` | contract:entrypoint (ERC-4337 entry point only) | entrypoint only |
 | LemniscatePaymaster | `registerKernelAccount(address,bytes,bytes32)` | anyone (only a deployed standard Kernel account of KERNEL_FACTORY (R17)) | none (permissionless) |
-| LemniscatePaymaster | `renounceOwnership()` | owner | owner (a Safe, 2-step ownership, no timelock) |
-| LemniscatePaymaster | `setKernelAccounts(address[],bool)` | owner | owner (a Safe, 2-step ownership, no timelock) |
-| LemniscatePaymaster | `setLimits(uint256,uint256,uint256)` | owner | owner (a Safe, 2-step ownership, no timelock) |
-| LemniscatePaymaster | `setPaused(bool)` | owner | owner (a Safe, 2-step ownership, no timelock) |
-| LemniscatePaymaster | `setSigner(address)` | owner | owner (a Safe, 2-step ownership, no timelock) |
-| LemniscatePaymaster | `transferOwnership(address)` | owner | owner (a Safe, 2-step ownership, no timelock) |
-| LemniscatePaymaster | `unlockStake()` | owner | owner (a Safe, 2-step ownership, no timelock) |
+| LemniscatePaymaster | `renounceOwnership()` | owner | owner (2-step ownership, no timelock; see Roles) |
+| LemniscatePaymaster | `setKernelAccounts(address[],bool)` | owner | owner (2-step ownership, no timelock; see Roles) |
+| LemniscatePaymaster | `setLimits(uint256,uint256,uint256)` | owner | owner (2-step ownership, no timelock; see Roles) |
+| LemniscatePaymaster | `setPaused(bool)` | owner | owner (2-step ownership, no timelock; see Roles) |
+| LemniscatePaymaster | `setSigner(address)` | owner | owner (2-step ownership, no timelock; see Roles) |
+| LemniscatePaymaster | `transferOwnership(address)` | owner | owner (2-step ownership, no timelock; see Roles) |
+| LemniscatePaymaster | `unlockStake()` | owner | owner (2-step ownership, no timelock; see Roles) |
 | LemniscatePaymaster | `validatePaymasterUserOp(tuple,bytes32,uint256)` | contract:entrypoint (ERC-4337 entry point only) | entrypoint only |
-| LemniscatePaymaster | `withdrawStake(address)` | owner | owner (a Safe, 2-step ownership, no timelock) |
-| LemniscatePaymaster | `withdrawTo(address,uint256)` | owner | owner (a Safe, 2-step ownership, no timelock) |
+| LemniscatePaymaster | `withdrawStake(address)` | owner | owner (2-step ownership, no timelock; see Roles) |
+| LemniscatePaymaster | `withdrawTo(address,uint256)` | owner | owner (2-step ownership, no timelock; see Roles) |
 | LmnsBuyBurn | `buyAndBurn(uint256)` | role:KEEPER_ROLE (swaps only at the TWAP floor, burns what it buys) | keeper instant |
 | LmnsBuyBurn | `grantRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | LmnsBuyBurn | `renounceRole(bytes32,address)` | self | n/a (caller's own balance, role or one-time setup) |
@@ -249,7 +261,7 @@ script's `check(address)` asserts the owner (the Safe), signer, immutables, stak
 | OptionToken | `mint(address,uint256)` | contract:engine | engine only |
 | OptionToken | `transfer(address,uint256)` | holder | n/a (caller's own balance, role or one-time setup) |
 | OptionToken | `transferFrom(address,address,uint256)` | holder-or-approved | n/a (caller's own balance, role or one-time setup) |
-| OptionTokenFactory | `deploy(bytes32,address,string,string)` | owner | owner (a Safe, 2-step ownership, no timelock) |
+| OptionTokenFactory | `deploy(bytes32,address,string,string)` | owner | owner (2-step ownership, no timelock; see Roles) |
 | PriceGuard | `grantRole(bytes32,address)` | role:DEFAULT_ADMIN_ROLE | default_admin 48h timelock |
 | PriceGuard | `poke(address)` | anyone (records a price reading; cannot set one) | none (permissionless) |
 | PriceGuard | `renounceRole(bytes32,address)` | self | n/a (caller's own balance, role or one-time setup) |

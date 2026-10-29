@@ -445,7 +445,7 @@
       "contract": "LemniscatePaymaster",
       "function": "addStake(uint32)",
       "gate": "owner",
-      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+      "delay": "owner (2-step ownership, no timelock; see Roles)"
     },
     "LemniscatePaymaster.deposit()": {
       "contract": "LemniscatePaymaster",
@@ -472,43 +472,43 @@
       "contract": "LemniscatePaymaster",
       "function": "renounceOwnership()",
       "gate": "owner",
-      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+      "delay": "owner (2-step ownership, no timelock; see Roles)"
     },
     "LemniscatePaymaster.setKernelAccounts(address[],bool)": {
       "contract": "LemniscatePaymaster",
       "function": "setKernelAccounts(address[],bool)",
       "gate": "owner",
-      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+      "delay": "owner (2-step ownership, no timelock; see Roles)"
     },
     "LemniscatePaymaster.setLimits(uint256,uint256,uint256)": {
       "contract": "LemniscatePaymaster",
       "function": "setLimits(uint256,uint256,uint256)",
       "gate": "owner",
-      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+      "delay": "owner (2-step ownership, no timelock; see Roles)"
     },
     "LemniscatePaymaster.setPaused(bool)": {
       "contract": "LemniscatePaymaster",
       "function": "setPaused(bool)",
       "gate": "owner",
-      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+      "delay": "owner (2-step ownership, no timelock; see Roles)"
     },
     "LemniscatePaymaster.setSigner(address)": {
       "contract": "LemniscatePaymaster",
       "function": "setSigner(address)",
       "gate": "owner",
-      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+      "delay": "owner (2-step ownership, no timelock; see Roles)"
     },
     "LemniscatePaymaster.transferOwnership(address)": {
       "contract": "LemniscatePaymaster",
       "function": "transferOwnership(address)",
       "gate": "owner",
-      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+      "delay": "owner (2-step ownership, no timelock; see Roles)"
     },
     "LemniscatePaymaster.unlockStake()": {
       "contract": "LemniscatePaymaster",
       "function": "unlockStake()",
       "gate": "owner",
-      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+      "delay": "owner (2-step ownership, no timelock; see Roles)"
     },
     "LemniscatePaymaster.validatePaymasterUserOp(tuple,bytes32,uint256)": {
       "contract": "LemniscatePaymaster",
@@ -521,13 +521,13 @@
       "contract": "LemniscatePaymaster",
       "function": "withdrawStake(address)",
       "gate": "owner",
-      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+      "delay": "owner (2-step ownership, no timelock; see Roles)"
     },
     "LemniscatePaymaster.withdrawTo(address,uint256)": {
       "contract": "LemniscatePaymaster",
       "function": "withdrawTo(address,uint256)",
       "gate": "owner",
-      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+      "delay": "owner (2-step ownership, no timelock; see Roles)"
     },
     "LmnsBuyBurn.buyAndBurn(uint256)": {
       "contract": "LmnsBuyBurn",
@@ -757,7 +757,7 @@
       "contract": "OptionTokenFactory",
       "function": "deploy(bytes32,address,string,string)",
       "gate": "owner",
-      "delay": "owner (a Safe, 2-step ownership, no timelock)"
+      "delay": "owner (2-step ownership, no timelock; see Roles)"
     },
     "PriceGuard.grantRole(bytes32,address)": {
       "contract": "PriceGuard",
