@@ -71,7 +71,27 @@ The engine, pool and market hours sit behind UUPS proxies that only the admin ca
 
 ### Deployment
 
-Not deployed. After the first deployment this section lists the network, the deployment block and one explorer link per contract.
+Network: mainnet (Robinhood Chain, chain ID 4663). Deployment block: 101047770. Source verified on Sourcify (exact match). The same list is in `app/deployments/4663.json`.
+
+| Name | Address |
+| --- | --- |
+| `engine` | [`0x1C1f41721fe49c8dee117B17De1006817C974687`](https://robinhoodchain.blockscout.com/address/0x1C1f41721fe49c8dee117B17De1006817C974687) |
+| `pool` | [`0x67fF1306201bCbEBCBB749DcF0cb2686ec11B58A`](https://robinhoodchain.blockscout.com/address/0x67fF1306201bCbEBCBB749DcF0cb2686ec11B58A) |
+| `registry` | [`0x34f1847Fef45375451F6159550eEf3f99D87a0B4`](https://robinhoodchain.blockscout.com/address/0x34f1847Fef45375451F6159550eEf3f99D87a0B4) |
+| `priceGuard` | [`0x1a28fF86386ca0d2eCA3bD1257a7142aAA32A924`](https://robinhoodchain.blockscout.com/address/0x1a28fF86386ca0d2eCA3bD1257a7142aAA32A924) |
+| `volOracle` | [`0x676AB592F4cb9178DA26C2747D21aE36530253c9`](https://robinhoodchain.blockscout.com/address/0x676AB592F4cb9178DA26C2747D21aE36530253c9) |
+| `usdg` | [`0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168`](https://robinhoodchain.blockscout.com/address/0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168) |
+| `marketHours` | [`0x46688460d14E5694Eb2f4fCe1647cA3aF163eEdD`](https://robinhoodchain.blockscout.com/address/0x46688460d14E5694Eb2f4fCe1647cA3aF163eEdD) |
+| `agentRouter` | [`0x0Dd88438A7d5Aa39141240BC846482cB3a74D0c9`](https://robinhoodchain.blockscout.com/address/0x0Dd88438A7d5Aa39141240BC846482cB3a74D0c9) |
+| `reserve` | [`0x2f719703BF5D569975c5Cf32748b64d1926762B7`](https://robinhoodchain.blockscout.com/address/0x2f719703BF5D569975c5Cf32748b64d1926762B7) |
+| `feeRouter` | [`0x01DCF620EbD6b4Db8Cba7834bd0F2245855eea6e`](https://robinhoodchain.blockscout.com/address/0x01DCF620EbD6b4Db8Cba7834bd0F2245855eea6e) |
+| `hedgeAdapter` | [`0xFAc940243D21618853669585175373af8A98dd11`](https://robinhoodchain.blockscout.com/address/0xFAc940243D21618853669585175373af8A98dd11) |
+| `priceReference` | [`0x337BFE1710373889869F270277ea8dDfbA4EE4C0`](https://robinhoodchain.blockscout.com/address/0x337BFE1710373889869F270277ea8dDfbA4EE4C0) |
+| `swapRouter` | [`0xCaf681a66D020601342297493863E78C959E5cb2`](https://robinhoodchain.blockscout.com/address/0xCaf681a66D020601342297493863E78C959E5cb2) |
+| `engineImpl` | [`0x65699d7b586B31976C10EC9e990Ae2a881D46af5`](https://robinhoodchain.blockscout.com/address/0x65699d7b586B31976C10EC9e990Ae2a881D46af5) |
+| `poolImpl` | [`0xF69F0Be7599e02DCf8B4494c6841845FC54994aC`](https://robinhoodchain.blockscout.com/address/0xF69F0Be7599e02DCf8B4494c6841845FC54994aC) |
+| `marketHoursImpl` | [`0x754F85456867AC60F072C4bcE186e262C3215B0B`](https://robinhoodchain.blockscout.com/address/0x754F85456867AC60F072C4bcE186e262C3215B0B) |
+| `timelock` | [`0x58C276f4A75602fCf722b0119Dc774466884A94E`](https://robinhoodchain.blockscout.com/address/0x58C276f4A75602fCf722b0119Dc774466884A94E) |
 
 ### Services (`app/src`)
 
