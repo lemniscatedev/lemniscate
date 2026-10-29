@@ -61,7 +61,7 @@ test('roadmap.json: all 36 updates in queue order, 12 a day, every 2 hours, noth
  assert.deepEqual(d.updates.map(u=>u.hour),Array.from({length:36},(_,i)=>i*2));
  assert.deepEqual(groupByDay(d.updates).map(([day,us])=>[day,us.length]),[[1,12],[2,12],[3,12]]);
  for(const u of d.updates){assert.ok(u.title&&u.line,'title and line for '+u.n);assert.doesNotMatch(u.title+u.line,/—|\bAPY\b|\byield\b|\bincome\b/i)}
- assert.equal(changelogUrl(d.publicRepo),'');assert.equal(d.launchAt,null);
+ assert.equal(changelogUrl(d.publicRepo),'https://raw.githubusercontent.com/lemniscatedev/lemniscate/main/CHANGELOG.md');assert.equal(d.launchAt,null);
 });
 test('the page is registered in the shipped site: route, explicit mount call, footer link, route list, title',async()=>{
  const js=await read('../dist/lemniscate.js');

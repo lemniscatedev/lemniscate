@@ -1,6 +1,6 @@
 {
  "about": "Data for /roadmap. Updates in release order; hour = hours after launch. LIVE badges come only from the public CHANGELOG.md (raw.githubusercontent.com/lemniscatedev/<publicRepo>/main/CHANGELOG.md), never from the clock. Empty publicRepo: no fetch, no LIVE badge. launchAt (ISO UTC) only turns \"hour N after launch\" into a date; it never marks anything live.",
- "publicRepo": "",
+ "publicRepo": "lemniscate",
  "launchAt": null,
  "intervalMinutes": 120,
  "updates": [
