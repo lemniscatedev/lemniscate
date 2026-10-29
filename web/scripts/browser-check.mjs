@@ -49,8 +49,11 @@ const FAKE_WALLET=`(()=>{const ACCOUNT='0x00000000000000000000000000000000000a11
  window.addEventListener('eip6963:requestProvider',announce);announce();})();`;
 
 const browser=await chromium.launch();
-async function newPage({apiBase=null,declared=true,wallet=false,config={},account=null,js=true}={}){
+// apiBase '' (the default) = the offline site: the shipped config.js now names the live API, which a local check must never
+// call. null keeps the shipped config. The public CHANGELOG (read by /roadmap) is served empty unless a test routes it.
+async function newPage({apiBase='',declared=true,wallet=false,config={},account=null,js=true}={}){
  const context=await browser.newContext({viewport:{width:WIDTH,height:HEIGHT},deviceScaleFactor:1,javaScriptEnabled:js});
+ await context.route('https://raw.githubusercontent.com/**',r=>r.fulfill({status:200,contentType:'text/plain',headers:{'access-control-allow-origin':'*'},body:'# Changelog\n'}));
  if(apiBase!==null)await context.route('**/config.js*',route=>route.fulfill({status:200,contentType:'application/javascript',body:configWith(apiBase,config)}));
  if(declared)await context.addInitScript(()=>{try{localStorage.setItem('lemniscate.region.v1',JSON.stringify({resident:false,at:1}))}catch{}});
  if(wallet)await context.addInitScript(account?FAKE_WALLET.replaceAll('0x00000000000000000000000000000000000a11ce',account):FAKE_WALLET);
@@ -408,8 +411,10 @@ await section('G',async()=>{
 await section('I',async()=>{
  {
   const {page,context,errors,network}=await newPage();
-  await page.goto(base+'/contracts',{waitUntil:'load'});await settle(page);await page.waitForSelector('.lm-contracts-empty',{timeout:10_000}).catch(()=>{});
-  ok('I /contracts before launch: "Addresses are published at launch"',/Addresses are published at launch/.test(await text(page)),'');
+  // The shipped contracts.json is the mainnet deployment (4663): the page lists its addresses.
+  const shipped=JSON.parse(await readFile('dist/contracts.json','utf8'));const engine=shipped.contracts?.engine||'none';
+  await page.goto(base+'/contracts',{waitUntil:'load'});await settle(page);
+  ok('I /contracts lists the shipped mainnet addresses',(await text(page)).toLowerCase().includes(engine.toLowerCase()),engine);
   ok('I /contracts empty 390px',(await width(page))===WIDTH,'');
   ok('I /contracts empty console clean',errors.length===0&&network.length===0,[...errors,...network].join(' | ').slice(0,300));
   ok('I footer links /contracts and /exit',(await page.locator('#lm-footer a[href="/contracts"]').count())===1&&(await page.locator('#lm-footer a[href="/exit"]').count())===1,'');
