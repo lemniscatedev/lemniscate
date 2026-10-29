@@ -89,7 +89,7 @@ export function createDemoMarket(overrides={}){
   config:()=>({chainId:4663,network:'fork',contracts:{engine:addr(0xe1),pool:addr(0xb1),usdg:addr(0xd1),...(overrides.agentRouter===false?{}:{agentRouter:addr(0xa1)})},
    stocks:names.map((n,i)=>({name:n.name,stock:addr(0x5000+i),feed:null})),names:names.map(n=>n.name),usdgDecimals:6,optionDecimals:18,poolShareDecimals:12,
    speeds:[{speed:'DAILY',tauSeconds:TAU.DAILY},{speed:'WEEKLY',tauSeconds:TAU.WEEKLY}],
-   caps:{poolNavUsdg:'2000000',perSeriesOutstandingUsdg:'40000',perAccountSeriesUsdg:'25000',totalOptionValuePctOfNav:35,perNamePctOfNav:8,stressBudgetPctOfNav:20,drawdownPausePct:15,writerVaultsOpen:false},
+   caps:{poolNavUsdg:null,perSeriesOutstandingUsdg:'40000',perAccountSeriesUsdg:'25000',totalOptionValuePctOfNav:35,perNamePctOfNav:8,stressBudgetPctOfNav:20,drawdownPausePct:15,writerVaultsOpen:false},
    pricing:{feeBps:3,minSpreadUsd:0.01,spreadBpsAtm:150,spreadBpsFar:400,sessionMultipliers:{...QUOTE_PARAMS.sessionMultiplier}}}),
   chains:()=>({names:names.map(n=>({name:n.name,buyable:!blockFor(sessionOf(),marketOf(n.name))}))}),
   chain:name=>{const n=nameOf(name);if(!n)return null;const session=sessionOf();
@@ -102,7 +102,7 @@ export function createDemoMarket(overrides={}){
   pool:()=>({asOf:new Date().toISOString(),nav:'1250000.000000',navPerShare:'1.018400',usdg:'1180000.000000',hedgeEquity:'0',optionLiability:'186000.000000',reserve:'12500.000000',
    fundingReceived:{windowHours:24,usdg:'1840.000000',estimate:true},
    exposures:names.map((n,i)=>({name:n.name,netDelta:'0',netGamma:'0',netVega:'0',deltaNotionalUsdg:'0',stressLossBps:String(120+i*40),outstandingValueUsdg:String(20000+i*9000),outstandingPctOfNav:Number(((20000+i*9000)/1250000*100).toFixed(4))})),
-   stressLossBps:'280',caps:{navCapUsdg:'2000000',navPctOfCap:62.5,totalOptionValuePct:14.88,totalOptionValueCapPct:35,perNameCapPct:8,perSeriesCapUsdg:'40000',largestSeriesValueUsdg:'11000',stressBudgetPct:20,perAccountSeriesCapUsdg:'25000'},
+   stressLossBps:'280',caps:{navCapUsdg:null,navPctOfCap:null,totalOptionValuePct:14.88,totalOptionValueCapPct:35,perNameCapPct:8,perSeriesCapUsdg:'40000',largestSeriesValueUsdg:'11000',stressBudgetPct:20,perAccountSeriesCapUsdg:'25000'},
    hedgeEquityAgeSeconds:null,drawdown30dPct:1.2,drawdownPausePct:15,queue:{withdrawals:3,withdrawalShares:'42000',sells:overrides.session==='HALTED'?2:0},buysPaused:!!overrides.buysPaused}),
  };
 }

@@ -1,7 +1,9 @@
 /** Launch caps and risk limits shown by /v1/config and /v1/pool. The contracts enforce them; these are the published
  * values (design decisions 6 and the master plan risk section). */
 export const LAUNCH_CAPS = {
-  poolNavUsdg: 2_000_000,
+  /** Deposit cap on the pool. null = none: mainnet and testnet deploy maxTotalDeposits as unlimited (limits.maxTotalDepositsUsdg
+   * 0 = type(uint128).max, decision 24; zero-seed launch, decision 76). The owner can still lower it on chain. */
+  poolNavUsdg: null as number | null,
   perSeriesOutstandingUsdg: 40_000,
   perAccountSeriesUsdg: 25_000,
   /** Outstanding option value as a share of pool NAV. */

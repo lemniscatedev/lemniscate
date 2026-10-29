@@ -269,7 +269,8 @@ export const poolResponseSchema = z.object({
   })),
   stressLossBps: decimal,
   caps: z.object({
-    navCapUsdg: decimal, navPctOfCap: z.number().nullable(),
+    /** null: no deposit cap (mainnet deploys it unlimited). */
+    navCapUsdg: decimal.nullable(), navPctOfCap: z.number().nullable(),
     totalOptionValuePct: z.number().nullable(), totalOptionValueCapPct: z.number(),
     perNameCapPct: z.number(), perSeriesCapUsdg: decimal, largestSeriesValueUsdg: decimal,
     stressBudgetPct: z.number(), perAccountSeriesCapUsdg: decimal,
@@ -304,7 +305,8 @@ export const configResponseSchema = z.object({
   poolShareDecimals: z.number().int(),
   speeds: z.array(z.object({ speed, tauSeconds: z.number().int() })),
   caps: z.object({
-    poolNavUsdg: decimal, perSeriesOutstandingUsdg: decimal, perAccountSeriesUsdg: decimal,
+    /** null: no deposit cap (mainnet deploys it unlimited). */
+    poolNavUsdg: decimal.nullable(), perSeriesOutstandingUsdg: decimal, perAccountSeriesUsdg: decimal,
     totalOptionValuePctOfNav: z.number(), perNamePctOfNav: z.number(), stressBudgetPctOfNav: z.number(),
     drawdownPausePct: z.number(), writerVaultsOpen: z.boolean(),
   }),

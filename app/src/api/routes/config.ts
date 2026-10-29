@@ -26,7 +26,7 @@ export function registerConfigRoutes(app: OpenAPIHono, deps: ApiDependencies): v
       { speed: "WEEKLY" as const, tauSeconds: TAU_SECONDS.WEEKLY },
     ],
     caps: {
-      poolNavUsdg: String(LAUNCH_CAPS.poolNavUsdg),
+      poolNavUsdg: LAUNCH_CAPS.poolNavUsdg === null ? null : String(LAUNCH_CAPS.poolNavUsdg),
       perSeriesOutstandingUsdg: String(LAUNCH_CAPS.perSeriesOutstandingUsdg),
       perAccountSeriesUsdg: String(LAUNCH_CAPS.perAccountSeriesUsdg),
       totalOptionValuePctOfNav: LAUNCH_CAPS.totalOptionValuePctOfNav,

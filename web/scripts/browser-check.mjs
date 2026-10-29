@@ -204,6 +204,7 @@ await section('C',async()=>{
  await page.goto(`${base}/dashboard?tab=pool`,{waitUntil:'load'});await settle(page);await page.waitForTimeout(800);
  body=await text(page);
  ok('C pool NAV from API',/\$1\.25M/.test(body)&&/\$1,840\.00/.test(body)&&/\$1\.0184/.test(body)&&!/\$2\.00M/.test(body),body.replace(/\n/g,' ').slice(0,600));
+ ok('C pool shows no deposit cap (mainnet is unlimited)',/No deposit cap/.test(body)&&!/launch cap/.test(body),'');
  ok('C pool funding received wording',/Funding received, last 24 h/.test(body)&&/Writers can lose more than they earn/.test(body),'');
  ok('C pool deposits gated by allowlist',/allowlisted writers/.test(body)&&await page.locator('[data-action="pool-review"]').isDisabled(),'');
  await page.click('[data-action="pool-mode"][data-mode="withdraw"]');

@@ -379,7 +379,8 @@ suite("option API over indexed data", () => {
     expect(Number(nvda.outstandingValueUsdg)).toBeGreaterThan(300);
     expect(Number(nvda.outstandingValueUsdg)).toBeLessThan(900);
     expect(body.stressLossBps).toBe("310.2500");
-    expect(body.caps.navCapUsdg).toBe("2000000");
+    expect(body.caps.navCapUsdg).toBeNull(); // no deposit cap: mainnet deploys it unlimited
+    expect(body.caps.navPctOfCap).toBeNull();
     expect(body.caps.totalOptionValueCapPct).toBe(35);
     expect(body.caps.perNameCapPct).toBe(8);
     expect(body.caps.perSeriesCapUsdg).toBe("40000");
@@ -462,7 +463,7 @@ suite("option API over indexed data", () => {
     expect(body.contracts.engine).toBe(ADDR.engine);
     expect(body.names).toEqual(["NVDA", "TSLA"]);
     expect(body.usdgDecimals).toBe(6);
-    expect(body.caps.poolNavUsdg).toBe("2000000");
+    expect(body.caps.poolNavUsdg).toBeNull();
     expect(body.caps.writerVaultsOpen).toBe(false);
     expect(body.pricing.feeBps).toBe(QUOTE_PARAMS.feeBps);
   });

@@ -104,8 +104,8 @@ export function registerPoolRoutes(app: OpenAPIHono, deps: ApiDependencies): voi
         exposures,
         stressLossBps: worstStress.toFixed(4),
         caps: {
-          navCapUsdg: String(LAUNCH_CAPS.poolNavUsdg),
-          navPctOfCap: pct(navUsd, LAUNCH_CAPS.poolNavUsdg),
+          navCapUsdg: LAUNCH_CAPS.poolNavUsdg === null ? null : String(LAUNCH_CAPS.poolNavUsdg),
+          navPctOfCap: LAUNCH_CAPS.poolNavUsdg === null ? null : pct(navUsd, LAUNCH_CAPS.poolNavUsdg),
           totalOptionValuePct: pct(totalValue, navUsd),
           totalOptionValueCapPct: LAUNCH_CAPS.totalOptionValuePctOfNav,
           perNameCapPct: LAUNCH_CAPS.perNamePctOfNav,
