@@ -41,12 +41,14 @@ During the closed beta the website and the API ask a wallet to redeem an invite 
 
 ## Roles
 
-Deployer keys hold nothing after the hand-off. Admin is a 48 hour `TimelockController` owned by a 3-of-5 Safe on mainnet. Keeper,
+Deployer keys hold nothing after the hand-off. Admin is a 48 hour `TimelockController`; on mainnet its only proposer, executor
+and canceller is a single owner EOA (owner decision 2026-10-28, see "Owner model" below), and the timelock is the only admin of every
+contract. Keeper,
 hedger and vol signer are three different addresses; the services refuse to start with a shared key, and the post-deploy check (in progress) asserts it.
 
 | Role | Held by | Can | Cannot |
 | --- | --- | --- | --- |
-| Admin (`DEFAULT_ADMIN_ROLE`) | 48h timelock, owned by the Safe | List stocks and set price guard parameters; set caps, fee rates and spreads inside validated bounds; rotate the vol signer and floors; set pool deposit allowlist, hedge routes and caps; upgrade the UUPS proxies; freeze engine upgrades for good | Act without the 48h delay; move user funds; mint option tokens |
+| Admin (`DEFAULT_ADMIN_ROLE`) | 48h timelock, run by the owner EOA | List stocks and set price guard parameters; set caps, fee rates and spreads inside validated bounds; rotate the vol signer and floors; set pool deposit allowlist, hedge routes and caps; upgrade the UUPS proxies; freeze engine upgrades for good | Act without the 48h delay; move user funds; mint option tokens |
 | Guardian (2-of-3) | Multisig, plus the keeper's risk monitor for automatic pauses | Pause buys, Shield and pool deposits; freeze the hedger (`rebalance` and `postHedgeEquity`) until the admin unfreezes it | Pause sells, withdrawals, claims or `fillQueued`; change parameters; upgrade |
 | Keeper | One hot key | List series and set them buyable or archived; push market sessions; call `accrue` and `accrueMany`; pause buys (guardian role); poke the price guard around corporate actions | Change parameters; touch pool funds; sign vol posts |
 | Hedger | One hot key | Post off-chain perp equity inside the admin cap and hourly bound; call the pool's `rebalance(stock, targetUnits, minOut)` inside its TWAP floor and slippage bound, and inside a daily budget of realised loss against the feed price (0.5% of NAV by default, admin-set 0.01% to 2%) | Withdraw pool funds; lose more than that daily budget to a pool it sandwiches, however many trades it makes; act while the guardian has frozen it; move USDG anywhere but through the pool's own swap route; post any equity while perps are off (cap 0, the launch value); post above the cap (at most 20% of NAV) or move equity more than 10% of the cap per hour, whatever the `ref` |
@@ -54,6 +56,29 @@ hedger and vol signer are three different addresses; the services refuse to star
 | Engine | Contract | Call `pool.onSale`, `onFunding` and `pay`; mint and burn option tokens | Pull more USDG from a buyer than the quoted maximum |
 | Agent key | Set by an owner through `AgentRouter` | Buy, sell and Shield for the owner within a budget, a per-trade limit, an expiry and a name list | Receive tokens or proceeds (always sent to the owner); raise its own budget; act after revoke |
 | Anyone | | `poke` the price guard, `distribute` the fee router after 7 days, `fillQueued` for a queued sell, submit signed vol posts | |
+
+## Owner model
+
+- **One owner EOA behind a 48 hour timelock.** On mainnet the owner (a single externally owned account, not a multisig) is the only
+  proposer, executor and canceller of an OpenZeppelin `TimelockController` with a minimum delay of 48 hours. The timelock
+  administers itself and is the only holder of `DEFAULT_ADMIN_ROLE` on every contract. The owner has no direct admin role
+  anywhere, so every parameter change, role change and upgrade is public on chain for 48 hours before it can run. The deployer
+  renounces every role in the same deploy. The guardian's instant pause path is unchanged and separate from the owner.
+- **How it is enforced.** The deploy script accepts an EOA as the timelock owner only when `ALLOW_EOA_OWNER=1` is set in the
+  environment (a deploy config file cannot turn it on); without it, mainnet requires a Safe of at least 3-of-5. With or without it,
+  the script and the post-deploy check refuse an owner with an EIP-7702 delegation (code `0xef0100` followed by a delegate), a
+  timelock delay under 48 hours, any direct admin role held by the owner or the deployer, any timelock role held by the deployer,
+  an owner that is the deployer or a bot key, and a deployment file whose owner differs from the config. A delegation added after
+  the deploy fails the post-deploy check (`OWNER_IS_DELEGATED_EOA`).
+- **Accepted risk.** One key controls the protocol, delayed by 48 hours. If that key is stolen, the thief can schedule any admin
+  action (including an upgrade); users and the guardian then have 48 hours to see the scheduled call and react: pause buys and
+  deposits, and exit (sells, withdrawals and claims cannot be paused). The owner can cancel a scheduled call only while it still
+  holds the key. If the key is lost, no admin action can happen again (pauses by the guardian still work, unpausing does not). A
+  multisig would remove the single point of failure; the owner chose the single EOA for operational simplicity at launch and
+  accepts this risk. The owner key must never sign an EIP-7702 authorization.
+- **Audit score.** This choice costs points under privileged operations (no multisig admin before caps rise) in any external-style
+  review, and an auditor should mark it as an accepted, documented risk rather than a finding. Moving ownership to a Safe later is
+  one timelocked call batch (grant the Safe the proposer, executor and canceller roles, then revoke the EOA).
 
 ## Service isolation
 
@@ -82,7 +107,7 @@ Every on-chain safety lever, who may call it, and which paid job calls it. A lev
 | `engine.syncSeries(n)`, `engine.pruneShieldList(stock, n)` | Anyone | None: trades sync in batches and Shield drops archived candidates it meets; a keeper call only shortens the list |
 | `pool.checkpoint()` | Anyone | None needed: deposits and claims record it |
 | `volOracle.post(...)` | Anyone, with the vol signer's signature | The vol engine service |
-| Timelocked parameters, upgrades, `freezeUpgrades` | Admin (48h timelock) | The Safe |
+| Timelocked parameters, upgrades, `freezeUpgrades` | Admin (48h timelock) | The owner EOA, through the timelock |
 
 ## Every privileged function
 

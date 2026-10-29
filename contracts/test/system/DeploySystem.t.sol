@@ -754,13 +754,13 @@ contract DeploySystemTest is Test, SystemChecks {
         vm.chainId(CHAIN_MAINNET);
         c.profileName = "mainnet";
         c.profile = PROFILE_MAINNET;
-        vm.expectRevert("SystemConfig: mainnet Safe has no code");
+        vm.expectRevert("SystemConfig: mainnet needs roles.timelockOwner (or roles.safe)");
         this.doDeploy(c);
         c.roles.safe = address(new MockSafe(2, 5));
-        vm.expectRevert("SystemConfig: mainnet Safe must be at least 3-of-5");
+        vm.expectRevert("SystemConfig: timelock owner refused: OWNER_SAFE_BELOW_3_OF_5");
         this.doDeploy(c);
         c.roles.safe = address(new MockSafe(3, 4));
-        vm.expectRevert("SystemConfig: mainnet Safe must be at least 3-of-5");
+        vm.expectRevert("SystemConfig: timelock owner refused: OWNER_SAFE_BELOW_3_OF_5");
         this.doDeploy(c);
 
         c.roles.safe = address(new MockSafe(3, 5));
@@ -971,5 +971,221 @@ contract DeploySystemTest is Test, SystemChecks {
         assertEq(c.safeSingletons.length, 1);
         assertEq(c.safeSingletons[0], address(0x5afe));
         assertFalse(c.allowEoaOwner, "the EOA escape hatch is off unless ALLOW_EOA_OWNER=1");
+    }
+
+    // ------------------------------------------------------------- EOA timelock owner (owner decision 2026-10-28)
+
+    string internal constant EOA_REFUSED =
+        "SystemConfig: timelock owner refused: OWNER_IS_EOA (deploy the owner Safe first, or ALLOW_EOA_OWNER=1)";
+
+    /// @dev A fork (or mainnet) config whose timelock is run by one plain EOA, with ALLOW_EOA_OWNER=1 set.
+    function _eoaOwned(bool mainnet) internal returns (Config memory c, address eoa) {
+        c = _forkConfig();
+        if (mainnet) {
+            vm.chainId(CHAIN_MAINNET);
+            c.profileName = "mainnet";
+            c.profile = PROFILE_MAINNET;
+        }
+        eoa = makeAddr("kal-owner-eoa");
+        c.roles.safe = eoa;
+        c.allowEoaOwner = true;
+    }
+
+    /// @dev The single-EOA model end to end: the EOA is the timelock's only proposer, executor and canceller, the timelock
+    /// (48h, self-administered) is the only admin of every contract, and neither the EOA nor the deployer administers
+    /// anything directly.
+    function _assertEoaModel(Deployed memory d, address eoa) internal view {
+        assertEq(eoa.code.length, 0, "the owner is a plain EOA");
+        assertEq(d.safe, eoa);
+        TimelockController tl = TimelockController(payable(d.timelock));
+        assertEq(tl.getMinDelay(), 48 hours);
+        assertTrue(tl.hasRole(tl.PROPOSER_ROLE(), eoa) && tl.hasRole(tl.EXECUTOR_ROLE(), eoa));
+        assertTrue(tl.hasRole(tl.CANCELLER_ROLE(), eoa));
+        assertFalse(tl.hasRole(ADMIN, eoa), "the EOA does not administer the timelock");
+        assertTrue(tl.hasRole(ADMIN, d.timelock), "the timelock administers itself");
+        assertFalse(tl.hasRole(tl.EXECUTOR_ROLE(), address(0)), "execution is not open");
+        assertFalse(tl.hasRole(tl.PROPOSER_ROLE(), deployer) || tl.hasRole(ADMIN, deployer), "deployer has no timelock role");
+        address[] memory t = adminTargets(d);
+        for (uint256 i; i < t.length; ++i) {
+            assertTrue(IAccessControl(t[i]).hasRole(ADMIN, d.timelock), "timelock is admin");
+            assertFalse(IAccessControl(t[i]).hasRole(ADMIN, eoa), "the EOA has no direct admin role");
+            assertFalse(IAccessControl(t[i]).hasRole(ADMIN, deployer), "the deployer kept no admin role");
+        }
+    }
+
+    function test_EOA_forkDeployAndCheckPassWithTheFlag() public {
+        (Config memory c, address eoa) = _eoaOwned(false);
+        Deployed memory d = _deploy(c);
+        _assertEoaModel(d, eoa);
+        _assertClean(c, d);
+        _openSession(d);
+        _assertClean(c, d);
+    }
+
+    function test_EOA_mainnetDeployAndCheckPassWithTheFlag() public {
+        (Config memory c, address eoa) = _eoaOwned(true);
+        Deployed memory d = _deploy(c);
+        _assertEoaModel(d, eoa);
+        assertEq(WriterPool(d.pool).QUEUE_DELAY(), 72 hours, "mainnet: full timers");
+        _assertClean(c, d);
+    }
+
+    function test_EOA_refusedWithoutTheFlag() public {
+        (Config memory c,) = _eoaOwned(false);
+        c.allowEoaOwner = false;
+        vm.expectRevert(bytes(EOA_REFUSED));
+        this.doDeploy(c);
+        (c,) = _eoaOwned(true);
+        c.allowEoaOwner = false;
+        vm.expectRevert(bytes(EOA_REFUSED));
+        this.doDeploy(c);
+    }
+
+    function test_EOA_postDeployCheckFailsWithoutTheFlag() public {
+        (Config memory c,) = _eoaOwned(true);
+        Deployed memory d = _deploy(c);
+        c.allowEoaOwner = false; // PostDeployCheck run without ALLOW_EOA_OWNER=1
+        _expectFail(c, d, "SAFE_NOT_CONTRACT");
+    }
+
+    function test_EOA_flagComesOnlyFromTheEnvironment() public view {
+        Config memory c = this.doParse(
+            string.concat(
+                '{"profile":"fork","allowEoaOwner":true,"ALLOW_EOA_OWNER":true,"roles":{"timelockOwner":"',
+                vm.toString(address(0xE0A)),
+                '"},"stocks":[]}'
+            )
+        );
+        assertFalse(c.allowEoaOwner, "a JSON key never turns the EOA escape hatch on");
+        assertEq(c.roles.safe, address(0xE0A), "roles.timelockOwner is read");
+    }
+
+    function test_EOA_configKeysBackwardCompatible() public {
+        string memory both = string.concat(
+            '{"profile":"mainnet","roles":{"safe":"',
+            vm.toString(address(0x5afe)),
+            '","timelockOwner":"',
+            vm.toString(address(0x5afe)),
+            '"},"stocks":[]}'
+        );
+        assertEq(this.doParse(both).roles.safe, address(0x5afe), "both keys, same address");
+        string memory oldKey = string.concat('{"profile":"mainnet","roles":{"safe":"', vm.toString(address(0x5afe)), '"},"stocks":[]}');
+        assertEq(this.doParse(oldKey).roles.safe, address(0x5afe), "the old roles.safe key still works");
+        string memory clash = string.concat(
+            '{"profile":"mainnet","roles":{"safe":"',
+            vm.toString(address(0x5afe)),
+            '","timelockOwner":"',
+            vm.toString(address(0xE0A)),
+            '"},"stocks":[]}'
+        );
+        vm.expectRevert(bytes("SystemConfig: roles.safe and roles.timelockOwner disagree (set one)"));
+        this.doParse(clash);
+    }
+
+    function test_EOA_delayUnder48hRefused() public {
+        (Config memory c,) = _eoaOwned(false);
+        c.timers.timelockDelay = 48 hours - 1;
+        vm.expectRevert(bytes("SystemDeployer: timelock below 48h"));
+        this.doDeploy(c);
+    }
+
+    function test_EOA_postDeployCheckFailsOnShortDelay() public {
+        (Config memory c,) = _eoaOwned(true);
+        Deployed memory d = _deploy(c);
+        vm.prank(d.timelock);
+        TimelockController(payable(d.timelock)).updateDelay(48 hours - 1);
+        _expectFail(c, d, "TIMELOCK_DELAY_SHORT");
+    }
+
+    function test_EOA_postDeployCheckFailsOnDirectAdmin() public {
+        (Config memory c, address eoa) = _eoaOwned(true);
+        Deployed memory d = _deploy(c);
+        vm.prank(d.timelock);
+        IAccessControl(d.engine).grantRole(ADMIN, eoa);
+        _expectFail(c, d, "SAFE_BYPASSES_TIMELOCK");
+
+        (c, eoa) = _eoaOwned(true);
+        d = _deploy(c);
+        TimelockController tl = TimelockController(payable(d.timelock));
+        vm.prank(d.timelock);
+        tl.grantRole(ADMIN, eoa); // admin of the timelock itself = can skip the delay
+        _expectFail(c, d, "TIMELOCK_NOT_SELF_ADMINISTERED");
+    }
+
+    function test_EOA_ownerCannotBeTheDeployerOrABot() public {
+        (Config memory c,) = _eoaOwned(false);
+        c.roles.safe = deployer;
+        vm.expectRevert(bytes("SystemDeployer: the deployer cannot own the timelock (it keeps no role)"));
+        this.doDeploy(c);
+        c.roles.safe = keeper;
+        vm.expectRevert(bytes("SystemConfig: the timelock owner must not be a bot key"));
+        this.doDeploy(c);
+    }
+
+    function test_EOA_postDeployCheckFailsOnDeployerTimelockRole() public {
+        (Config memory c,) = _eoaOwned(true);
+        Deployed memory d = _deploy(c);
+        TimelockController tl = TimelockController(payable(d.timelock));
+        bytes32 proposer = tl.PROPOSER_ROLE();
+        vm.prank(d.timelock);
+        tl.grantRole(proposer, deployer);
+        _expectFail(c, d, "DEPLOYER_HOLDS_TIMELOCK_ROLE");
+    }
+
+    function test_EOA_postDeployCheckFailsOnOwnerMismatch() public {
+        (Config memory c,) = _eoaOwned(true);
+        Deployed memory d = _deploy(c);
+        c.roles.safe = makeAddr("someone-else");
+        _expectFail(c, d, "TIMELOCK_OWNER_MISMATCH");
+    }
+
+    /// @dev EIP-7702: a delegated EOA has code (0xef0100 || delegate), and its delegate could answer like a 3-of-5 Safe or
+    /// sweep the account. Refused before deploy with or without the flag, on fork and mainnet.
+    function test_EOA_7702DelegatedOwnerRefused() public {
+        address delegate = address(new MockSafe(3, 5));
+        for (uint256 m; m < 2; ++m) {
+            (Config memory c, address eoa) = _eoaOwned(m == 1);
+            vm.etch(eoa, abi.encodePacked(hex"ef0100", delegate));
+            vm.expectRevert(bytes("SystemConfig: timelock owner refused: OWNER_IS_DELEGATED_EOA"));
+            this.doDeploy(c);
+            c.allowEoaOwner = false;
+            vm.expectRevert(bytes("SystemConfig: timelock owner refused: OWNER_IS_DELEGATED_EOA"));
+            this.doDeploy(c);
+            vm.etch(eoa, "");
+        }
+    }
+
+    /// @dev An owner EOA that signs a 7702 delegation after the deploy is flagged by the post-deploy check.
+    function test_EOA_postDeployCheckFlags7702DelegationAfterDeploy() public {
+        (Config memory c, address eoa) = _eoaOwned(true);
+        Deployed memory d = _deploy(c);
+        _assertClean(c, d);
+        vm.etch(eoa, abi.encodePacked(hex"ef0100", address(new MockSafe(3, 5))));
+        _expectFail(c, d, "OWNER_IS_DELEGATED_EOA");
+    }
+
+    /// @dev The flag only admits an EOA: a contract owner on mainnet must still be a Safe of at least 3-of-5.
+    function test_EOA_flagDoesNotRelaxTheMainnetSafeRule() public {
+        (Config memory c,) = _eoaOwned(true);
+        c.roles.safe = address(new MockSafe(2, 3));
+        vm.expectRevert(bytes("SystemConfig: timelock owner refused: OWNER_SAFE_BELOW_3_OF_5"));
+        this.doDeploy(c);
+    }
+
+    /// @dev The guardian keeps its instant, pause-only path under the EOA model; it cannot unpause or administer.
+    function test_EOA_guardianPausePathUnchanged() public {
+        (Config memory c, address eoa) = _eoaOwned(true);
+        Deployed memory d = _deploy(c);
+        vm.prank(guardian);
+        LemniscateEngine(d.engine).setBuysPaused(true);
+        vm.prank(guardian);
+        vm.expectRevert();
+        LemniscateEngine(d.engine).setBuysPaused(false);
+        vm.prank(eoa);
+        vm.expectRevert();
+        LemniscateEngine(d.engine).setBuysPaused(false); // the EOA acts only through the timelock
+        vm.prank(d.timelock);
+        LemniscateEngine(d.engine).setBuysPaused(false);
+        _assertClean(c, d);
     }
 }

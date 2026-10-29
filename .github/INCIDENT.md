@@ -21,7 +21,7 @@ Placeholders: `<engine>`, `<pool>`, `<priceGuard>`, `<paymaster>` are the addres
 | Pause buys (global, one series, one name) and pause pool deposits | Guardian (2-of-3 Safe; the keeper's risk monitor also pauses automatically) | Immediate |
 | Pause the paymaster (sponsored gas) | Paymaster owner (Safe) | Immediate |
 | Stop a service (keeper, hedger, vol engine, API) | Server operator, `systemctl stop lemniscate-<service>` | Immediate |
-| Unpause anything, change a parameter, rotate the vol signer, upgrade | Admin: the 48 hour timelock, run by the 3-of-5 Safe | 48 hours after scheduling |
+| Unpause anything, change a parameter, rotate the vol signer, upgrade | Admin: the 48 hour timelock, run by the owner EOA (SECURITY.md, Owner model) | 48 hours after scheduling |
 | Revoke a keeper or hedger role, grant a new one | Admin (same timelock path) | 48 hours |
 
 Unpausing and every parameter change wait out the 48 hour timelock. Plan for that: a pause costs at least two days of lost buys. Pausing is
@@ -67,6 +67,7 @@ Check it took effect: `cast call <engine> "flags()(bool,bool,bool,bool)"` (globa
 | Paymaster signer | Paymaster owner calls `setPaused(true)` then `setSigner(new)` | Sponsored gas only; no user funds |
 | An owner wallet (a user) | Nothing on our side can move it | Tell the user to revoke the agent key in AgentRouter (`revoke(agent)`) and move funds |
 | A Safe | Treat as a full compromise: pause everything you can, announce, and move to a new Safe through the timelock | |
+| Timelock owner EOA | Treat as a full compromise: the guardian pauses buys and deposits, announce, and tell users to exit (sells, withdrawals and claims stay open) | Watch the timelock for `CallScheduled`; while the key is still held, cancel every call you did not schedule, and schedule moving the proposer, executor and canceller roles to a new owner (48h) |
 
 Never paste a key, keystore or password into a chat, ticket or log. Keystores live only under `/etc/lemniscate/keys` on the server and each
 is readable by one service user.

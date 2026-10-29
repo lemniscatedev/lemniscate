@@ -354,6 +354,7 @@ abstract contract SystemDeployer is SystemConfig {
                 safe = address(new ForkSafe(c.roles.owner));
             }
             require(c.timers.timelockDelay >= FULL_TIMELOCK_DELAY, "SystemDeployer: timelock below 48h");
+            require(safe != d.deployer, "SystemDeployer: the deployer cannot own the timelock (it keeps no role)");
             address[] memory members = new address[](1);
             members[0] = safe;
             // admin = address(0): the timelock administers itself; OZ v5 makes every proposer a canceller.

@@ -15,9 +15,9 @@ on a local anvil). Without `--broadcast`, Forge only simulates against the RPC a
 
 | Profile | Chain | Externals | Timers | Admin |
 | --- | --- | --- | --- | --- |
-| `fork` | 31337 (anvil forking mainnet) | real USDG, Stock Tokens, feeds, Uniswap pools | full | 48h `TimelockController` run by `roles.safe` (a `ForkSafe` stand-in is deployed when unset) |
+| `fork` | 31337 (anvil forking mainnet) | real USDG, Stock Tokens, feeds, Uniswap pools | full | 48h `TimelockController` run by `roles.timelockOwner` / `roles.safe` (a `ForkSafe` stand-in is deployed when unset; a plain EOA only with `ALLOW_EOA_OWNER=1`) |
 | `testnet` | 46630 | mock USDG, mock Stock Tokens, keeper-pushed mock feeds, feed-priced swap venue (`script/testnet/`) | short, from `timers` (each bounded below by the contracts) | `roles.owner` directly |
-| `mainnet` | 4663 only | real | full | 48h `TimelockController` run by a Safe with at least 3 of 5 signers |
+| `mainnet` | 4663 only | real | full | 48h `TimelockController` run by a Safe with at least 3 of 5 signers, or (owner decision 2026-10-28) by one plain EOA only with `ALLOW_EOA_OWNER=1` in the environment; an EIP-7702 delegated owner is always refused |
 
 Full timers: pool withdrawal queue 72h, deposit lock 24h, fee distribution 7 days, timelock 48h, vol post validity
 2h and rate limit 5 minutes (rolling window 1h), split pause 24h before / 1h after. Fork and mainnet configs that

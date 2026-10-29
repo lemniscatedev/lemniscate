@@ -13,7 +13,9 @@ import {CommonBase} from "forge-std/Base.sol";
 ///  - testnet (chain 46630): the script deploys mock USDG, mock Stock Tokens and keeper-pushed mock feeds; SHORT timers
 ///            from `timers` (each bounded below by the contracts); admin is `roles.owner` directly (no Safe/timelock).
 ///  - mainnet (chain 4663): refuses any other chain; FULL timers; admin is a 48h TimelockController run by a Safe with
-///            at least 3 of 5 signers.
+///            at least 3 of 5 signers. Owner decision (2026-10-28): the timelock may instead be run by one plain EOA, but
+///            only with `ALLOW_EOA_OWNER=1` in the environment (never from the JSON); an EIP-7702 delegated EOA is always
+///            refused. Everything else stays strict: 48h delay, the timelock the only admin, the deployer renounced.
 abstract contract SystemConfig is CommonBase {
     uint8 internal constant PROFILE_FORK = 0;
     uint8 internal constant PROFILE_TESTNET = 1;
@@ -53,7 +55,8 @@ abstract contract SystemConfig is CommonBase {
 
     struct Roles {
         address owner; // testnet admin; on fork the owner of the stand-in ForkSafe when `safe` is unset
-        address safe; // proposer/executor/canceller of the timelock (fork, mainnet)
+        address safe; // timelock owner: proposer/executor/canceller (fork, mainnet). JSON `.roles.timelockOwner`, or the
+        // older key `.roles.safe`. A Safe (mainnet: >= 3-of-5), or a plain EOA only with ALLOW_EOA_OWNER=1.
         address guardian; // pause-only
         address keeper;
         address hedger;
@@ -108,8 +111,10 @@ abstract contract SystemConfig is CommonBase {
         Limits limits;
         StockCfg[] stocks;
         VaultCfg vaults;
-        /// @dev Testnet owner escape hatch: true only from the environment (`ALLOW_EOA_OWNER=1`), never from the JSON. Off
-        /// by default: the testnet owner must then be a real Safe (see `ownerSafeProblem`). Ignored on fork and mainnet.
+        /// @dev EOA owner escape hatch: true only from the environment (`ALLOW_EOA_OWNER=1`), never from the JSON. Off by
+        /// default. Testnet: lets `roles.owner` be a plain EOA (else a real Safe, see `ownerSafeProblem`). Fork and mainnet:
+        /// lets the timelock owner (`roles.safe` / `roles.timelockOwner`) be a plain EOA behind the 48h timelock (else a
+        /// contract on fork, a Safe of at least 3-of-5 on mainnet; see `timelockOwnerProblem`).
         bool allowEoaOwner;
         /// @dev Official Safe singletons on the target chain (`.safeSingletons`); a Safe owner must run one of them. Empty
         /// = the singleton is not checked (it must still have code).
@@ -143,6 +148,14 @@ abstract contract SystemConfig is CommonBase {
 
         c.roles.owner = _addr(json, ".roles.owner");
         c.roles.safe = _addr(json, ".roles.safe");
+        if (vm.keyExistsJson(json, ".roles.timelockOwner")) {
+            address tlOwner = vm.parseJsonAddress(json, ".roles.timelockOwner");
+            require(
+                c.roles.safe == address(0) || c.roles.safe == tlOwner,
+                "SystemConfig: roles.safe and roles.timelockOwner disagree (set one)"
+            );
+            c.roles.safe = tlOwner;
+        }
         c.roles.guardian = _addr(json, ".roles.guardian");
         c.roles.keeper = _addr(json, ".roles.keeper");
         c.roles.hedger = _addr(json, ".roles.hedger");
@@ -276,12 +289,17 @@ abstract contract SystemConfig is CommonBase {
                 require(s.uniPool.code.length != 0, "SystemConfig: TWAP pool has no code");
             }
         }
-        if (c.profile == PROFILE_MAINNET) {
-            require(r.safe != address(0) && r.safe.code.length != 0, "SystemConfig: mainnet Safe has no code");
+        if (c.profile != PROFILE_TESTNET && r.safe != address(0)) {
+            // Fork: unset = the script deploys a ForkSafe. Mainnet: required (below).
+            string memory problem = timelockOwnerProblem(r.safe, c.profile, c.allowEoaOwner);
+            require(bytes(problem).length == 0, string.concat("SystemConfig: timelock owner refused: ", problem));
             require(
-                _safeThreshold(r.safe) >= MAINNET_SAFE_MIN_THRESHOLD && _safeOwners(r.safe) >= MAINNET_SAFE_MIN_OWNERS,
-                "SystemConfig: mainnet Safe must be at least 3-of-5"
+                r.safe != r.keeper && r.safe != r.hedger && r.safe != r.volSigner,
+                "SystemConfig: the timelock owner must not be a bot key"
             );
+        }
+        if (c.profile == PROFILE_MAINNET) {
+            require(r.safe != address(0), "SystemConfig: mainnet needs roles.timelockOwner (or roles.safe)");
             require(
                 r.keepersPot != address(0) && r.hedgerPot != address(0), "SystemConfig: mainnet fee pots are required"
             );
@@ -298,9 +316,8 @@ abstract contract SystemConfig is CommonBase {
     /// Safe with threshold >= 2, at least `threshold` owners, no module (a module bypasses the threshold), no guard, and a
     /// singleton from `singletons` when that list is given. A plain EOA passes only with `allowEoa` (ALLOW_EOA_OWNER=1).
     function ownerSafeProblem(address owner, address[] memory singletons, bool allowEoa) internal view returns (string memory) {
-        bytes memory code = owner.code;
-        if (code.length == 23 && code[0] == 0xef && code[1] == 0x01 && code[2] == 0x00) return "OWNER_IS_DELEGATED_EOA";
-        if (code.length == 0) return allowEoa ? "" : "OWNER_IS_EOA (deploy the owner Safe first, or ALLOW_EOA_OWNER=1)";
+        if (isDelegatedEoa(owner)) return "OWNER_IS_DELEGATED_EOA";
+        if (owner.code.length == 0) return allowEoa ? "" : "OWNER_IS_EOA (deploy the owner Safe first, or ALLOW_EOA_OWNER=1)";
         uint256 threshold = _safeThreshold(owner);
         if (threshold < 2) return "OWNER_SAFE_THRESHOLD_BELOW_2";
         if (_safeOwners(owner) < threshold) return "OWNER_SAFE_OWNERS_BELOW_THRESHOLD";
@@ -320,6 +337,28 @@ abstract contract SystemConfig is CommonBase {
             if (!known) return "OWNER_SAFE_UNKNOWN_SINGLETON";
         }
         return "";
+    }
+
+    /// @notice Why `owner` cannot run the 48h timelock on fork or mainnet ("" = it can). An EIP-7702 delegated EOA is
+    /// always refused (it has code, and its delegate could answer like a Safe). A plain EOA (no code) passes only with
+    /// `allowEoa` (ALLOW_EOA_OWNER=1, owner decision 2026-10-28). A contract must be a Safe of at least 3-of-5 on mainnet;
+    /// on fork any contract (the ForkSafe stand-in) passes.
+    function timelockOwnerProblem(address owner, uint8 profile, bool allowEoa) internal view returns (string memory) {
+        if (isDelegatedEoa(owner)) return "OWNER_IS_DELEGATED_EOA";
+        if (owner.code.length == 0) {
+            return allowEoa ? "" : "OWNER_IS_EOA (deploy the owner Safe first, or ALLOW_EOA_OWNER=1)";
+        }
+        if (
+            profile == PROFILE_MAINNET
+                && (_safeThreshold(owner) < MAINNET_SAFE_MIN_THRESHOLD || _safeOwners(owner) < MAINNET_SAFE_MIN_OWNERS)
+        ) return "OWNER_SAFE_BELOW_3_OF_5";
+        return "";
+    }
+
+    /// @dev EIP-7702 delegation designator: exactly 0xef0100 followed by the 20-byte delegate (23 bytes).
+    function isDelegatedEoa(address a) internal view returns (bool) {
+        bytes memory code = a.code;
+        return code.length == 23 && code[0] == 0xef && code[1] == 0x01 && code[2] == 0x00;
     }
 
     /// @dev One storage word of a Safe through its StorageAccessible `getStorageAt` (0 when unreadable).

@@ -14,7 +14,8 @@ import {LemniscateScript} from "./lib/LemniscateScript.sol";
 ///
 /// Step 1 (always): deploy the timelock (or reuse TIMELOCK) and grant it DEFAULT_ADMIN_ROLE everywhere.
 /// Step 2 (REVOKE_EOA_ADMIN=1 only): the EOA renounces DEFAULT_ADMIN_ROLE everywhere. Refused unless the timelock
-/// already holds the role on every contract, is wired to the Safe exactly as expected, and the Safe has code.
+/// already holds the role on every contract and is wired to the Safe exactly as expected. SAFE may be a plain EOA only
+/// with ALLOW_EOA_OWNER=1 (single owner behind the 48h timelock); it must differ from the sender.
 /// Keeper, hedger and guardian roles are left alone (granted at deploy; changing them later goes through the timelock).
 ///   DEPLOYMENT_FILE=deployments/<profile>.json SAFE=<safe> forge script script/TimelockHandoff.s.sol --rpc-url <rpc> \
 ///     --account <deployer keystore> [--broadcast]
@@ -24,13 +25,12 @@ contract TimelockHandoff is LemniscateScript {
         require(block.chainid != CHAIN_TESTNET, "TimelockHandoff: testnet has no timelock (admin is the owner)");
         Deployed memory d = loadDeploymentFile();
         address safe = vm.envAddress("SAFE");
-        require(safe.code.length != 0, "TimelockHandoff: SAFE has no code");
-        if (block.chainid == CHAIN_MAINNET) {
-            require(
-                _safeThreshold(safe) >= MAINNET_SAFE_MIN_THRESHOLD && _safeOwners(safe) >= MAINNET_SAFE_MIN_OWNERS,
-                "TimelockHandoff: mainnet Safe must be at least 3-of-5"
-            );
-        }
+        // Same rule as the deploy: a Safe (>= 3-of-5 on mainnet), or a plain EOA only with ALLOW_EOA_OWNER=1; never an
+        // EIP-7702 delegated EOA.
+        string memory problem = timelockOwnerProblem(
+            safe, block.chainid == CHAIN_MAINNET ? PROFILE_MAINNET : PROFILE_FORK, vm.envOr("ALLOW_EOA_OWNER", false)
+        );
+        require(bytes(problem).length == 0, string.concat("TimelockHandoff: SAFE refused: ", problem));
         uint256 minDelay = vm.envOr("TIMELOCK_MIN_DELAY", FULL_TIMELOCK_DELAY);
         require(minDelay >= FULL_TIMELOCK_DELAY, "TimelockHandoff: delay below the 48h minimum");
         bool revoke = vm.envOr("REVOKE_EOA_ADMIN", false);
@@ -38,6 +38,7 @@ contract TimelockHandoff is LemniscateScript {
         vm.startBroadcast();
         (, address eoa,) = vm.readCallers();
         vm.stopBroadcast();
+        require(safe != eoa, "TimelockHandoff: SAFE must not be the sender (the deployer keeps no role)");
         address[] memory targets = adminTargets(d);
         for (uint256 i; i < targets.length; ++i) {
             require(

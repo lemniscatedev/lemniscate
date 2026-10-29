@@ -139,7 +139,23 @@ abstract contract SystemChecks is SystemDeployer {
         TimelockController tl = TimelockController(payable(tlAddr));
         _failIf(tl.getMinDelay() < FULL_TIMELOCK_DELAY, "TIMELOCK_DELAY_SHORT");
         address safe = d.safe;
-        _failIf(safe.code.length == 0, "SAFE_NOT_CONTRACT");
+        // Timelock owner: a Safe (any contract on fork, >= 3-of-5 on mainnet), or a plain EOA only with ALLOW_EOA_OWNER=1
+        // (owner decision 2026-10-28). The EOA must still have no code: an EIP-7702 delegation is always a failure, also
+        // when it appears after the deploy (its delegate could act for the owner, or sweep it).
+        if (isDelegatedEoa(safe)) {
+            _fail("OWNER_IS_DELEGATED_EOA");
+        } else if (safe.code.length == 0) {
+            _failIf(!c.allowEoaOwner || safe == address(0), "SAFE_NOT_CONTRACT");
+        } else if (c.profile == PROFILE_MAINNET) {
+            _failIf(
+                _safeThreshold(safe) < MAINNET_SAFE_MIN_THRESHOLD || _safeOwners(safe) < MAINNET_SAFE_MIN_OWNERS,
+                "SAFE_BELOW_3_OF_5"
+            );
+        }
+        _failIf(safe == d.deployer, "DEPLOYER_OWNS_TIMELOCK");
+        _failIf(c.roles.safe != address(0) && safe != c.roles.safe, "TIMELOCK_OWNER_MISMATCH");
+        Roles memory r = c.roles;
+        _failIf(safe == r.keeper || safe == r.hedger || safe == r.volSigner, "OWNER_IS_BOT");
         _failIf(
             !tl.hasRole(tl.PROPOSER_ROLE(), safe) || !tl.hasRole(tl.EXECUTOR_ROLE(), safe)
                 || !tl.hasRole(tl.CANCELLER_ROLE(), safe),
@@ -150,12 +166,6 @@ abstract contract SystemChecks is SystemDeployer {
             !tl.hasRole(ADMIN, tlAddr) || tl.hasRole(ADMIN, d.deployer) || tl.hasRole(ADMIN, safe),
             "TIMELOCK_NOT_SELF_ADMINISTERED"
         );
-        if (c.profile == PROFILE_MAINNET) {
-            _failIf(
-                _safeThreshold(safe) < MAINNET_SAFE_MIN_THRESHOLD || _safeOwners(safe) < MAINNET_SAFE_MIN_OWNERS,
-                "SAFE_BELOW_3_OF_5"
-            );
-        }
         // Nothing but the timelock may administer: the Safe, the guardian and the bots go through it.
         for (uint256 i; i < t.length; ++i) {
             IAccessControl a = IAccessControl(t[i]);
@@ -164,6 +174,12 @@ abstract contract SystemChecks is SystemDeployer {
                 break;
             }
         }
+        // The deployer keeps no timelock role either (it could otherwise schedule, execute or cancel admin actions).
+        _failIf(
+            tl.hasRole(tl.PROPOSER_ROLE(), d.deployer) || tl.hasRole(tl.EXECUTOR_ROLE(), d.deployer)
+                || tl.hasRole(tl.CANCELLER_ROLE(), d.deployer),
+            "DEPLOYER_HOLDS_TIMELOCK_ROLE"
+        );
     }
 
     function _checkRoles(Config memory c, Deployed memory d) private {
