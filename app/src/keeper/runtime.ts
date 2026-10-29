@@ -22,6 +22,7 @@ import { createSettleHaltedJob } from "./jobs/settle-halted";
 import { createKernelRegisterJob } from "./jobs/kernel-register";
 import { createBuyBurnJob, createStakingSyncJob } from "./jobs/lmns";
 import { createFeeDistributeJob } from "./jobs/fee-distribute";
+import { createAdminWatchJob } from "./jobs/admin-watch";
 import { writeReceipts } from "./jobs/receipts";
 import { updateReferencePrices } from "./jobs/reference";
 import { syncCompanyIrEarnings, updateEarnings } from "./jobs/earnings";
@@ -47,7 +48,7 @@ const tx = createTransactionQueue(clients, {
 logger.info({ config: safeConfigSummary(config), signer: clients.walletClient?.account?.address, dryRun: config.KEEPER_DRY_RUN }, "Keeper starting");
 const enabled = new Set(config.KEEPER_ENABLED_JOBS.split(",").map((job) => job.trim()).filter(Boolean));
 // hedge is the legacy job until the hedger (todo 14) replaces it.
-const validJobs = new Set(["sessions", "lister", "accrue", "hedge", "risk", "corp-actions", "receipts", "reference", "earnings", "queued-sells", "fee-distribute", "settle-halted", "staking-sync", "buy-burn", "kernel-register"]);
+const validJobs = new Set(["sessions", "lister", "accrue", "hedge", "risk", "corp-actions", "receipts", "reference", "earnings", "queued-sells", "fee-distribute", "settle-halted", "staking-sync", "buy-burn", "kernel-register", "admin-watch"]);
 for (const job of enabled) if (!validJobs.has(job)) throw new Error(`Unknown keeper job: ${job}`);
 
 async function startup(): Promise<KeeperContext["deployment"]> {
@@ -140,6 +141,9 @@ if (context && lock && !abort.signal.aborted) {
     } },
     { name: "queued-sells", everyMs: 120000, run: createQueuedSellsJob(ctx) },
     { name: "fee-distribute", everyMs: 3600000, run: createFeeDistributeJob(ctx) },
+    // M1 (EOA owner model): alert on every timelock CallScheduled / CallExecuted / Cancelled and on code at the owner.
+    // Read-only, never pauses.
+    { name: "admin-watch", everyMs: 60000, run: createAdminWatchJob(ctx) },
     // ORC-4 (decision 31): settle stocks HALTED past the engine's settle delay; permissionless, no role needed.
     { name: "settle-halted", everyMs: 600000, run: createSettleHaltedJob(ctx) },
     { name: "kernel-register", everyMs: 60000, run: createKernelRegisterJob(ctx) },

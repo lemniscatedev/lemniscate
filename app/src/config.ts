@@ -36,7 +36,7 @@ const envSchema = z.object({
   INDEXER_SNAPSHOT_HEARTBEAT_MS: z.coerce.number().int().min(5000).max(600_000).optional(),
   DEPLOYMENT_FILE: z.string().min(1).default("/app/deployments/fork.json"),
   // hedge (todo 14) is opt-in until the hedger lands. receipts and lister are new in todo 13.
-  KEEPER_ENABLED_JOBS: z.string().default("sessions,lister,accrue,risk,corp-actions,receipts,reference,earnings,queued-sells,fee-distribute,settle-halted,staking-sync,kernel-register"),
+  KEEPER_ENABLED_JOBS: z.string().default("sessions,lister,accrue,risk,corp-actions,receipts,reference,earnings,queued-sells,fee-distribute,settle-halted,staking-sync,kernel-register,admin-watch"),
   KEEPER_DRY_RUN: z.enum(["0", "1"]).default("0").transform((value) => value === "1"),
   // Accrue a series once its last accrual is this old and somebody holds it. Spec: at least hourly, so 3600 is the cap.
   KEEPER_ACCRUE_MAX_AGE_SECONDS: z.coerce.number().int().min(300).max(3600).default(3600),

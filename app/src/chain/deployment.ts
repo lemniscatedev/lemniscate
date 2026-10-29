@@ -135,6 +135,8 @@ const optionDeploymentSchema = z.object({
   deployBlock: blockSchema,
   deployer: addressSchema.optional(),
   admin: addressSchema.optional(),
+  /** The timelock owner (proposer/executor/canceller) on fork and mainnet; the admin-watch job alerts if it gains code. */
+  safe: addressSchema.optional(),
   keeper: addressSchema.optional(),
   contracts: z.object({
     engine: addressSchema,
@@ -148,6 +150,8 @@ const optionDeploymentSchema = z.object({
     /** Holds the loss-absorbing reserve in USDG; its balance is reported as pool_nav.reserve. */
     reserve: addressSchema.optional(),
     feeRouter: addressSchema.optional(),
+    /** The 48h TimelockController (fork, mainnet); the admin-watch job alerts on its scheduled, executed and cancelled calls. */
+    timelock: addressSchema.optional(),
     /** LmnsStaking (decision 42): the keeper calls syncLoss hourly when set. */
     staking: addressSchema.optional(),
     /** LmnsBuyBurn (decision 43): the keeper's buy-burn job calls the keeper-only buyAndBurn when set and enabled. */
