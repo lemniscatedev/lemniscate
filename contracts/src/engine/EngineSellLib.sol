@@ -120,6 +120,7 @@ library EngineSellLib {
         EngineCore.recheck(h, false);
     }
 
+    /// @notice The seller cancels open ticket `ticket` and gets its escrowed tokens back (they kept paying funding).
     function cancelQueued(uint256 ticket) external {
         EngineStorage.Layout storage $ = EngineStorage.layout();
         EngineStorage.Ticket storage t = $.tickets[ticket];

@@ -42,6 +42,7 @@ library EngineViewLib {
         return EngineCore.liab(supply, si.norm, val);
     }
 
+    /// @notice The stress loss of the whole book (WAD) and the pool's NAV at book value (WAD).
     function stressLoss(EngineHelper h) external view returns (uint256 lossWad, int256 navWad) {
         EngineStorage.Layout storage $ = EngineStorage.layout();
         EngineHelper.Risk memory none;

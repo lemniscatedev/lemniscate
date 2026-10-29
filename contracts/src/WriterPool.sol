@@ -346,14 +346,17 @@ contract WriterPool is
         _checkpoint();
     }
 
+    /// @notice Disabled: shares are only minted by `deposit` (ERC-4626 mint is not supported).
     function mint(uint256, address) public pure override(ERC4626Upgradeable) returns (uint256) {
         revert UseWithdrawalQueue();
     }
 
+    /// @notice Disabled: exits go through the withdrawal queue (`requestWithdraw`, then `claim`).
     function withdraw(uint256, address, address) public pure override(ERC4626Upgradeable) returns (uint256) {
         revert UseWithdrawalQueue();
     }
 
+    /// @notice Disabled: exits go through the withdrawal queue (`requestWithdraw`, then `claim`).
     function redeem(uint256, address, address) public pure override(ERC4626Upgradeable) returns (uint256) {
         revert UseWithdrawalQueue();
     }
@@ -413,12 +416,14 @@ contract WriterPool is
         emit StakingSet(address(staking_));
     }
 
+    /// @notice Admin: allows or removes `account` as a depositor while deposits are allowlisted.
     function setDepositor(address account, bool allowed) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (account == address(0)) revert InvalidParams();
         isDepositor[account] = allowed;
         emit DepositorUpdated(account, allowed);
     }
 
+    /// @notice Admin: opens deposits to everyone (true) or limits them to the allowlist (false).
     function setPublicDeposits(bool enabled) external onlyRole(DEFAULT_ADMIN_ROLE) {
         publicDeposits = enabled;
         emit PublicDepositsUpdated(enabled);
@@ -437,6 +442,7 @@ contract WriterPool is
         }
     }
 
+    /// @notice Admin: deposit lock, cash buffer, hedge slippage allowance and the deposit cap, each inside its bounds.
     function setParams(uint32 lockSeconds_, uint16 cashBufferBps_, uint16 maxHedgeSlippageBps_, uint128 maxTotalDeposits_)
         external
         onlyRole(DEFAULT_ADMIN_ROLE)
@@ -451,6 +457,7 @@ contract WriterPool is
         emit ParamsUpdated(lockSeconds_, cashBufferBps_, maxHedgeSlippageBps_, maxTotalDeposits_);
     }
 
+    /// @notice Admin: the NAV guard band (bps) in and out of session, at most 2,000 each.
     function setNavGuard(uint16 openBps, uint16 closedBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (openBps > MAX_NAV_GUARD_BPS || closedBps > MAX_NAV_GUARD_BPS) revert InvalidParams();
         navGuardOpenBps = openBps;
@@ -520,6 +527,7 @@ contract WriterPool is
         return (v.raw, v.reserveShare);
     }
 
+    /// @notice NAV in USDG at the book-value liability (ERC-4626 total assets).
     function totalAssets() public view override(ERC4626Upgradeable) returns (uint256) {
         return _assetsOf(_val(0, false).nav);
     }
@@ -565,38 +573,46 @@ contract WriterPool is
         return _book.units[stock];
     }
 
+    /// @notice Every stock the pool has a hedge route for.
     function hedgeStocks() external view returns (address[] memory) {
         return _book.stocks;
     }
 
+    /// @notice `stock`'s hedge route: the swap adapter and the Uniswap pool fee tier.
     function routeOf(address stock) external view returns (IHedgeAdapter adapter, uint24 poolFee) {
         PoolHedging.Route memory r = _book.routes[stock];
         return (r.adapter, r.fee);
     }
 
+    /// @notice Withdrawal ticket `ticket`: its owner, the shares still queued and when it can be claimed.
     function ticketOf(uint256 ticket) external view returns (address owner, uint256 shares, uint64 claimableAt) {
         PoolLayers.Ticket memory t = _tickets[ticket];
         return (t.owner, t.shares, t.claimableAt);
     }
 
+    /// @notice When `account`'s last deposit unlocks (0 = never deposited).
     function unlockTime(address account) public view returns (uint256) {
         uint256 at = lastDeposit[account];
         return at == 0 ? 0 : at + lockSeconds;
     }
 
+    /// @notice USDG `receiver` may deposit now (0 when not allowed or paused; capped by the deposit cap).
     function maxDeposit(address receiver) public view override(ERC4626Upgradeable) returns (uint256) {
         if (!_canDeposit(receiver) || depositsPaused) return 0;
         return _maxDeposit(_val(1, false));
     }
 
+    /// @notice Always 0: `mint` is disabled.
     function maxMint(address) public pure override(ERC4626Upgradeable) returns (uint256) {
         return 0;
     }
 
+    /// @notice Always 0: exits use the withdrawal queue.
     function maxWithdraw(address) public pure override(ERC4626Upgradeable) returns (uint256) {
         return 0;
     }
 
+    /// @notice Always 0: exits use the withdrawal queue.
     function maxRedeem(address) public pure override(ERC4626Upgradeable) returns (uint256) {
         return 0;
     }

@@ -95,6 +95,8 @@ contract LemniscateEngine is
         _disableInitializers();
     }
 
+    /// @notice Proxy initializer: wires USDG, the Writer Pool, the series registry, PriceGuard and VolOracle, and gives
+    /// `admin` the admin role (the timelock on mainnet). Callable once.
     function initialize(
         address admin,
         IERC20 usdg_,
@@ -190,10 +192,12 @@ contract LemniscateEngine is
         emit AgentRouterSet(router);
     }
 
+    /// @notice The AgentRouter allowed to buy and sell for owners under their policies (zero = none).
     function agentRouter() external view returns (address) {
         return EngineStorage.layout().agentRouter;
     }
 
+    /// @notice The $LMNS fee tier source (zero = tiers off).
     function feeTiers() external view returns (address) {
         return EngineStorage.layout().feeTiers;
     }
@@ -324,6 +328,7 @@ contract LemniscateEngine is
         return EngineMarkLib.navLiability(high);
     }
 
+    /// @notice A name's liability marks (deltas, gammas and vegas the LP-boundary bounds are built from).
     function nameMark(address stock) external view returns (EngineStorage.NameMark memory) {
         return EngineStorage.layout().marks[stock];
     }
@@ -370,6 +375,7 @@ contract LemniscateEngine is
         return EngineOpsLib.pruneShieldList(stock, maxCount);
     }
 
+    /// @notice The Weekly Down series Shield picks from for `stock`.
     function shieldList(address stock) external view returns (bytes32[] memory) {
         return EngineStorage.layout().weeklyPuts[stock];
     }
@@ -415,26 +421,32 @@ contract LemniscateEngine is
         return EngineViewLib.stressLoss(HELPER);
     }
 
+    /// @notice Caps, spreads and limits in force (validated by `EngineHelper.validate`).
     function params() external view returns (EngineHelper.Params memory) {
         return EngineStorage.layout().p;
     }
 
+    /// @notice The USDG token every trade settles in.
     function usdg() external view returns (IERC20) {
         return EngineStorage.layout().usdg;
     }
 
+    /// @notice The Writer Pool that takes the other side of every trade.
     function pool() external view returns (IPool) {
         return EngineStorage.layout().pool;
     }
 
+    /// @notice The series registry (listings and option token clones).
     function registry() external view returns (ISeriesRegistry) {
         return EngineStorage.layout().registry;
     }
 
+    /// @notice The PriceGuard every price is read from.
     function priceGuard() external view returns (IPriceGuard) {
         return EngineStorage.layout().priceGuard;
     }
 
+    /// @notice The VolOracle every volatility is read from.
     function volOracle() external view returns (IVolOracle) {
         return EngineStorage.layout().volOracle;
     }
@@ -448,10 +460,12 @@ contract LemniscateEngine is
         return ($.globalBuysPaused, $.stressPaused, $.drawdownPaused, $.upgradesFrozen);
     }
 
+    /// @notice True when buys of series `id` are paused on their own (sells never pause).
     function seriesBuysPaused(bytes32 id) external view returns (bool) {
         return EngineStorage.layout().seriesBuysPaused[id];
     }
 
+    /// @notice The hedge depth cap of `stock` (WAD USDG): its outstanding value may not exceed what the pool can hedge.
     function hedgeDepthCapWad(address stock) external view returns (uint256) {
         return EngineStorage.layout().hedgeDepthCapWad[stock];
     }
@@ -472,30 +486,37 @@ contract LemniscateEngine is
         return EngineStorage.layout().live[stock];
     }
 
+    /// @notice Number of queued-sell tickets ever opened (ticket ids run from 0 to this - 1).
     function ticketCount() external view returns (uint256) {
         return EngineStorage.layout().ticketCount;
     }
 
+    /// @notice Series `id`'s stored state: token, norm, last accrual and funding rate.
     function seriesInfo(bytes32 id) external view returns (EngineStorage.SeriesInfo memory) {
         return EngineStorage.layout().info[id];
     }
 
+    /// @notice Series `id`'s stored risk book (its share of the name's Greeks).
     function seriesRisk(bytes32 id) external view returns (EngineStorage.SeriesRisk memory) {
         return EngineStorage.layout().risk[id];
     }
 
+    /// @notice `stock`'s stored risk book (net Greeks and outstanding value of every live series).
     function nameBook(address stock) external view returns (EngineStorage.NameBook memory) {
         return EngineStorage.layout().book[stock];
     }
 
+    /// @notice Every stock the engine has seen a series for.
     function stocks() external view returns (address[] memory) {
         return EngineStorage.layout().stocks;
     }
 
+    /// @notice Every series id the engine has seen for `stock`.
     function seriesOfStock(address stock) external view returns (bytes32[] memory) {
         return EngineStorage.layout().byStock[stock];
     }
 
+    /// @notice Queued-sell ticket `ticket` (seller, recipient, series, tokens, minimum proceeds, open flag).
     function queuedSell(uint256 ticket) external view returns (EngineStorage.Ticket memory) {
         return EngineStorage.layout().tickets[ticket];
     }

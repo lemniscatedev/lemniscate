@@ -106,6 +106,7 @@ library EngineOpsLib {
         return k == uint256(SessionKind.REGULAR) || k == uint256(SessionKind.EXTENDED);
     }
 
+    /// @notice Re-runs the risk checks that pause or resume buys (anyone may call).
     function pokeRisk(EngineHelper h) external {
         EngineCore.recheck(h, true);
     }
@@ -124,6 +125,7 @@ library EngineOpsLib {
         }
     }
 
+    /// @notice Registers up to `maxCount` newly listed series with the engine.
     function syncSeries(uint256 maxCount) external {
         EngineCore.sync(maxCount);
     }
@@ -151,6 +153,7 @@ library EngineOpsLib {
         q.buyable = EngineCore.buyBlock(c) == 0;
     }
 
+    /// @notice Series `id`'s mark now: value and payoff per unit (WAD), the sigma used (bps) and the session.
     function vMark(EngineHelper h, bytes32 id)
         external
         view
