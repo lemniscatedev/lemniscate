@@ -78,3 +78,6 @@ html[data-lm-dashboard="true"] body{background:#edf0f0!important}.lm-dashboard{m
 .dash-filling-list span{color:#505d73;text-align:right}
 .dash-filling small{display:block;line-height:1.5}
 @media(max-width:809px){.dash-filling{grid-template-columns:1fr;padding:18px}.dash-filling h2{font-size:21px}}
+.dash-perk-locked{display:flex;flex-direction:column;gap:4px;padding:16px;border-radius:14px;min-width:0}
+.dash-perk-locked span{font-weight:600}
+.dash-perk-locked small{opacity:.75}

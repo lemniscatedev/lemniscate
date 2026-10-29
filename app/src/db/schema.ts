@@ -829,3 +829,22 @@ export const sponsorshipGrants = pgTable(
     index("sponsorship_grants_day_account_nonce_idx").on(table.day, table.account, table.nonce),
   ],
 );
+
+/** $LMNS holder perks: wallets that asked for their level in the last day (written by the API), and their balances (written
+ * by the keeper's "holders" job). Migration 0022. */
+export const holderWatch = pgTable(
+  "holder_watch",
+  {
+    address: text("address").primaryKey(),
+    requestedAt: at("requested_at").notNull().defaultNow(),
+  },
+  (table) => [index("holder_watch_requested_idx").on(table.requestedAt)],
+);
+
+export const holderBalances = pgTable("holder_balances", {
+  address: text("address").primaryKey(),
+  token: text("token").notNull(),
+  balance: numeric("balance", { precision: 78, scale: 0 }).notNull(),
+  blockNumber: bigint("block_number", { mode: "bigint" }).notNull(),
+  updatedAt: at("updated_at").notNull().defaultNow(),
+});

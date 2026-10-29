@@ -10,6 +10,7 @@ import { registerChainRoutes } from "./routes/chains";
 import { registerConfigRoutes } from "./routes/config";
 import { registerHealthRoutes } from "./routes/health";
 import { registerInviteRoutes } from "./routes/invites";
+import { registerHolderRoutes } from "./routes/holder";
 import { registerIntentUserOp } from "./routes/intent-userop";
 import { registerPoolRoutes } from "./routes/pool";
 import { registerWriterRoutes } from "./routes/writers";
@@ -91,6 +92,7 @@ export function createApiApp(deps: ApiDependencies) {
 
   registerHealthRoutes(app, deps);
   registerInviteRoutes(app, deps);
+  registerHolderRoutes(app, deps);
   registerConfigRoutes(app, deps);
   registerChainRoutes(app, deps);
   registerSeriesRoutes(app, deps);

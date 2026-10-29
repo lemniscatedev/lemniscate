@@ -20,6 +20,7 @@ const PLAIN={
  INVITE_REQUIRED:'Lemniscate is invite-only for now. Enter your invite code to start buying. Selling is always open.',
  INVALID_CODE:'That code is not valid or has already been used.',
  UNAUTHORIZED:'Your wallet signature was not accepted. Try again.',
+ HOLDER_SESSION_REQUIRED:'Connect your wallet and sign in to check your $LMNS level.',
 };
 
 export function plainError(error){
@@ -30,13 +31,14 @@ export function plainError(error){
 
 export function createApi(base){
  const root=String(base||'').replace(/\/+$/,'');
- async function request(path,{method='GET',body,signal}={}){
+ async function request(path,{method='GET',body,signal,token}={}){
   if(!root)throw new ApiError('Live data is not configured for this site yet.',{code:'NO_API'});
   const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),TIMEOUT_MS);
   signal?.addEventListener('abort',()=>controller.abort(),{once:true});
   let response;
   try{
-   response=await fetch(root+path,{method,headers:body?{'Content-Type':'application/json'}:undefined,body:body?JSON.stringify(body):undefined,signal:controller.signal,credentials:'omit',cache:'no-store'});
+   const headers={...(body?{'Content-Type':'application/json'}:{}),...(token?{Authorization:'Bearer '+token}:{})};
+   response=await fetch(root+path,{method,headers:Object.keys(headers).length?headers:undefined,body:body?JSON.stringify(body):undefined,signal:controller.signal,credentials:'omit',cache:'no-store'});
   }catch(error){throw new ApiError(plainError(error),{code:'NETWORK'})}
   finally{clearTimeout(timer)}
   let json=null;try{json=await response.json()}catch{}
@@ -65,6 +67,10 @@ export function createApi(base){
   intent:(kind,body,{userop=false}={})=>request('/v1/intent/'+kind+(userop?'?format=userop':''),{method:'POST',body}),
   invitesStatus:address=>request('/v1/invites/status'+(address?'?address='+encodeURIComponent(address):'')),
   inviteRedeem:body=>request('/v1/invites/redeem',{method:'POST',body}),
+  holder:address=>request('/v1/holder/'+encodeURIComponent(address)),
+  holderSession:body=>request('/v1/holder/session',{method:'POST',body}),
+  /** A $LMNS holder-perk route; `token` is the holder session from holderSession. */
+  perk:(path,{token,method='GET',body}={})=>request(path,{method,body,token}),
   useropConfig:()=>request('/v1/userop/config'),
   useropSend:userOp=>request('/v1/userop/send',{method:'POST',body:{userOp}}),
   useropStatus:hash=>request('/v1/userop/'+encodeURIComponent(hash)),

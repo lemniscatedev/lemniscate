@@ -24,6 +24,7 @@ import { createBuyBurnJob, createStakingSyncJob } from "./jobs/lmns";
 import { createFeeDistributeJob } from "./jobs/fee-distribute";
 import { createAdminWatchJob } from "./jobs/admin-watch";
 import { createGasWatchJob } from "./jobs/gas-watch";
+import { createHoldersJob } from "./jobs/holders";
 import { writeReceipts } from "./jobs/receipts";
 import { updateReferencePrices } from "./jobs/reference";
 import { syncCompanyIrEarnings, updateEarnings } from "./jobs/earnings";
@@ -49,7 +50,7 @@ const tx = createTransactionQueue(clients, {
 logger.info({ config: safeConfigSummary(config), signer: clients.walletClient?.account?.address, dryRun: config.KEEPER_DRY_RUN }, "Keeper starting");
 const enabled = new Set(config.KEEPER_ENABLED_JOBS.split(",").map((job) => job.trim()).filter(Boolean));
 // hedge is the legacy job until the hedger (todo 14) replaces it.
-const validJobs = new Set(["sessions", "lister", "accrue", "hedge", "risk", "corp-actions", "receipts", "reference", "earnings", "queued-sells", "fee-distribute", "settle-halted", "staking-sync", "buy-burn", "kernel-register", "admin-watch", "gas-watch"]);
+const validJobs = new Set(["sessions", "lister", "accrue", "hedge", "risk", "corp-actions", "receipts", "reference", "earnings", "queued-sells", "fee-distribute", "settle-halted", "staking-sync", "buy-burn", "kernel-register", "admin-watch", "gas-watch", "holders"]);
 for (const job of enabled) if (!validJobs.has(job)) throw new Error(`Unknown keeper job: ${job}`);
 
 async function startup(): Promise<KeeperContext["deployment"]> {
@@ -148,6 +149,8 @@ if (context && lock && !abort.signal.aborted) {
     // Launch ops: bot wallet ETH balances to the Telegram group. OFF unless GAS_WATCH_ENABLED=1 (also needs no jobs-list entry).
     { name: "gas-watch", everyMs: config.GAS_WATCH_INTERVAL_SECONDS * 1000, run: createGasWatchJob(ctx) },
     // ORC-4 (decision 31): settle stocks HALTED past the engine's settle delay; permissionless, no role needed.
+    // $LMNS holder perks: balances of wallets that asked for their level, for the API. Idle until LMNS_TOKEN_ADDRESS is set.
+    { name: "holders", everyMs: 30000, run: createHoldersJob(ctx) },
     { name: "settle-halted", everyMs: 600000, run: createSettleHaltedJob(ctx) },
     { name: "kernel-register", everyMs: 60000, run: createKernelRegisterJob(ctx) },
     // Decision 42: hourly LmnsStaking.syncLoss (idle without staking). Decision 43: keeper-only buyAndBurn, off unless

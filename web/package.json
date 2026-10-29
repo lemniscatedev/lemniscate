@@ -16,7 +16,7 @@
     "testnet": "LM_PROFILE=testnet node serve.mjs",
     "test:fork": "node scripts/fork-check.mjs",
     "test:testnet": "node scripts/testnet-check.mjs",
-    "test": "node --test scripts/lane-proof.test.mjs scripts/profiles.test.mjs scripts/onboarding.test.mjs scripts/pool-queue.test.mjs scripts/contracts.test.mjs scripts/exit.test.mjs scripts/roadmap.test.mjs"
+    "test": "node --test scripts/lane-proof.test.mjs scripts/profiles.test.mjs scripts/onboarding.test.mjs scripts/pool-queue.test.mjs scripts/contracts.test.mjs scripts/exit.test.mjs scripts/roadmap.test.mjs scripts/holder.test.mjs"
   },
   "engines": {
     "node": ">=18"

@@ -36,7 +36,7 @@ const envSchema = z.object({
   INDEXER_SNAPSHOT_HEARTBEAT_MS: z.coerce.number().int().min(5000).max(600_000).optional(),
   DEPLOYMENT_FILE: z.string().min(1).default("/app/deployments/fork.json"),
   // hedge (todo 14) is opt-in until the hedger lands. receipts and lister are new in todo 13.
-  KEEPER_ENABLED_JOBS: z.string().default("sessions,lister,accrue,risk,corp-actions,receipts,reference,earnings,queued-sells,fee-distribute,settle-halted,staking-sync,kernel-register,admin-watch"),
+  KEEPER_ENABLED_JOBS: z.string().default("sessions,lister,accrue,risk,corp-actions,receipts,reference,earnings,queued-sells,fee-distribute,settle-halted,staking-sync,kernel-register,admin-watch,holders"),
   KEEPER_DRY_RUN: z.enum(["0", "1"]).default("0").transform((value) => value === "1"),
   // gas-watch: ETH balance of the bot wallets, alerts to the Telegram group. OFF until launch (GAS_WATCH_ENABLED=1).
   GAS_WATCH_ENABLED: z.enum(["0", "1"]).default("0").transform((value) => value === "1"),
@@ -54,6 +54,17 @@ const envSchema = z.object({
   // chats as the release runner), owned root:<keeper group> mode 0640 so the keeper's user can read it while the release
   // env stays 0600. The token is never logged. Override only in tests.
   GAS_WATCH_TELEGRAM_ENV_FILE: z.string().default("/etc/lemniscate/gas-watch.env"),
+  // $LMNS holder perks (src/holders/tiers.ts). Empty token address = perks show "Hold N $LMNS to unlock" and stay locked
+  // until token day. The keeper's "holders" job reads balances of wallets that asked within the last day into Postgres; the
+  // API only reads that table (R9). A balance older than 3 x HOLDER_BALANCE_TTL_SECONDS counts as unknown (perks locked).
+  LMNS_TOKEN_ADDRESS: z.string().regex(/^(0x[0-9a-fA-F]{40})?$/).default(""),
+  LMNS_DECIMALS: z.coerce.number().int().min(0).max(36).default(18),
+  HOLDER_TIER_HOLDER_LMNS: z.coerce.number().positive().default(100_000),
+  HOLDER_TIER_WHALE_LMNS: z.coerce.number().positive().default(1_000_000),
+  HOLDER_BALANCE_TTL_SECONDS: z.coerce.number().int().min(15).max(3600).default(60),
+  HOLDER_SYNC_MAX_WALLETS: z.coerce.number().int().min(1).max(5000).default(500),
+  HOLDER_SESSION_SECRET: z.string().default(""),
+  HOLDER_SESSION_HOURS: z.coerce.number().int().min(1).max(168).default(24),
   // Accrue a series once its last accrual is this old and somebody holds it. Spec: at least hourly, so 3600 is the cap.
   KEEPER_ACCRUE_MAX_AGE_SECONDS: z.coerce.number().int().min(300).max(3600).default(3600),
   // F28: a series whose outstanding value (supply x norm x v_mark) is below this many USDG is "dust", like a series the engine retired
