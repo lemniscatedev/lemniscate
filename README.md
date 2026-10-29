@@ -18,7 +18,7 @@ Lemniscate is an independent project. Robinhood Chain, Chainlink and Uniswap are
 
 ## Status
 
-Pre-release, not deployed, not audited. No contract address exists yet, so none is listed here. Parts of the contract suite are still being rewritten; the table below says which. The services in `app/` and `vol-engine/` run against a local fork and against mocks; nothing here has been broadcast to a live network.
+Mainnet deployment in progress (Robinhood Chain 4663); addresses will appear here and at get-lemniscate.tech/contracts.
 
 ## Layout
 
