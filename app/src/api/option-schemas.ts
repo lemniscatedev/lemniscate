@@ -13,10 +13,16 @@ const hexData = z.string().regex(/^0x[0-9a-fA-F]*$/);
 
 export const buyBlockSchema = z.enum([
   "SERIES_ARCHIVED", "SERIES_NOT_BUYABLE", "BUYS_PAUSED", "SESSION_CLOSED", "SESSION_UNKNOWN", "SESSION_HALTED",
-  "PRICE_STALE", "PRICE_PAUSED", "NO_VOL", "VOL_STALE", "EARNINGS_BLOCK", "NO_PRICE", "CAP_REACHED",
+  "PRICE_STALE", "PRICE_PAUSED", "NO_VOL", "VOL_STALE", "EARNINGS_BLOCK", "NO_PRICE", "POOL_FILLING", "CAP_REACHED",
 ]);
 
-export const apiErrorSchema = z.object({ error: z.string(), message: z.string(), reason: buyBlockSchema.optional() });
+/** Zero-seed launch: the most option value (USDG) one more buy can add before a pool cap, and whether the pool is still
+ * too small for the minimum trade. Approximate: the engine also checks the vega, gamma, depth and stress limits. */
+export const buyCapacitySchema = z.object({ maxBuyUsdg: decimal, poolFilling: z.boolean() });
+
+export const apiErrorSchema = z.object({
+  error: z.string(), message: z.string(), reason: buyBlockSchema.optional(), capacity: buyCapacitySchema.optional(),
+});
 
 export const nameParams = z.object({ name: z.string().regex(/^[A-Za-z0-9.]{1,12}$/).transform((value) => value.toUpperCase()) });
 export const seriesParams = z.object({ id: hex32 });
@@ -138,6 +144,8 @@ export const quoteResponseSchema = z.object({
     tradeSpot: decimal,
   }),
   blockReason: buyBlockSchema.nullable(),
+  /** Buys only: room left under the pool caps for this series (null on sells and before the first pool snapshot). */
+  capacity: buyCapacitySchema.nullable().optional(),
   sellQueued: z.boolean(),
   hold: holdSchema.nullable(),
   halt: haltSchema.nullable(),
@@ -271,6 +279,17 @@ export const poolResponseSchema = z.object({
   drawdownPausePct: z.number(),
   queue: z.object({ withdrawals: z.number().int(), withdrawalShares: decimal, sells: z.number().int() }),
   buysPaused: z.boolean(),
+  /** Zero-seed launch: how much option value one more buy can add per stock right now (on a series with nothing
+   * outstanding; approximate, the engine also checks vega, gamma, depth and stress at the trade). stage "empty": the
+   * pool cannot take even the minimum trade yet; "filling": NAV under fillingBelowNavUsdg; "open" above it. */
+  capacity: z.object({
+    stage: z.enum(["empty", "filling", "open"]),
+    fillingBelowNavUsdg: decimal,
+    minTradeUsdg: decimal,
+    names: z.array(z.object({ name: z.string(), session, maxBuyUsdg: decimal, canBuyMinimum: z.boolean() })),
+  }).optional(),
+  /** USDG deposited into and paid out of the pool, from the indexed Deposit and Withdraw events, and depositing wallets. */
+  writers: z.object({ depositedUsdg: decimal, claimedUsdg: decimal, wallets: z.number().int() }).optional(),
 });
 
 export const configResponseSchema = z.object({

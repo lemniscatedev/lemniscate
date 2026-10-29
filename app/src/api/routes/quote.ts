@@ -8,7 +8,7 @@ import {
 } from "../option-schemas";
 import { haltNotice, loadNameContext, marketInputs, seriesInputs, type NameContext } from "../quote/context";
 import {
-  displayCost, looseWad, parseWad, quoteUnits, usdgText, wadText, type BuyBlock, type EngineQuote, type SessionName, normDecimal, projectedNorm,
+  buyCapacityUsd, poolFilling, displayCost, looseWad, parseWad, quoteUnits, usdgText, wadText, type BuyBlock, type EngineQuote, type SessionName, normDecimal, projectedNorm,
 } from "../quote/model";
 import { OptionEngineAbi } from "../../abi";
 import { inviteGate } from "./invites";
@@ -36,6 +36,7 @@ const BLOCK_MESSAGES: Record<BuyBlock, string> = {
   VOL_STALE: "New purchases are paused until volatility inputs are refreshed.",
   EARNINGS_BLOCK: "New purchases are paused around this name's earnings report. Sells stay open.",
   NO_PRICE: "No price is indexed for this name yet.",
+  POOL_FILLING: "The pool is filling. Trading opens as writers deposit into the Writer Pool. Sells stay open.",
   CAP_REACHED: "This option is at its size limit for now (a pool exposure cap, tighter outside regular hours). Sells stay open.",
 };
 
@@ -57,6 +58,21 @@ async function prepare(deps: ApiDependencies, series: SeriesView | null): Promis
 }
 
 const failed = (value: Prepared | Failure): value is Failure => "status" in value;
+
+/** Zero-seed launch: how much option value one more buy of this series can add right now (USDG, 6 dp), and whether the
+ * pool is still filling. Null before the first pool snapshot (the chain still enforces the caps). */
+function capacityView(market: MarketInputs): { maxBuyUsdg: string; poolFilling: boolean } | null {
+  if (!market.book) return null;
+  return { maxBuyUsdg: buyCapacityUsd(market.book, market.session).toFixed(6), poolFilling: poolFilling(market.book, market.session) };
+}
+
+/** A refused buy: the reason code, a plain sentence and, for the size reasons, the room left now. Never a raw revert. */
+function blockedBody(reason: BuyBlock, market: MarketInputs) {
+  const capacity = reason === "POOL_FILLING" || reason === "CAP_REACHED" ? capacityView(market) : null;
+  const room = capacity && reason === "CAP_REACHED" && Number(capacity.maxBuyUsdg) >= 0.01
+    ? ` Right now about ${Number(capacity.maxBuyUsdg).toFixed(2)} USDG of option value fits on this option.` : "";
+  return { error: "BUY_BLOCKED", message: BLOCK_MESSAGES[reason] + room, reason, ...(capacity ? { capacity } : {}) };
+}
 
 /** The selling account's open hold on the series (decision 30), from the indexer's last read of engine.holdOf. */
 type SellHold = { s: string; until: string; tokens: string | null };
@@ -137,6 +153,7 @@ export function registerQuoteRoutes(app: OpenAPIHono, deps: ApiDependencies): vo
         breakeven: wadText(quote.breakevenWad), vMark: wadText(quote.vMarkWad), tradeSpot: trimDecimal(quote.tradeSpot.toFixed(6)),
       },
       blockReason: body.side === "buy" ? quote.buyBlock : null,
+      capacity: body.side === "buy" ? capacityView(base) : null,
       sellQueued: quote.sellQueued,
       hold: holdView(hold, quote),
       halt: haltNotice(ctx),
@@ -162,7 +179,7 @@ export function registerQuoteRoutes(app: OpenAPIHono, deps: ApiDependencies): vo
     const { series, ctx, now } = prepared;
     const quote = quoteUnits(seriesInputs(series), marketInputs(ctx, series), unitsWad, true);
     if (!quote) return context.json({ error: "NO_VOL", message: BLOCK_MESSAGES.NO_VOL, reason: "NO_VOL" as const }, 409);
-    if (quote.buyBlock) return context.json({ error: "BUY_BLOCKED", message: BLOCK_MESSAGES[quote.buyBlock], reason: quote.buyBlock }, 409);
+    if (quote.buyBlock) return context.json(blockedBody(quote.buyBlock, marketInputs(ctx, series)), 409);
     const maxCost = (quote.usdg * BigInt(10_000 + body.slippageBps) + 9_999n) / 10_000n;
     if (maxCost > UINT128_MAX) return context.json({ error: "BAD_REQUEST", message: "Amount out of range." }, 422);
     const deadline = Math.floor(now.getTime() / 1_000) + body.deadlineSeconds;
@@ -251,7 +268,7 @@ export function registerQuoteRoutes(app: OpenAPIHono, deps: ApiDependencies): vo
     const strikePctBelowBps = shieldPctFor(Number(series.strike), spot, puts.map((entry) => Number(entry.strike)));
     const quote = quoteUnits(seriesInputs(series), marketInputs(ctx, series), tokenUnits, true);
     if (!quote) return context.json({ error: "NO_VOL", message: BLOCK_MESSAGES.NO_VOL, reason: "NO_VOL" as const }, 409);
-    if (quote.buyBlock) return context.json({ error: "BUY_BLOCKED", message: BLOCK_MESSAGES[quote.buyBlock], reason: quote.buyBlock }, 409);
+    if (quote.buyBlock) return context.json(blockedBody(quote.buyBlock, marketInputs(ctx, series)), 409);
     const maxCost = (quote.usdg * BigInt(10_000 + body.slippageBps) + 9_999n) / 10_000n;
     if (maxCost > UINT128_MAX) return context.json({ error: "BAD_REQUEST", message: "Amount out of range." }, 422);
     const deadline = Math.floor(now.getTime() / 1_000) + body.deadlineSeconds;

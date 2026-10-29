@@ -1,0 +1,12 @@
+{
+  "tokenSymbol": "LMNS",
+  "tokenAddress": "",
+  "startAt": "",
+  "weeklyPoolTokens": "1000000",
+  "weeklyPoolPctOfSupply": 0.1,
+  "tokenTotalSupply": "1000000000",
+  "weeks": 8,
+  "perWalletCapPct": 10,
+  "minTimeWeightedUsdg": 1000,
+  "overCapPaidToOthers": false
+}

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { TAU, YEAR_S, callValue, fundingStep, putValue } from "../../pricing";
 import {
-  QUOTE_PARAMS, buyBlockReason, displayCost, looseWad, parseWad, quoteUnits, spreadBpsFor, unitQuote, usdgMicro, usdgText,
+  QUOTE_PARAMS, buyBlockReason, buyCapacityUsd, capLimits, displayCost, poolFilling, looseWad, parseWad, quoteUnits, spreadBpsFor, unitQuote, usdgMicro, usdgText,
   wadText, type MarketInputs, type SeriesInputs,
 } from "./model";
 
@@ -250,7 +250,7 @@ describe("caps in buyable and blockReason", () => {
   });
   test("the dollar series cap applies when it is lower than 2% of NAV; no NAV blocks; no book state reports nothing", () => {
     expect(buyBlockReason(series(), market({ book: { navUsd: 10_000_000, nameVegaUsd: 0, seriesValueUsd: 39_900 } }), 500)).toBe("CAP_REACHED");
-    expect(buyBlockReason(series(), market({ book: { navUsd: 0, nameVegaUsd: 0 } }), 1)).toBe("CAP_REACHED");
+    expect(buyBlockReason(series(), market({ book: { navUsd: 0, nameVegaUsd: 0 } }), 1)).toBe("POOL_FILLING");
     expect(buyBlockReason(series(), market(), 1e12)).toBeNull();
   });
   test("a quote's buyable and blockReason include the cap on the quoted size", () => {
@@ -332,5 +332,31 @@ describe("F01/F02/F10/F22/F23 trade price: worse of S and the trade TWAP, and th
     expect(sell.sellQueued).toBe(false);
     expect(sell.usdg).toBe(quoteUnits(series(), market({ session: "CLOSED", spot: 80 }), WAD, false)!.usdg);
     expect(quoteUnits(series(), settled, WAD, true)!.buyable).toBe(false);
+  });
+});
+
+describe("zero-seed launch: an empty or tiny pool (POOL_FILLING and buy capacity)", () => {
+  test("NAV 0 and NAV under the size of the minimum trade read POOL_FILLING, not CAP_REACHED", () => {
+    expect(poolFilling({ navUsd: 0, nameVegaUsd: 0 }, "REGULAR")).toBe(true);
+    expect(poolFilling({ navUsd: -5, nameVegaUsd: 0 }, "REGULAR")).toBe(true);
+    // the 2% series cap is binding: $1 of room needs $50 of NAV, $100 in EXTENDED (halved)
+    expect(poolFilling({ navUsd: 49.99, nameVegaUsd: 0 }, "REGULAR")).toBe(true);
+    expect(poolFilling({ navUsd: 50, nameVegaUsd: 0 }, "REGULAR")).toBe(false);
+    expect(poolFilling({ navUsd: 99, nameVegaUsd: 0 }, "EXTENDED")).toBe(true);
+    expect(buyBlockReason(series(), market({ book: { navUsd: 20, nameVegaUsd: 0 } }), 0.5)).toBe("POOL_FILLING");
+    // past the filling line, a buy larger than the room is CAP_REACHED
+    expect(buyBlockReason(series(), market({ book: { navUsd: 1_000, nameVegaUsd: 0, seriesValueUsd: 0 } }), 25)).toBe("CAP_REACHED");
+    expect(buyBlockReason(series(), market({ book: { navUsd: 1_000, nameVegaUsd: 0, seriesValueUsd: 0 } }), 15)).toBeNull();
+  });
+  test("buy capacity is the room under the tightest of the series, name and total caps", () => {
+    expect(buyCapacityUsd({ navUsd: 0, nameVegaUsd: 0 }, "REGULAR")).toBe(0);
+    // $10,000 NAV: series 2% = 200, name 8% = 800, total 35% = 3,500
+    expect(buyCapacityUsd({ navUsd: 10_000, nameVegaUsd: 0 }, "REGULAR")).toBeCloseTo(200, 9);
+    expect(buyCapacityUsd({ navUsd: 10_000, nameVegaUsd: 0 }, "EXTENDED")).toBeCloseTo(100, 9);
+    expect(buyCapacityUsd({ navUsd: 10_000, nameVegaUsd: 0, nameValueUsd: 750 }, "REGULAR")).toBeCloseTo(50, 9);
+    expect(buyCapacityUsd({ navUsd: 10_000, nameVegaUsd: 0, totalValueUsd: 3_600 }, "REGULAR")).toBe(0);
+    // large pool: the $40,000 series cap binds
+    expect(buyCapacityUsd({ navUsd: 10_000_000, nameVegaUsd: 0 }, "REGULAR")).toBe(40_000);
+    expect(capLimits(1_000_000, "REGULAR")).toEqual({ series: 20_000, name: 80_000, total: 350_000 });
   });
 });

@@ -212,6 +212,23 @@ export async function queueSummary(deps: QueryDeps): Promise<QueueSummary> {
   return { withdrawals: w[0]?.n ?? 0, withdrawalShares: w[0]?.shares ?? "0", sells: s[0]?.n ?? 0 };
 }
 
+export interface WriterTotals {
+  depositedUsdg: string;
+  claimedUsdg: string;
+  wallets: number;
+}
+
+/** Writer Pool flows from the indexed Deposit and Withdraw events: USDG deposited and paid out by claims, and how many
+ * wallets ever deposited (zero-seed launch: the /writers page shows the pool filling from the public). */
+export async function writerTotals(deps: QueryDeps): Promise<WriterTotals> {
+  const rows = await deps.sql`
+    SELECT COALESCE(SUM(assets) FILTER (WHERE kind = 'deposit'), 0) AS deposited,
+      COALESCE(SUM(assets) FILTER (WHERE kind = 'withdraw'), 0) AS claimed,
+      COUNT(DISTINCT account) FILTER (WHERE kind = 'deposit')::int AS wallets
+    FROM pool_events` as unknown as { deposited: string; claimed: string; wallets: number }[];
+  return { depositedUsdg: String(rows[0]?.deposited ?? "0"), claimedUsdg: String(rows[0]?.claimed ?? "0"), wallets: rows[0]?.wallets ?? 0 };
+}
+
 export interface FundingWindowRow {
   seriesId: string;
   normNow: string;

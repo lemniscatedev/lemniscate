@@ -12,4 +12,7 @@ export const LAUNCH_CAPS = {
   /** A 30 day NAV-per-share drawdown beyond this pauses new buys. */
   drawdownPausePct: 15,
   writerVaultsOpen: false,
+  /** Zero-seed launch: below this NAV the site shows "the pool is filling" with the room left per stock (at $25,000 the
+   * 2% series cap allows $500 of option value per buy). Display only; the contracts enforce the caps. */
+  poolFillingNavUsdg: 25_000,
 } as const;

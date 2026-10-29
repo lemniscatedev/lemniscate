@@ -13,6 +13,7 @@
     "mcp:http": "bun run src/bin/mcp.ts --http",
     "migrate": "bun run src/bin/migrate.ts",
     "seed-vol-history": "bun run scripts/seed-vol-history.ts",
+    "rewards:writers": "bun run scripts/rewards/writer-payout.ts",
     "sync-abi": "bun run scripts/sync-abi.ts",
     "sync-abi:check": "bun run scripts/sync-abi.ts --check",
     "db:generate": "drizzle-kit generate",

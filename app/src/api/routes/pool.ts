@@ -4,9 +4,9 @@ import { apiNow } from "../clock";
 import { poolResponseSchema } from "../option-schemas";
 import { LAUNCH_CAPS } from "../caps";
 import { loadNameContext, marketInputs, seriesInputs, type NameContext } from "../quote/context";
-import { unitQuote } from "../quote/model";
+import { buyCapacityUsd, poolFilling, QUOTE_PARAMS, unitQuote } from "../quote/model";
 import { trimDecimal } from "../quote/rows";
-import { fundingWindow, latestHedgeEquity, peakNavPerShare, queueSummary, seriesSupply, enginePauses } from "../../db/queries/market";
+import { fundingWindow, latestHedgeEquity, peakNavPerShare, queueSummary, seriesSupply, enginePauses, writerTotals } from "../../db/queries/market";
 import { latestLimits, latestPoolNav } from "../../db/queries/pool";
 import { listSeries } from "../../db/queries/series";
 
@@ -28,9 +28,9 @@ export function registerPoolRoutes(app: OpenAPIHono, deps: ApiDependencies): voi
       const now = await apiNow(deps);
       const since24h = new Date(now.getTime() - FUNDING_WINDOW_HOURS * 3_600_000);
       const since30d = new Date(now.getTime() - 30 * 86_400_000);
-      const [nav, limits, series, supplies, funding, hedge, peak, queue, pauses] = await Promise.all([
+      const [nav, limits, series, supplies, funding, hedge, peak, queue, pauses, writers] = await Promise.all([
         latestPoolNav(deps), latestLimits(deps), listSeries(deps), seriesSupply(deps), fundingWindow(deps, since24h),
-        latestHedgeEquity(deps), peakNavPerShare(deps, since30d), queueSummary(deps), enginePauses(deps),
+        latestHedgeEquity(deps), peakNavPerShare(deps, since30d), queueSummary(deps), enginePauses(deps), writerTotals(deps),
       ]);
       const contexts = new Map<string, NameContext | null>();
       for (const entry of deps.deployment.stocks) contexts.set(entry.name, await loadNameContext(deps, entry.name, now));
@@ -76,6 +76,18 @@ export function registerPoolRoutes(app: OpenAPIHono, deps: ApiDependencies): voi
       const drawdown = currentNps !== null && peak !== null && Number(peak) > 0
         ? Number((Math.max(0, (Number(peak) - currentNps) / Number(peak)) * 100).toFixed(4)) : null;
 
+      // Zero-seed launch: the room one more buy has per stock, on a series with nothing outstanding (the per-series room
+      // is in each quote). "empty": not even the minimum trade fits; "filling": under the display line; "open" above it.
+      const capacityNames = deps.deployment.stocks.map((entry) => {
+        const ctx = contexts.get(entry.name) ?? null;
+        const session = ctx?.tick.session ?? "UNKNOWN";
+        const book = { navUsd, nameVegaUsd: 0, nameValueUsd: valueByName.get(entry.name) ?? 0, totalValueUsd: totalValue };
+        const room = buyCapacityUsd(book, session === "EXTENDED" ? "EXTENDED" : "REGULAR");
+        return { name: entry.name, session, maxBuyUsdg: usd(room), canBuyMinimum: room >= QUOTE_PARAMS.minTradeUsd };
+      });
+      const stage = poolFilling({ navUsd, nameVegaUsd: 0 }, "REGULAR") ? "empty" as const
+        : navUsd < LAUNCH_CAPS.poolFillingNavUsdg ? "filling" as const : "open" as const;
+
       return {
         asOf: nav?.ts ?? null,
         nav: trimDecimal(nav?.nav ?? "0"),
@@ -107,6 +119,17 @@ export function registerPoolRoutes(app: OpenAPIHono, deps: ApiDependencies): voi
         drawdownPausePct: LAUNCH_CAPS.drawdownPausePct,
         queue: { withdrawals: queue.withdrawals, withdrawalShares: trimDecimal(queue.withdrawalShares), sells: queue.sells },
         buysPaused: pauses.global || (drawdown !== null && drawdown > LAUNCH_CAPS.drawdownPausePct),
+        capacity: {
+          stage,
+          fillingBelowNavUsdg: String(LAUNCH_CAPS.poolFillingNavUsdg),
+          minTradeUsdg: String(QUOTE_PARAMS.minTradeUsd),
+          names: capacityNames,
+        },
+        writers: {
+          depositedUsdg: trimDecimal(writers.depositedUsdg),
+          claimedUsdg: trimDecimal(writers.claimedUsdg),
+          wallets: writers.wallets,
+        },
       };
     });
     return context.json(body, 200);

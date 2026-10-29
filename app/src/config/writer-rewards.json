@@ -1,0 +1,35 @@
+{
+  "_notes": [
+    "Early-writer $LMNS rewards (zero-seed launch). Off-chain points from indexed Writer Pool events; the owner pays each week from an unsigned export he signs (scripts/rewards/writer-payout.ts). The code never holds a key or sends tokens.",
+    "tokenAddress: empty until $LMNS exists. While empty the program shows 'Rewards start when $LMNS launches'. The SAME address must be in web/dist/launch.json and web/dist/writer-rewards.json (a test checks all three agree).",
+    "startAt: the start of reward week 1 (ISO UTC). Set it together with tokenAddress. Week n runs [startAt + 7(n-1) days, startAt + 7n days).",
+    "tokenTotalSupply and weeklyPoolBpsOfSupply: the weekly pool is 0.1% (10 bps) of the total supply. Default supply 1,000,000,000 gives 1,000,000 LMNS a week. If the real supply differs, set tokenTotalSupply to it and the pool scales to 0.1% of it.",
+    "weeks: the program runs 8 weekly periods, then the owner reviews it.",
+    "perWalletCapBps: one wallet receives at most 10% of a week's pool. Its share above that is not paid (it stays with the owner) unless redistributeOverCap is true.",
+    "minTimeWeightedUsdg: a wallet qualifies only if its deposits still in the pool averaged at least 1,000 USDG over the week (time-weighted).",
+    "projectWallets: the operator wallets from docs/runbooks/mainnet-addresses.json; never eligible. EXCLUDED_WALLETS: more wallets that are never eligible (the owner's personal and developer wallets); starts empty. Lemniscate contract addresses (deployment file), the zero address and contract wallets are excluded too."
+  ],
+  "enabled": true,
+  "tokenSymbol": "LMNS",
+  "tokenAddress": "",
+  "tokenDecimals": 18,
+  "tokenTotalSupply": "1000000000",
+  "weeklyPoolBpsOfSupply": 10,
+  "weeks": 8,
+  "startAt": "",
+  "perWalletCapBps": 1000,
+  "minTimeWeightedUsdg": 1000,
+  "redistributeOverCap": false,
+  "excludeContractWallets": true,
+  "projectWallets": {
+    "deployer": "0x38b7B2461650eDf30790bF060DB2db7c3db99C07",
+    "owner": "0xedf359f6Af99252C50f3Cf1A3F21B568421b30D8",
+    "keeper": "0x669dA6055D1da502e9D1CF736ab418bF48C47b9A",
+    "hedger": "0x8cBb2A69c1f12d3BCecc22cd760B5f7B8dE985cF",
+    "vol-signer": "0xd6F9eBc71AcAC8FCAd5F6133e322f2cfF0cBCF0A",
+    "paymaster-signer": "0xcDF3af4f957CE8D46afed7306Abd05350f0E94F9",
+    "guardian-hot": "0x91041441387F1e2C4498b1a9e5BBFdDb89A8fb4D",
+    "x402-settler": "0xe732D2927BB4EBA41de80Bb1d65A7fa6476617f9"
+  },
+  "EXCLUDED_WALLETS": []
+}

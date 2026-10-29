@@ -12,6 +12,7 @@ import { registerHealthRoutes } from "./routes/health";
 import { registerInviteRoutes } from "./routes/invites";
 import { registerIntentUserOp } from "./routes/intent-userop";
 import { registerPoolRoutes } from "./routes/pool";
+import { registerWriterRoutes } from "./routes/writers";
 import { registerQuoteRoutes } from "./routes/quote";
 import { registerSeriesRoutes } from "./routes/series";
 import { registerVolRoutes } from "./routes/vol";
@@ -98,6 +99,7 @@ export function createApiApp(deps: ApiDependencies) {
   registerQuoteRoutes(app, deps);
   registerVolRoutes(app, deps);
   registerPoolRoutes(app, deps);
+  registerWriterRoutes(app, deps);
   registerAccountRoutes(app, deps);
   registerAccountActivityRoutes(app, deps);
   registerCorporateActionRoutes(app, deps);

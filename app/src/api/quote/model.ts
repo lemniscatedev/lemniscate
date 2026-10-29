@@ -45,6 +45,8 @@ export const QUOTE_PARAMS = {
   extendedCapBps: 5_000,
   /** Funding is quoted over one calendar day. */
   fundingDaySeconds: 86_400,
+  /** EngineCore.DEFAULT_MIN_TRADE_USDG: every buy costs at least this (decision 32). */
+  minTradeUsd: 1,
 } as const;
 
 export const TAU_SECONDS: Record<Speed, number> = { DAILY: TAU.DAILY, WEEKLY: TAU.WEEKLY };
@@ -128,7 +130,40 @@ export interface SeriesInputs {
 
 export type BuyBlock =
   | "SERIES_ARCHIVED" | "SERIES_NOT_BUYABLE" | "BUYS_PAUSED" | "SESSION_CLOSED" | "SESSION_UNKNOWN" | "SESSION_HALTED"
-  | "PRICE_STALE" | "PRICE_PAUSED" | "NO_VOL" | "VOL_STALE" | "EARNINGS_BLOCK" | "NO_PRICE" | "CAP_REACHED";
+  | "PRICE_STALE" | "PRICE_PAUSED" | "NO_VOL" | "VOL_STALE" | "EARNINGS_BLOCK" | "NO_PRICE" | "POOL_FILLING" | "CAP_REACHED";
+
+/** The series, name and total caps in USDG of option value at this NAV and session. EXTENDED halves the series and
+ * name caps (spec 4.3); the total cap is not halved. */
+export function capLimits(navUsd: number, session: SessionName): { series: number; name: number; total: number } {
+  const nav = navUsd > 0 ? navUsd : 0;
+  const factor = session === "EXTENDED" ? QUOTE_PARAMS.extendedCapBps / 10_000 : 1;
+  return {
+    series: Math.min(QUOTE_PARAMS.seriesCapUsd, (nav * QUOTE_PARAMS.seriesCapNavBps) / 10_000) * factor,
+    name: ((nav * QUOTE_PARAMS.nameCapNavBps) / 10_000) * factor,
+    total: (nav * QUOTE_PARAMS.totalCapNavBps) / 10_000,
+  };
+}
+
+/** The most option value (USDG) one more buy can add before a series, name or total cap is hit: the room left under the
+ * tightest of the three, never below 0. A name-wide figure (no `seriesValueUsd`) assumes a series with nothing
+ * outstanding. Approximate: the engine also checks the vega, gamma, depth and stress limits at the trade. */
+export function buyCapacityUsd(book: BookInputs, session: SessionName): number {
+  const caps = capLimits(book.navUsd, session);
+  const room = Math.min(
+    caps.series - (book.seriesValueUsd ?? 0),
+    caps.name - (book.nameValueUsd ?? 0),
+    caps.total - (book.totalValueUsd ?? 0),
+  );
+  return Number.isFinite(room) && room > 0 ? room : 0;
+}
+
+/** Zero-seed launch: the pool is too small for even the minimum trade on an empty series (NAV 0, or under about $50 when
+ * the 2% series cap is the binding one). Distinct from CAP_REACHED, which means other buyers used the room. */
+export function poolFilling(book: BookInputs, session: SessionName): boolean {
+  if (!(book.navUsd > 0)) return true;
+  const caps = capLimits(book.navUsd, session);
+  return Math.min(caps.series, caps.name, caps.total) < QUOTE_PARAMS.minTradeUsd;
+}
 
 /** True when buying `addedValueUsd` more would pass a series, name or total cap. EXTENDED halves the series and name
  * caps (spec 4.3). Needs `market.book`; without it nothing is reported (the chain still enforces the caps). */
@@ -136,13 +171,10 @@ export function capReached(market: MarketInputs, addedValueUsd: number): boolean
   const book = market.book;
   if (!book) return false;
   if (!(book.navUsd > 0)) return true;
-  const factor = market.session === "EXTENDED" ? QUOTE_PARAMS.extendedCapBps / 10_000 : 1;
-  const seriesCap = Math.min(QUOTE_PARAMS.seriesCapUsd, (book.navUsd * QUOTE_PARAMS.seriesCapNavBps) / 10_000) * factor;
-  const nameCap = ((book.navUsd * QUOTE_PARAMS.nameCapNavBps) / 10_000) * factor;
-  const totalCap = (book.navUsd * QUOTE_PARAMS.totalCapNavBps) / 10_000;
-  if (book.seriesValueUsd !== undefined && book.seriesValueUsd + addedValueUsd > seriesCap) return true;
-  if (book.nameValueUsd !== undefined && book.nameValueUsd + addedValueUsd > nameCap) return true;
-  if (book.totalValueUsd !== undefined && book.totalValueUsd + addedValueUsd > totalCap) return true;
+  const caps = capLimits(book.navUsd, market.session);
+  if (book.seriesValueUsd !== undefined && book.seriesValueUsd + addedValueUsd > caps.series) return true;
+  if (book.nameValueUsd !== undefined && book.nameValueUsd + addedValueUsd > caps.name) return true;
+  if (book.totalValueUsd !== undefined && book.totalValueUsd + addedValueUsd > caps.total) return true;
   return false;
 }
 
@@ -163,6 +195,7 @@ export function buyBlockReason(series: SeriesInputs, raw: MarketInputs, addedVal
   if (market.volStale) return "VOL_STALE";
   if (market.buyBlockFromMs !== null && market.buyBlockToMs !== null
     && market.nowMs >= market.buyBlockFromMs && market.nowMs <= market.buyBlockToMs) return "EARNINGS_BLOCK";
+  if (market.book && poolFilling(market.book, market.session)) return "POOL_FILLING";
   if (capReached(market, addedValueUsd)) return "CAP_REACHED";
   return null;
 }
