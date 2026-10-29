@@ -559,6 +559,52 @@ await section('L',async()=>{
  await context.close();
 });
 
+// ---- M. /roadmap (todo 32): 36 updates by day, LIVE only from the public CHANGELOG.md, never from the clock
+await section('M',async()=>{
+ const shipped=JSON.parse(await readFile(new URL('../dist/roadmap.json',import.meta.url),'utf8'));
+ const SAMPLE='# Changelog\n\nNotes.\n\n## Fix: keep the footer link colour readable\n\n2026-11-01 (UTC) - [commit 0123456789](https://example.invalid)\n\nx\n\n## Update 2: Holding-cost calculator on every option\n\n2026-11-01 (UTC) - [commit abcdef0123](https://example.invalid)\n\ny\n\n## Update 1: Status page\n\n2026-10-31 (UTC) - [commit fedcba9876](https://example.invalid)\n\nz\n';
+ const open=async(changelog)=>{
+  const {page,context,errors,network}=await newPage();
+  const raw=[];
+  if(changelog!==undefined){
+   await context.route('**/roadmap.json',r=>r.fulfill({status:200,contentType:'application/json',body:JSON.stringify({...shipped,publicRepo:'example-repo'})}));
+   await context.route('https://raw.githubusercontent.com/**',r=>{raw.push(r.request().url());return changelog===null?r.abort():r.fulfill({status:200,contentType:'text/plain',headers:{'access-control-allow-origin':'*'},body:changelog})});
+  }
+  await page.goto(base+'/roadmap',{waitUntil:'load'});await settle(page);await page.waitForSelector('.lm-roadmap-item',{timeout:10_000}).catch(()=>{});
+  return {page,context,errors,network,raw};
+ };
+ {
+  const {page,context,errors,network}=await open(undefined);
+  const items=await page.locator('.lm-roadmap-day:not(.lm-roadmap-extras):not(.lm-roadmap-soon) .lm-roadmap-item').count();
+  ok('M /roadmap lists all 36 updates',items===36,'items='+items);
+  ok('M three days of 12',(await page.locator('.lm-roadmap-day').count())===4&&/Day one[\s\S]*Day two[\s\S]*Day three[\s\S]*Coming soon/i.test(await text(page)),'');
+  ok('M before launch nothing is LIVE',(await page.locator('.lm-roadmap-live').count())===0,'');
+  ok('M slots read "hour N after launch"',/Day 3, hour 70 after launch/.test(await text(page)),'');
+  ok('M /roadmap 390px',(await width(page))===WIDTH,'scrollWidth '+await width(page));
+  ok('M /roadmap console clean, no third-party fetch',errors.length===0&&network.length===0,[...errors,...network].join(' | ').slice(0,300));
+  ok('M footer links /roadmap',(await page.locator('#lm-footer a[href="/roadmap"]').count())===1,'');
+  await context.close();
+ }
+ {
+  const {page,context,errors,raw}=await open(SAMPLE);
+  await page.waitForFunction(()=>document.querySelectorAll('.lm-roadmap-live').length>0,null,{timeout:8000}).catch(()=>{});
+  const liveN=await page.locator('.lm-roadmap-item.is-live[data-update]').evaluateAll(els=>els.map(e=>Number(e.dataset.update)));
+  ok('M LIVE exactly for the changelog entries',JSON.stringify(liveN)==='[1,2]',JSON.stringify(liveN));
+  ok('M fixes listed under "Fixes and bonus updates"',/Fixes and bonus updates[\s\S]*keep the footer link colour readable/.test(await text(page)),'');
+  ok('M changelog read from the public repo raw URL',raw.length===1&&raw[0]==='https://raw.githubusercontent.com/lemniscatedev/example-repo/main/CHANGELOG.md',raw.join(' '));
+  ok('M with LIVE badges 390px',(await width(page))===WIDTH,'');
+  ok('M with LIVE badges console clean',errors.length===0,errors.join(' | ').slice(0,300));
+  await context.close();
+ }
+ {
+  const {page,context,errors}=await open(null);
+  const items=await page.locator('.lm-roadmap-item').count();
+  ok('M failed changelog fetch: full timeline, no LIVE badge',items===36&&(await page.locator('.lm-roadmap-live').count())===0,'items='+items);
+  ok('M failed fetch no page errors',errors.length===0,errors.join(' | ').slice(0,300));
+  await context.close();
+ }
+});
+
 await browser.close();await mock.close();site.close();
 console.log(`\n${results.filter(r=>r.startsWith('PASS')).length} passed, ${failures} failed.`);
 process.exitCode=failures?1:0;

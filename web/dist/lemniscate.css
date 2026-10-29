@@ -158,3 +158,21 @@ html[data-lm-loading-mode="prepared"]::view-transition-new(root){animation:lm-vt
 .lm-contract-stocks{list-style:none;margin:14px 0 0;padding:0;display:grid;gap:10px}
 .lm-contract-stocks li{overflow-wrap:anywhere}
 @media(max-width:809px){.lm-contracts{padding:0 20px 60px}.lm-contract-grid{grid-template-columns:1fr}}
+.lm-roadmap{max-width:1100px;margin:0 auto;padding:0 60px 80px}
+.lm-roadmap-note{color:#505d73;line-height:1.6;max-width:720px;margin:0 0 48px}
+.lm-roadmap-day{margin:0 0 54px}
+.lm-roadmap-dayhead h2{margin:8px 0 18px;font-size:30px;font-weight:500;letter-spacing:-.04em}
+.lm-roadmap-list{list-style:none;margin:0;padding:0;display:grid;gap:12px}
+.lm-roadmap-item{display:flex;gap:18px;background:rgba(255,255,255,.7);border:1px solid rgba(22,35,61,.1);border-radius:20px;padding:18px 20px;min-width:0}
+.lm-roadmap-item.is-live{border-color:rgba(184,135,61,.55);background:rgba(253,245,229,.85)}
+.lm-roadmap-num{flex:none;width:46px;height:46px;border-radius:14px;display:grid;place-items:center;background:#28324c;color:#fdf5e5;font-size:14px;letter-spacing:.04em}
+.lm-roadmap-body{min-width:0;flex:1}
+.lm-roadmap-head{display:flex;gap:10px;align-items:center;justify-content:space-between}
+.lm-roadmap-item h3{margin:0;font-size:19px;font-weight:500;letter-spacing:-.02em;overflow-wrap:anywhere}
+.lm-roadmap-item p{margin:6px 0 8px;font-size:14px;line-height:1.55;color:#505d73}
+.lm-roadmap-when{font-size:12px;letter-spacing:.04em;color:#8c6b3d}
+.lm-roadmap-live{flex:none;font-size:11px;letter-spacing:.08em;padding:4px 10px;border-radius:99px;background:#dff0e2;color:#1f5d2c}
+.lm-roadmap-soon-card{border-radius:20px;padding:24px;background:#28324c;color:#fdf5e5}
+.lm-roadmap-soon-card p{margin:0;line-height:1.7;color:#fdf5e5}
+@media(max-width:809px){.lm-roadmap{padding:0 0 60px}.lm-roadmap-item{gap:12px;padding:16px}.lm-roadmap-num{width:38px;height:38px;border-radius:12px;font-size:12px}.lm-roadmap-dayhead h2{font-size:24px}}
+.lm-roadmap>.lm-roadmap-note{margin:0 0 48px}

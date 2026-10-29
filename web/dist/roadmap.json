@@ -1,0 +1,260 @@
+{
+ "about": "Data for /roadmap. Updates in release order; hour = hours after launch. LIVE badges come only from the public CHANGELOG.md (raw.githubusercontent.com/lemniscatedev/<publicRepo>/main/CHANGELOG.md), never from the clock. Empty publicRepo: no fetch, no LIVE badge. launchAt (ISO UTC) only turns \"hour N after launch\" into a date; it never marks anything live.",
+ "publicRepo": "",
+ "launchAt": null,
+ "intervalMinutes": 120,
+ "updates": [
+  {
+   "n": 1,
+   "day": 1,
+   "hour": 0,
+   "title": "Status page",
+   "line": "A public status page: service health, the age of every price and volatility input, and the market session."
+  },
+  {
+   "n": 2,
+   "day": 1,
+   "hour": 2,
+   "title": "Holding cost over 7 and 30 days",
+   "line": "Every option shows what it costs to hold for 7 and 30 days at today's price, labelled as an estimate."
+  },
+  {
+   "n": 3,
+   "day": 1,
+   "hour": 4,
+   "title": "Backup RPC connection",
+   "line": "A second RPC provider answers only when the official public RPC fails; traffic returns as soon as it is healthy."
+  },
+  {
+   "n": 4,
+   "day": 1,
+   "hour": 6,
+   "title": "Earnings calendar",
+   "line": "Each stock shows its next report date and exactly when new buys pause around it, in your local time."
+  },
+  {
+   "n": 5,
+   "day": 1,
+   "hour": 8,
+   "title": "Plain-language errors",
+   "line": "A failed transaction now says why in plain words, and whether your funds moved."
+  },
+  {
+   "n": 6,
+   "day": 1,
+   "hour": 10,
+   "title": "Shield preview",
+   "line": "Before you add a Shield, compare protection at 5%, 10% and 15% below today's price and what each costs."
+  },
+  {
+   "n": 7,
+   "day": 1,
+   "hour": 12,
+   "title": "Live quote stream",
+   "line": "The dashboard gets price changes pushed the moment the service sees them, with the regular refresh as a fallback."
+  },
+  {
+   "n": 8,
+   "day": 1,
+   "hour": 14,
+   "title": "Writer Pool NAV history",
+   "line": "The Writer Pool tab charts NAV and NAV per share over 7, 30, 90 days or all time, plus funding received per day."
+  },
+  {
+   "n": 9,
+   "day": 1,
+   "hour": 16,
+   "title": "Position history chart",
+   "line": "Each position has a History chart: its value and your effective units over time."
+  },
+  {
+   "n": 10,
+   "day": 1,
+   "hour": 18,
+   "title": "API reference page",
+   "line": "A readable reference for the API at /v1/docs, built from the same OpenAPI spec the service publishes."
+  },
+  {
+   "n": 11,
+   "day": 1,
+   "hour": 20,
+   "title": "Option chain export",
+   "line": "Download any listed name's whole option chain as CSV or JSON."
+  },
+  {
+   "n": 12,
+   "day": 1,
+   "hour": 22,
+   "title": "Keeper batches sized from measured gas",
+   "line": "The keeper measures gas per option series and sends a smaller batch when 45 would not fit comfortably."
+  },
+  {
+   "n": 13,
+   "day": 2,
+   "hour": 24,
+   "title": "Faster indexer catch-up",
+   "line": "After an interruption the indexer reads several chain ranges at once and applies them strictly in order."
+  },
+  {
+   "n": 14,
+   "day": 2,
+   "hour": 26,
+   "title": "Activity filters and search",
+   "line": "Search and filter the Activity tab by name, kind, ticket, transaction and date range."
+  },
+  {
+   "n": 15,
+   "day": 2,
+   "hour": 28,
+   "title": "Receipts lookup",
+   "line": "Paste a transaction hash and your browser checks the trade against the hourly Merkle root the API publishes."
+  },
+  {
+   "n": 16,
+   "day": 2,
+   "hour": 30,
+   "title": "Volatility page",
+   "line": "Charts of the volatility input behind each stock's option prices, with the latest on-chain posts."
+  },
+  {
+   "n": 17,
+   "day": 2,
+   "hour": 32,
+   "title": "Browser alerts (opt-in)",
+   "line": "Optional browser notifications for holding-cost jumps, market session changes and filled queued sells."
+  },
+  {
+   "n": 18,
+   "day": 2,
+   "hour": 34,
+   "title": "API caching and rate-limit headers",
+   "line": "API responses show the remaining request allowance, and public reads send ETags for cheap repeat requests."
+  },
+  {
+   "n": 19,
+   "day": 2,
+   "hour": 36,
+   "title": "Agent tools for volatility and receipts",
+   "line": "Two read-only MCP tools for agents: volatility posts and hourly receipts."
+  },
+  {
+   "n": 20,
+   "day": 2,
+   "hour": 38,
+   "title": "Accessibility pass",
+   "line": "The whole site works from the keyboard and with screen readers, with easier-to-read small text."
+  },
+  {
+   "n": 21,
+   "day": 2,
+   "hour": 40,
+   "title": "Breakeven on the chart",
+   "line": "The option chart draws today's price, the cost, the breakeven and where the option has paid for itself."
+  },
+  {
+   "n": 22,
+   "day": 2,
+   "hour": 42,
+   "title": "Reorg-safety report",
+   "line": "The status page reports how the indexer handles chain reorganisations: how many, the deepest, and the last check."
+  },
+  {
+   "n": 23,
+   "day": 2,
+   "hour": 44,
+   "title": "Dark mode",
+   "line": "Dark mode follows your device, with a toggle in the header remembered only in your browser."
+  },
+  {
+   "n": 24,
+   "day": 2,
+   "hour": 46,
+   "title": "Monthly statements",
+   "line": "Pick a month and download your trades, deposits and month-end holdings as CSV, or print to PDF."
+  },
+  {
+   "n": 25,
+   "day": 3,
+   "hour": 48,
+   "title": "TypeScript SDK",
+   "line": "A typed TypeScript library for the API, in the sdk/ folder of the public repo (not on npm)."
+  },
+  {
+   "n": 26,
+   "day": 3,
+   "hour": 50,
+   "title": "Faster first load on phones",
+   "line": "The first screen waits only for what you can see; the home page needs about 1.0 MB instead of 2.1 MB to be ready."
+  },
+  {
+   "n": 27,
+   "day": 3,
+   "hour": 52,
+   "title": "Stricter security headers",
+   "line": "Stricter security headers and a content security policy on the site and the API."
+  },
+  {
+   "n": 28,
+   "day": 3,
+   "hour": 54,
+   "title": "Hedge transparency",
+   "line": "A Hedges page: what the Writer Pool holds per stock, the target, and a log of hedge fills."
+  },
+  {
+   "n": 29,
+   "day": 3,
+   "hour": 56,
+   "title": "Leaner accrual keeper",
+   "line": "The keeper stops re-reading strikes nobody holds for up to 30 minutes; any trade is noticed at once."
+  },
+  {
+   "n": 30,
+   "day": 3,
+   "hour": 58,
+   "title": "Agent activity page",
+   "line": "A public page of every agent trade through the AgentRouter and every active agent policy."
+  },
+  {
+   "n": 31,
+   "day": 3,
+   "hour": 60,
+   "title": "Your options, on every device",
+   "line": "The Activity tab lists every option your wallet bought, sold or holds, read from the chain, on any device."
+  },
+  {
+   "n": 32,
+   "day": 3,
+   "hour": 62,
+   "title": "Public stats page",
+   "line": "Daily volume, trades, wallets and open interest, each figure with its on-chain source and time."
+  },
+  {
+   "n": 33,
+   "day": 3,
+   "hour": 64,
+   "title": "Daily vs Weekly compare",
+   "line": "Daily and Weekly side by side for the same strike: price, sell price and holding cost over 7 and 30 days."
+  },
+  {
+   "n": 34,
+   "day": 3,
+   "hour": 66,
+   "title": "Holding-cost history",
+   "line": "Per option and per day: the share of units funding took and its USDG value, from on-chain accruals."
+  },
+  {
+   "n": 35,
+   "day": 3,
+   "hour": 68,
+   "title": "Writer Pool depositor view",
+   "line": "Depositors see their shares, value at the latest NAV per share, totals, a daily NAV chart and claim tickets."
+  },
+  {
+   "n": 36,
+   "day": 3,
+   "hour": 70,
+   "title": "Open interest by strike",
+   "line": "For each stock, how many call and put units holders hold at every strike, with the latest price marked."
+  }
+ ]
+}
