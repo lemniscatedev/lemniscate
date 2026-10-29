@@ -62,3 +62,6 @@ lcov.info
 .ci-local/
 contracts/coverage-summary.txt
 contracts/lcov.info
+
+# Arming files for contract deploy scripts (LEMNISCATE_ALLOW_FILE): created by the owner for one run, never committed.
+contracts/.deploy-armed*

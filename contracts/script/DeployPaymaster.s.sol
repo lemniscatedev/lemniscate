@@ -43,6 +43,7 @@ contract DeployPaymaster is LemniscateScript {
     }
 
     function run() external returns (LemniscatePaymaster pm) {
+        requireRealDeployArmed("DeployPaymaster");
         string memory json = _configJson();
         Config memory c = parseConfig(json);
         Deployed memory d = loadDeploymentFile();

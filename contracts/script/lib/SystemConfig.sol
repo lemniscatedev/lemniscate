@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {CommonBase} from "forge-std/Base.sol";
+import {VmSafe} from "forge-std/Vm.sol";
 
 /// @title SystemConfig
 /// @notice Deploy configuration of the option system: profile, external addresses, operator roles, timers, limits and
@@ -24,6 +25,46 @@ abstract contract SystemConfig is CommonBase {
     uint256 internal constant CHAIN_FORK = 31_337;
     uint256 internal constant CHAIN_TESTNET = 46_630;
     uint256 internal constant CHAIN_MAINNET = 4663;
+
+    /// @notice Armed-flag guard for every script that broadcasts (gap audit 19). A funded key in an
+    /// agent's shell must not be able to reach the real chains by accident. On mainnet (4663) and testnet (46630) a
+    /// broadcast or resume needs BOTH `LEMNISCATE_ALLOW_REAL_DEPLOY=1` in the environment AND the file named by
+    /// `LEMNISCATE_ALLOW_FILE` to exist (a path inside contracts/, git-ignored, created by the owner for the run and
+    /// deleted after). A plain simulation (no `--broadcast`), a fork or anvil under another chain id, and `forge test`
+    /// stay free. Call it first in every `run()` that reaches `vm.startBroadcast`.
+    function requireRealDeployArmed(string memory who) internal view {
+        bool broadcasting = vm.isContext(VmSafe.ForgeContext.ScriptBroadcast) || vm.isContext(VmSafe.ForgeContext.ScriptResume);
+        requireArmedFor(
+            block.chainid,
+            broadcasting,
+            vm.envOr("LEMNISCATE_ALLOW_REAL_DEPLOY", string("")),
+            vm.envOr("LEMNISCATE_ALLOW_FILE", string("")),
+            who
+        );
+    }
+
+    /// @dev The decision of `requireRealDeployArmed`, with the chain id, broadcast context and the two environment values
+    /// as arguments so a test reaches every branch without touching the process environment.
+    function requireArmedFor(uint256 chainId, bool broadcasting, string memory flag, string memory file, string memory who)
+        internal
+        view
+    {
+        if (!broadcasting || (chainId != CHAIN_MAINNET && chainId != CHAIN_TESTNET)) return;
+        require(
+            keccak256(bytes(flag)) == keccak256("1"),
+            string.concat(who, ": refusing to broadcast to a real chain: set LEMNISCATE_ALLOW_REAL_DEPLOY=1 (owner's deploy command only)")
+        );
+        require(
+            bytes(file).length != 0, string.concat(who, ": refusing to broadcast to a real chain: set LEMNISCATE_ALLOW_FILE to the arming file")
+        );
+        bool present;
+        try vm.exists(file) returns (bool found) {
+            present = found;
+        } catch {
+            revert(string.concat(who, ": LEMNISCATE_ALLOW_FILE must be a readable path inside contracts/"));
+        }
+        require(present, string.concat(who, ": refusing to broadcast to a real chain: the LEMNISCATE_ALLOW_FILE file does not exist"));
+    }
 
     /// @dev Full (production) timers. Mainnet and fork always use exactly these.
     uint256 internal constant FULL_POOL_QUEUE_DELAY = 72 hours;

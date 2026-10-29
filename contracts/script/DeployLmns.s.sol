@@ -37,6 +37,7 @@ contract DeployLmns is Script, SystemConfig {
     }
 
     function run() external returns (LmnsStaking staking, LmnsBuyBurn burn) {
+        requireRealDeployArmed("DeployLmns");
         LmnsParams memory p;
         p.profile = profileOf(vm.envString("LMNS_PROFILE"));
         require(block.chainid == chainOf(p.profile), "DeployLmns: profile does not match the RPC chain");

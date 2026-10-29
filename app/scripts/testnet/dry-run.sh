@@ -78,7 +78,13 @@ case "$MODE" in
   reset) fork_down; rm -rf "$TESTNET_DIR"; echo "dry-run: reset $TESTNET_DIR" ;;
   all)
     fork_up
-    DEPLOY_CONFIG="${DEPLOY_CONFIG:?set DEPLOY_CONFIG}" bash "$(dirname "$0")/deploy.sh"
+    # The anvil fork answers as chain 46630, so the contract scripts' armed-flag guard applies. Arm it for this local fork
+    # only: the file lives for the deploy and is removed right after (the real testnet is armed by the owner by hand).
+    ARM_FILE=".deploy-armed-dryrun"
+    : >"$APP/../contracts/$ARM_FILE"
+    DEPLOY_CONFIG="${DEPLOY_CONFIG:?set DEPLOY_CONFIG}" LEMNISCATE_ALLOW_REAL_DEPLOY=1 LEMNISCATE_ALLOW_FILE="$ARM_FILE" \
+      bash "$(dirname "$0")/deploy.sh" || { rm -f "$APP/../contracts/$ARM_FILE"; exit 1; }
+    rm -f "$APP/../contracts/$ARM_FILE"
     (cd "$APP" && bun scripts/testnet/fund.ts)
     bash "$(dirname "$0")/up.sh"
     (cd "$APP" && bun scripts/testnet/exercise.ts) || echo "dry-run: exercise reported failures (see $TESTNET_DIR/exercise/results.json)"

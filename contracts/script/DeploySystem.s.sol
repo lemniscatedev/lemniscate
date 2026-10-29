@@ -16,6 +16,7 @@ import {LemniscateScript} from "./lib/LemniscateScript.sol";
 /// other chain is refused before the first transaction. `DEPLOYMENT_OUT` overrides the output path.
 contract DeploySystem is LemniscateScript {
     function run() external returns (Deployed memory d) {
+        requireRealDeployArmed("DeploySystem");
         Config memory c = loadConfig();
         validateConfig(c);
         console2.log("== DeploySystem profile", c.profileName, "chain", block.chainid);

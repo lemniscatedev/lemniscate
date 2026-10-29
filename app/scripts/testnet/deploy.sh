@@ -9,6 +9,8 @@
 #   3. forge script DeploySystem (testnet profile: mocks, short timers, admin = the owner Safe, post-deploy check inside)
 #   4. PostDeployCheck again from the written deployment file
 #   5. hand the mock feeds' updater to the feed-mirror wallet (the deployer owns the mocks)
+# The contract scripts refuse to broadcast to 46630 unless LEMNISCATE_ALLOW_REAL_DEPLOY=1 and the file named by
+# LEMNISCATE_ALLOW_FILE (a path inside contracts/) exist; this script passes them through and never sets them.
 # Logs and the deployment land in TESTNET_DIR; the forge broadcast stays in contracts/broadcast (git-ignored) because the
 # Sourcify step (script/verify-deployment.sh submit) resumes it.
 set -euo pipefail

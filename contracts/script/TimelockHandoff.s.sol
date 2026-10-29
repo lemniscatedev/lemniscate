@@ -23,6 +23,7 @@ import {LemniscateScript} from "./lib/LemniscateScript.sol";
 /// @dev Testnet (46630) has no timelock by design (decision: Safe/timelock only on mainnet); the script refuses it.
 contract TimelockHandoff is LemniscateScript {
     function run() external {
+        requireRealDeployArmed("TimelockHandoff");
         require(block.chainid != CHAIN_TESTNET, "TimelockHandoff: testnet has no timelock (admin is the owner)");
         Deployed memory d = loadDeploymentFile();
         Config memory c = loadConfig(); // the deploy config: profile, bot keys, ALLOW_EOA_OWNER from the environment
