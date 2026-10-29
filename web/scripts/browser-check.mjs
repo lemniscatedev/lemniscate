@@ -49,11 +49,16 @@ const FAKE_WALLET=`(()=>{const ACCOUNT='0x00000000000000000000000000000000000a11
  window.addEventListener('eip6963:requestProvider',announce);announce();})();`;
 
 const browser=await chromium.launch();
+// Every context starts offline (apiBase '') with an empty public CHANGELOG: the shipped config.js names the live API, which a
+// local check must never call. A test that needs an API or a changelog routes its own (Playwright uses the newest route).
+{const open=browser.newContext.bind(browser);browser.newContext=async(...a)=>{const c=await open(...a);
+ await c.route('**/config.js*',r=>r.fulfill({status:200,contentType:'application/javascript',body:configWith('')}));
+ await c.route('https://raw.githubusercontent.com/**',r=>r.fulfill({status:200,contentType:'text/plain',headers:{'access-control-allow-origin':'*'},body:'# Changelog\n'}));
+ return c}}
 // apiBase '' (the default) = the offline site: the shipped config.js now names the live API, which a local check must never
 // call. null keeps the shipped config. The public CHANGELOG (read by /roadmap) is served empty unless a test routes it.
 async function newPage({apiBase='',declared=true,wallet=false,config={},account=null,js=true}={}){
  const context=await browser.newContext({viewport:{width:WIDTH,height:HEIGHT},deviceScaleFactor:1,javaScriptEnabled:js});
- await context.route('https://raw.githubusercontent.com/**',r=>r.fulfill({status:200,contentType:'text/plain',headers:{'access-control-allow-origin':'*'},body:'# Changelog\n'}));
  if(apiBase!==null)await context.route('**/config.js*',route=>route.fulfill({status:200,contentType:'application/javascript',body:configWith(apiBase,config)}));
  if(declared)await context.addInitScript(()=>{try{localStorage.setItem('lemniscate.region.v1',JSON.stringify({resident:false,at:1}))}catch{}});
  if(wallet)await context.addInitScript(account?FAKE_WALLET.replaceAll('0x00000000000000000000000000000000000a11ce',account):FAKE_WALLET);
