@@ -8,6 +8,18 @@
 -- Part 2 creates the spec's data model (Backend spec section 5) plus the event logs the indexer needs to stay
 -- idempotent and reorg safe. Amounts are decimal values: USDG/1e6, option tokens/1e18, WAD values/1e18.
 
+-- Remove the old product's Timescale policy jobs first. Each policy job starts as soon as it is added (0001, 0003), so
+-- without this a refresh can run while the DROPs below delete the same aggregate ("tuple concurrently deleted", seen on
+-- CI and on a fresh install that applies 0001..0008 in one go). delete_job waits for a running job to finish. The ticks
+-- retention policy is added again at the end of this file. Servers without TimescaleDB have no jobs view, so skip.
+DO $$
+BEGIN
+  IF to_regclass('timescaledb_information.jobs') IS NOT NULL THEN
+    PERFORM delete_job(job_id) FROM timescaledb_information.jobs
+      WHERE proc_name IN ('policy_refresh_continuous_aggregate', 'policy_retention');
+  END IF;
+END $$;
+--> statement-breakpoint
 DROP MATERIALIZED VIEW IF EXISTS candles_1m;
 --> statement-breakpoint
 DROP MATERIALIZED VIEW IF EXISTS candles_1h;
