@@ -4,6 +4,12 @@
 #   script/verify-deployment.sh submit   resume the broadcast with --verify (constructor arguments and linked libraries
 #                                        come from the broadcast file) on Blockscout, then send each contract's build
 #                                        metadata.json and sources to Sourcify /v2/verify/metadata (exact_match)
+#   script/verify-deployment.sh bytecode compare the code at every address the broadcast created (proxies, implementations,
+#                                        linked libraries, EngineHelper, OptionTokenFactory, the OptionToken template, the
+#                                        timelock) with this checkout's forge build: immutables masked, libraries linked
+#                                        from the broadcast; also the three EIP-1967 implementation slots and the launch
+#                                        caps. Build first (`forge build`) at the commit the deployment came from.
+#                                        Needs RPC_URL and BROADCAST_FILE (default broadcast/DeploySystem.s.sol/<chain>/run-latest.json)
 #   script/verify-deployment.sh check    ask both explorers about every address in the deployment file; exit 1 unless
 #                                        each one of ours is verified on at least one of them (default mode)
 #
@@ -93,5 +99,85 @@ if failed:
 print("verify-deployment: every contract is verified on at least one explorer")
 PY
     ;;
-  *) echo "usage: $0 [submit|check]" >&2; exit 2 ;;
+  bytecode)
+    [ -n "${RPC_URL:-}" ] || { echo "verify-deployment: RPC_URL is required for bytecode" >&2; exit 2; }
+    BROADCAST_FILE="${BROADCAST_FILE:-broadcast/DeploySystem.s.sol/${CHAIN_ID}/run-latest.json}"
+    [ -f "$BROADCAST_FILE" ] || { echo "verify-deployment: $BROADCAST_FILE not found" >&2; exit 2; }
+    exec python3 - "$DEPLOYMENT_FILE" "$BROADCAST_FILE" "$RPC_URL" <<'PY'
+import glob, json, re, sys, urllib.request
+dep_file, bc_file, rpc = sys.argv[1:4]
+dep = json.load(open(dep_file))
+bc = json.load(open(bc_file))
+
+def call(method, params):
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+    req = urllib.request.Request(rpc, body, {"content-type": "application/json", "user-agent": "lemniscate-verify/1"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        out = json.load(r)
+    if "error" in out:
+        raise RuntimeError(out["error"])
+    return out["result"]
+
+libs = {}
+for entry in bc.get("libraries") or []:
+    path, name, addr = entry.split(":")
+    libs[(path, name)] = addr.lower()[2:]
+
+def artifact(name):
+    hits = [f for f in glob.glob(f"out/*/{name}.json") if f.split("/")[1] == f"{name}.sol"] or glob.glob(f"out/*/{name}.json")
+    if not hits:
+        raise SystemExit(f"verify-deployment: no artifact for {name}; run forge build at the deployed commit")
+    return json.load(open(hits[0]))["deployedBytecode"]
+
+def expected(name):
+    a = artifact(name)
+    code = bytearray.fromhex(re.sub(r"__\$[0-9a-fA-F]{34}\$__", "0" * 40, a["object"][2:]))
+    for path, names in (a.get("linkReferences") or {}).items():
+        for lib, refs in names.items():
+            addr = libs.get((path, lib))
+            if addr is None:
+                raise SystemExit(f"verify-deployment: library {path}:{lib} not in the broadcast")
+            for ref in refs:
+                code[ref["start"]:ref["start"] + 20] = bytes.fromhex(addr)
+    masks = [(r["start"], r["length"]) for refs in (a.get("immutableReferences") or {}).values() for r in refs]
+    return code, masks
+
+created = []
+for t in bc["transactions"]:
+    if t.get("transactionType") in ("CREATE", "CREATE2") and t.get("contractAddress"):
+        created.append((t["contractName"], t["contractAddress"]))
+    for extra in t.get("additionalContracts") or []:
+        created.append((extra["contractName"], extra["address"]))
+
+failed = []
+print(f"{'contract':<24} {'address':<44} result")
+for name, addr in created:
+    want, masks = expected(name)
+    got = bytearray.fromhex(call("eth_getCode", [addr, "latest"])[2:])
+    if len(got) != len(want):
+        ok = False
+    else:
+        for start, length in masks:
+            want[start:start + length] = got[start:start + length]
+        ok = got == want
+    print(f"{name:<24} {addr:<44} {'MATCH' if ok else 'DIFFERS'}")
+    if not ok:
+        failed.append(f"{name}@{addr}")
+
+SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"  # EIP-1967 implementation slot // not-a-key
+c = dep["contracts"]
+for proxy, impl in (("engine", "engineImpl"), ("pool", "poolImpl"), ("marketHours", "marketHoursImpl")):
+    got = "0x" + call("eth_getStorageAt", [c[proxy], SLOT, "latest"])[-40:]
+    ok = got.lower() == c[impl].lower()
+    print(f"{proxy + ' impl slot':<24} {got:<44} {'MATCH' if ok else 'DIFFERS (deployment file says ' + c[impl] + ')'}")
+    if not ok:
+        failed.append(f"{proxy}-impl-slot")
+print("paymaster: not deployed on this network (sponsorship off); nothing to compare")
+if failed:
+    print("verify-deployment: BYTECODE MISMATCH: " + ", ".join(failed), file=sys.stderr)
+    sys.exit(1)
+print(f"verify-deployment: {len(created)} contracts match this build; implementation slots match")
+PY
+    ;;
+  *) echo "usage: $0 [submit|check|bytecode]" >&2; exit 2 ;;
 esac
