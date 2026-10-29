@@ -268,6 +268,12 @@ abstract contract SystemChecks is SystemDeployer {
                 _failIf(
                     g.twapSource(stock).bandBps != c.stocks[i].twapBandBps, string.concat("TWAP_BAND", tag)
                 );
+                // Audit M-2: the pool's observation ring must cover the longest TWAP window plus a margin (Uniswap writes
+                // at most one observation per second), or a dust-swap refill can erase the worse-of trade TWAP.
+                _failIf(
+                    _cardinality(c.stocks[i].uniPool) < MIN_TWAP_CARDINALITY,
+                    string.concat("TWAP_CARDINALITY", tag)
+                );
                 _failIf(
                     LemniscateEngine(d.engine).hedgeDepthCapWad(stock) != c.stocks[i].hedgeDepthCapUsd * 1e18,
                     string.concat("DEPTH_CAP", tag)
@@ -281,6 +287,16 @@ abstract contract SystemChecks is SystemDeployer {
             else if (open && block.timestamp > updatedAt + maxAge) _fail(string.concat("FEED_STALE", tag));
             if (open) _failIf(g.readLite(stock).s == 0, string.concat("PRICE_UNREADABLE", tag));
         }
+    }
+
+    /// @dev Audit M-2: MAX_TRADE_TWAP_WINDOW (30 min) of one-per-second observations plus a 20% margin.
+    uint256 internal constant MIN_TWAP_CARDINALITY = 2_160;
+
+    function _cardinality(address pool) private view returns (uint256) {
+        (bool ok, bytes memory r) = pool.staticcall(abi.encodeWithSignature("slot0()"));
+        if (!ok || r.length < 224) return 0;
+        (,,, uint16 card) = abi.decode(r, (uint160, int24, uint16, uint16));
+        return card;
     }
 
     function _checkPool(Config memory c, Deployed memory d) private {

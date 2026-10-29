@@ -17,6 +17,9 @@ import {PriceReading, SessionKind} from "./OptionTypes.sol";
 /// and cash raising. External library (delegatecalled, runs in the pool's storage and balance) so the pool stays under
 /// the contract size limit. Deployments link it into WriterPool.
 library PoolHedging {
+    /// @notice Audit M-2: the stock's trade TWAP source is set but cannot be served; LP entries and exits wait.
+    error TwapLost(address stock);
+
     using SafeERC20 for IERC20;
 
     uint256 private constant BPS = 10_000;
@@ -265,7 +268,12 @@ library PoolHedging {
         if (!ok && gasleft() <= gasBefore / 64) revert InvalidParams();
         if (!ok || ret.length < 32) return s;
         uint256 twap = abi.decode(ret, (uint256));
-        if (twap == 0) return s;
+        if (twap == 0) {
+            // Audit M-2 (fail closed): a set but unservable TWAP pauses LP entries and exits for this stock.
+            (bool ok2, bytes memory r2) = address(pg).staticcall(abi.encodeWithSignature("twapSource(address)", stock));
+            if (ok2 && r2.length >= 32 && abi.decode(r2, (address)) != address(0)) revert TwapLost(stock);
+            return s;
+        }
         return side == 1 ? Math.max(s, twap) : Math.min(s, twap);
     }
 
@@ -394,7 +402,10 @@ library PoolHedging {
                 _trySwap(r, stock, address(c.usdg), toSell, _minUsdgOut(toSell, p, c.maxSlippageBps));
             if (!ok) continue;
             b.units[stock] = units - sold;
-            uint256 v = Math.mulDiv(sold, p, STOCK_VALUE_DENOMINATOR, Math.Rounding.Ceil);
+            // Audit L-2: the claim valued these units at the worse (lower) of S and the TWAP, so the shortfall is measured
+            // at that same price; the sale floor above keeps the higher one.
+            uint256 val = twap != 0 && twap < s ? twap : s;
+            uint256 v = Math.mulDiv(sold, val, STOCK_VALUE_DENOMINATOR, Math.Rounding.Ceil);
             if (v > received) shortfall += v - received;
             emit CashRaised(stock, sold, received);
         }

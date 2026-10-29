@@ -77,6 +77,25 @@ contract MockObservingPool {
         }
     }
 
+    /// @notice Uniswap's slot0 shape; only the ring index and cardinality are meaningful here.
+    function slot0() external view returns (uint160, int24, uint16, uint16, uint16, uint8, bool) {
+        uint16 card = cardinality;
+        return (0, tick, uint16((_obs.length - 1) % card), card, card, 0, true);
+    }
+
+    /// @notice Uniswap's ring slot `i`: the newest observation j with j % cardinality == i still kept.
+    function observations(uint256 i) external view returns (uint32, int56, uint160, bool) {
+        uint256 n = _obs.length;
+        uint256 kept = n < cardinality ? n : cardinality;
+        if (i >= cardinality) return (0, 0, 0, false);
+        uint256 last = n - 1;
+        uint256 d = (last % cardinality + cardinality - i) % cardinality;
+        if (d > last) return (0, 0, 0, false);
+        uint256 j = last - d;
+        if (j < n - kept) return (0, 0, 0, false);
+        return (_obs[j].ts, _obs[j].cum, 0, true);
+    }
+
     function _cumAt(uint32 target) private view returns (int56) {
         uint256 n = _obs.length;
         Obs memory last = _obs[n - 1];
@@ -84,15 +103,19 @@ contract MockObservingPool {
         uint256 kept = n < cardinality ? n : cardinality;
         uint256 oldest = n - kept;
         require(target >= _obs[oldest].ts, "OLD");
-        for (uint256 j = n - 1; j > oldest; --j) {
-            Obs memory a = _obs[j - 1];
-            if (target >= a.ts) {
-                Obs memory b = _obs[j];
-                int56 slope = (b.cum - a.cum) / int56(uint56(b.ts - a.ts)); // constant tick between observations
-                return a.cum + slope * int56(uint56(target - a.ts));
-            }
+        // Binary search for the last observation at or before `target` (cheap enough for long rings).
+        uint256 lo = oldest;
+        uint256 hi = n - 1;
+        while (lo < hi) {
+            uint256 mid = (lo + hi + 1) / 2;
+            if (_obs[mid].ts <= target) lo = mid;
+            else hi = mid - 1;
         }
-        return _obs[oldest].cum;
+        Obs memory a = _obs[lo];
+        if (a.ts == target || lo == n - 1) return a.cum;
+        Obs memory b = _obs[lo + 1];
+        int56 slope = (b.cum - a.cum) / int56(uint56(b.ts - a.ts)); // constant tick between observations
+        return a.cum + slope * int56(uint56(target - a.ts));
     }
 }
 

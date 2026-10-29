@@ -347,12 +347,50 @@ contract PriceGuard is AccessControl, IPriceGuard {
 
     /// @notice The stock pool's TWAP over `tradeTwapWindow` (WAD USDG per whole token), in any session; 0 when no TWAP
     /// source is set or the pool cannot serve the window. Never reverts (review F01: the engine's worse-of price).
-    function tradeTwap(address stock) external view returns (uint256) {
+    function tradeTwap(address stock) external view returns (uint256 twap) {
         TwapSource memory src = _twap[stock];
         if (src.pool == address(0)) return 0;
         uint32 w = tradeTwapWindow;
         src.window = w == 0 ? DEFAULT_TRADE_TWAP_WINDOW : w;
+        twap = _twapPrice(src);
+        if (twap != 0) return twap;
+        // Audit M-2: a ring refilled with dust observations (or too short for the window) must not erase the worse-of
+        // price. Fall back to the longest window the ring still covers, from its oldest observation; never to spot.
+        uint32 age = _oldestObservationAge(src.pool);
+        if (age < MIN_TRADE_TWAP_WINDOW || age >= src.window) return 0;
+        src.window = age;
         return _twapPrice(src);
+    }
+
+    /// @notice Audit M-2 fail-closed signal: true when a TWAP source is set for `stock` but `tradeTwap` cannot serve
+    /// even the longest window the ring covers. Consumers then escrow sells and pause LP entries and exits instead of
+    /// dropping the worse-of check.
+    function tradeTwapLost(address stock) external view returns (bool) {
+        if (_twap[stock].pool == address(0)) return false;
+        return this.tradeTwap(stock) == 0;
+    }
+
+    /// @dev Seconds since the pool's oldest initialized observation (0 on any failure). Reads slot0 for the ring index
+    /// and cardinality, then the slot after the index (or slot 0 while the ring has not wrapped).
+    function _oldestObservationAge(address pool) private view returns (uint32 age) {
+        (bool ok, bytes memory data) =
+            pool.staticcall{gas: EXTERNAL_READ_GAS}(abi.encodeWithSignature("slot0()"));
+        if (!ok || data.length < 224) return 0;
+        (,, uint16 index, uint16 card) = abi.decode(data, (uint160, int24, uint16, uint16));
+        if (card == 0) return 0;
+        uint256 next = (uint256(index) + 1) % card;
+        (ok, data) = pool.staticcall{gas: EXTERNAL_READ_GAS}(abi.encodeWithSignature("observations(uint256)", next));
+        if (!ok || data.length < 128) return 0;
+        (uint32 ts,,, bool init) = abi.decode(data, (uint32, int56, uint160, bool));
+        if (!init) {
+            (ok, data) = pool.staticcall{gas: EXTERNAL_READ_GAS}(abi.encodeWithSignature("observations(uint256)", 0));
+            if (!ok || data.length < 128) return 0;
+            (ts,,, init) = abi.decode(data, (uint32, int56, uint160, bool));
+            if (!init) return 0;
+        }
+        uint32 nowTs = uint32(block.timestamp);
+        if (ts > nowTs) return 0;
+        age = nowTs - ts;
     }
 
     /// @notice When the current halt started (0 = not halted): the earlier of poke's latch and the halt derived from the

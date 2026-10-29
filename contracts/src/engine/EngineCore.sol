@@ -235,6 +235,22 @@ library EngineCore {
         twap = abi.decode(data, (uint256));
     }
 
+    /// @dev Audit M-2: true when PriceGuard has a TWAP source for `stock` but `tradeTwap` reads 0 (ring erased or too
+    /// short). Uses only `twapSource` and `tradeTwap`, which every deployed PriceGuard has; a guard without
+    /// `twapSource` (mocks) reads false. A call that failed for lack of gas reverts.
+    function twapLost(address stock) internal view returns (bool) {
+        address pg = address(EngineStorage.layout().priceGuard);
+        uint256 gasBefore = gasleft();
+        (bool ok, bytes memory data) =
+            pg.staticcall{gas: TWAP_READ_GAS}(abi.encodeWithSignature("twapSource(address)", stock));
+        if (!ok) {
+            requireNotOutOfGas(gasBefore);
+            return false;
+        }
+        if (data.length < 32 || abi.decode(data, (address)) == address(0)) return false;
+        return tradeTwap(stock) == 0;
+    }
+
     /// @dev The S a trade is priced at (review F01/F02/F10/F22/F23): the worse for the trader of the feed (or last
     /// good / settlement) S and the trade TWAP. A manipulated pool can only worsen the manipulator's own fill (others
     /// are bounded by maxCost / minProceeds). A sell's held tokens are priced at `heldS` on top (review R02).
@@ -380,6 +396,27 @@ library EngineCore {
         if (c.supply == 0) return c.norm;
         uint256 r = Math.max(c.rate0, Funding.rate(c.pu.v, c.pu.payoff));
         return Funding.stepAtRate(c.norm, r, block.timestamp - c.lastAccrual, c.tau);
+    }
+
+    /// @dev Audit M-1: the NAV a quote must use so that it equals execution. A trade's own accrual reports funding to
+    /// the pool, which sends the protocol fee on it to the FeeRouter (NAV falls by that fee) before the trade is priced.
+    /// The quote view simulates the norm step, so it also takes the fee off: same amount, same rounding as
+    /// `reportFunding` and `PoolLayers.takeIncome`. Fees owed are already in NAV, so only the new fee moves it.
+    function quoteNav(Ctx memory c, uint256 oldNorm, uint256 liabilityWad) internal view returns (int256 nav) {
+        EngineStorage.Layout storage $ = EngineStorage.layout();
+        nav = $.pool.navFor(liabilityWad);
+        if (c.norm >= oldNorm) return nav;
+        uint256 fundingWad = liab(c.supply, oldNorm, c.pu.v) - liab(c.supply, c.norm, c.pu.v);
+        uint256 amount = ($.fundingDustWad + fundingWad) / 1e12 + $.fundingBacklogUsdg;
+        if (amount == 0) return nav;
+        (bool ok, bytes memory r) = address($.pool).staticcall(abi.encodeWithSignature("feeRouter()"));
+        if (!ok || r.length < 32) return nav;
+        address router = abi.decode(r, (address));
+        if (router == address(0)) return nav;
+        (ok, r) = router.staticcall(abi.encodeWithSignature("protocolFeeBps()"));
+        if (!ok || r.length < 32) return nav;
+        uint256 fee = Math.mulDiv(amount, abi.decode(r, (uint256)), BPS);
+        nav -= int256(fee * 1e12);
     }
 
     /// @dev Tells the pool about funding in USDG (6 dp); dust below one micro-USDG carries to the next report. A

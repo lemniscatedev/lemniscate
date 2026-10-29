@@ -40,7 +40,8 @@ library EngineSellLib {
         EngineCore.applyFunding(h, c);
         tokens = EngineCore.sellSize(c, seller, tokens);
         EngineStorage.Hold memory hd = EngineCore.takeHold(id, seller, tokens);
-        if (!EngineCore.sellable(c)) {
+        // Audit M-2 (fail closed): a lost trade TWAP escrows the sell instead of settling it at a stale S.
+        if (!EngineCore.sellable(c) || EngineCore.twapLost(c.stock)) {
             escrow(c, seller, recipient, tokens, minProceeds, hd);
             return 0;
         }
@@ -79,12 +80,13 @@ library EngineSellLib {
             return q;
         }
         bool due = c.lastAccrual < block.timestamp;
+        uint256 oldNorm = c.norm;
         if (due) c.norm = EngineCore.nextNorm(c);
         uint256 tokens = Math.mulDiv(units, WAD, c.norm, Math.Rounding.Ceil);
         EngineHelper.Book memory b = EngineCore.bookFor(h, c, tokens, false, due);
         EngineStorage.Hold memory hd;
         if (account != address(0)) hd = EngineCore.openHold(id, account);
-        (q,) = EngineCore.priceSell(h, c, b, EngineStorage.layout().pool.navFor(b.tNow), tokens, account, hd);
+        (q,) = EngineCore.priceSell(h, c, b, EngineCore.quoteNav(c, oldNorm, b.tNow), tokens, account, hd);
         q.buyable = EngineCore.buyBlock(c) == 0;
     }
 
@@ -95,7 +97,7 @@ library EngineSellLib {
         if (!t.open) revert IOptionEngine.QueueNotFillable(ticket);
         EngineCore.Ctx memory c = EngineCore.context(h, t.id, false);
         EngineCore.applyFunding(h, c);
-        if (!EngineCore.sellable(c)) revert IOptionEngine.QueueNotFillable(ticket);
+        if (!EngineCore.sellable(c) || EngineCore.twapLost(c.stock)) revert IOptionEngine.QueueNotFillable(ticket);
         uint256 tokens = t.tokens;
         uint256 units = Math.mulDiv(tokens, c.norm, WAD);
         EngineHelper.Book memory b = EngineCore.bookFor(h, c, tokens, false, false);

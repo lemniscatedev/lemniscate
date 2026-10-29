@@ -177,7 +177,9 @@ library PoolLayers {
         uint256 shortfall;
         bool proRata = x.liquid < x.queuedValue;
         if (!proRata) {
-            uint256 need = target - _reserveSlice(x, shares);
+            uint256 slice = _reserveSlice(x, shares);
+            // Audit L-1: when only the Reserve keeps NAV positive the slice can exceed the target; never underflow.
+            uint256 need = target > slice ? target - slice : 0;
             if (c.usdg.balanceOf(address(this)) < need) shortfall = PoolHedging.ensureCash(b, c, need, false);
             proRata = c.usdg.balanceOf(address(this)) + shortfall < need;
         }

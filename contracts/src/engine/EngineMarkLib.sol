@@ -25,6 +25,9 @@ import {EngineStorage} from "./EngineStorage.sol";
 /// they are re-marked. Cost: one readLite and two vol reads per name, never a loop over series. External library,
 /// delegatecalled by the engine.
 library EngineMarkLib {
+    /// @notice Audit M-2: the stock's trade TWAP source is set but cannot be served; LP entries and exits wait.
+    error TwapLost(address stock);
+
     uint256 private constant WAD = 1e18;
     uint256 private constant VOL_POINT_BPS = 100;
     uint256 private constant DAILY = 86_400;
@@ -239,7 +242,14 @@ library EngineMarkLib {
             address($.priceGuard).staticcall{gas: 400_000}(abi.encodeWithSignature("tradeTwap(address)", stock));
         if (!ok && gasleft() <= gasBefore / 63) revert InnerCallOutOfGas();
         if (!ok || ret.length < 32) return 0;
-        return abi.decode(ret, (uint256));
+        uint256 twap = abi.decode(ret, (uint256));
+        if (twap == 0) {
+            // Audit M-2 (fail closed): the LP-boundary liability never drops the worse-of side when the source is lost.
+            (bool ok2, bytes memory r2) =
+                address($.priceGuard).staticcall{gas: 400_000}(abi.encodeWithSignature("twapSource(address)", stock));
+            if (ok2 && r2.length >= 32 && abi.decode(r2, (address)) != address(0)) revert TwapLost(stock);
+        }
+        return twap;
     }
 
     /// @dev Review R16: like the hedge leg (decision 52a), the liability is read at the worse for the LP crossing the

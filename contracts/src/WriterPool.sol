@@ -621,12 +621,20 @@ contract WriterPool is
     }
 
     /// @dev Review F12/F15: `engine.navLiability(high)`, the liability bound for LP entries (false) and exits (true);
-    /// an engine without it (older engines, mocks) gives `bookValue()`.
+    /// an engine without it (older engines, mocks) gives `bookValue()`; an engine whose call reverts with a reason
+    /// pauses the entry or exit (audit M-2 fail closed).
     function _navLiability(bool high) private view returns (uint256) {
         IOptionEngine e = engine;
         if (address(e) == address(0)) return 0;
         (bool ok, bytes memory data) = address(e).staticcall(abi.encodeWithSignature("navLiability(bool)", high));
         if (ok && data.length >= 32) return abi.decode(data, (uint256));
+        // Audit M-2 follow-up (fail closed): an engine that has the call and reverts (e.g. TwapLost) pauses the LP
+        // entry or exit; only an engine without it (empty revert data: older engines, mocks) falls back to book value.
+        if (!ok && data.length != 0) {
+            assembly ("memory-safe") {
+                revert(add(data, 32), mload(data))
+            }
+        }
         return e.bookValue();
     }
 

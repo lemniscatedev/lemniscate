@@ -141,11 +141,12 @@ library EngineOpsLib {
             return q;
         }
         bool due = c.lastAccrual < block.timestamp;
+        uint256 oldNorm = c.norm;
         if (due) c.norm = EngineCore.nextNorm(c);
         uint256 tokens = isBuy ? units * WAD / c.norm : Math.mulDiv(units, WAD, c.norm, Math.Rounding.Ceil);
         EngineHelper.Book memory b = EngineCore.bookFor(h, c, tokens, isBuy, due);
         (q,) = EngineCore.priceTrade(
-            h, c, b, EngineStorage.layout().pool.navFor(b.tNow), units, isBuy, account, EngineCore.tradeS(c, isBuy)
+            h, c, b, EngineCore.quoteNav(c, oldNorm, b.tNow), units, isBuy, account, EngineCore.tradeS(c, isBuy)
         );
         q.buyable = EngineCore.buyBlock(c) == 0;
     }
