@@ -131,6 +131,7 @@ if [[ "$(id -u)" != 0 ]]; then
   out="$(env $ARM LEMNISCATE_DEPLOYMENTS_SRC="$T/tndep" DEPLOY_SH_TEST_ROOT="$T/tnroot" DEPLOY_SH_TEST_SERVER="$T/argserver" bash "$DEPLOY" --local --repo "$T/queue.git" --ref "$GSHA" 2>&1)"; rc=$?
   check "an unknown NETWORK is refused before anything: exit 75" [ "$rc" == 75 ]
   rm -f "$T/tnroot/etc/lemniscate/lemniscate.env"
+  sleep 1   # release names are per second; the previous call may have used this second's name
   out="$(env $ARM LEMNISCATE_DEPLOYMENTS_SRC="$T/dep" DEPLOY_SH_TEST_ROOT="$T/tnroot" DEPLOY_SH_TEST_SERVER="$T/argserver" bash "$DEPLOY" --local --repo "$T/queue.git" --ref "$GSHA" 2>&1)"; rc=$?
   check "no lemniscate.env: mainnet profile (4663.json)" bash -c '[ "$1" == 0 ] && grep -q " mainnet$" <<<"$2"' _ "$rc" "$out"
 fi
