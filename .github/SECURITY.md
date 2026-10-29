@@ -4,7 +4,12 @@ Lemniscate is pre-release software and has not been audited. Use only funds you 
 
 ## Reporting a vulnerability
 
-Please report privately and do not open a public issue. Contact details will be published with the first deployment.
+Please report privately and do not open a public issue.
+
+1. Preferred: GitHub private vulnerability reporting. On this repository open the **Security** tab and choose
+   **Report a vulnerability**. Only the maintainers can see the report.
+2. Project mailbox: `security@get-lemniscate.tech` (to be created; until it exists, use the GitHub route above).
+
 Include the affected contract or service, steps to reproduce, and the impact you see.
 
 ## Scope
