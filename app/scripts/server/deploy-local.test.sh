@@ -109,6 +109,34 @@ fi
 out="$(DEPLOY_SH_TEST_ROOT="$T/fakeroot" DEPLOY_SH_TEST_SERVER="$T/nope" bash "$DEPLOY" --local --check 2>&1)"; rc=$?
 check "the test seam needs an executable stand-in" [ "$rc" != 0 ]
 
+# ---- network profile: NETWORK=testnet in the server's lemniscate.env ships 46630.json and tells the server script so
+mkdir -p "$T/tnroot/opt/lemniscate/releases" "$T/tnroot/etc/lemniscate" "$T/tndep"
+printf 'NETWORK=testnet\nCHAIN_ID=46630\n' >"$T/tnroot/etc/lemniscate/lemniscate.env"
+printf '{"chainId": 46630, "network": "testnet"}\n' >"$T/tndep/46630.json"
+printf '#!/bin/bash\necho "server args: $*"; exit 0\n' >"$T/argserver"; chmod +x "$T/argserver"
+out="$(umask 077; DEPLOY_SH_SOURCE_ONLY=1 bash -c '. "$1"; stage_release "$2" "$3" "$4" "$5" 46630.json && echo staged' _ "$DEPLOY" "$T/queue.git" "$GSHA" "$T/releases/tn1" "$T/tndep" 2>&1)"
+check "stage_release ships a named deployment file (46630.json)" [ -f "$T/releases/tn1/app/deployments/46630.json" -a ! -e "$T/releases/tn1/app/deployments/4663.json" ]
+if [[ "$(id -u)" != 0 ]]; then
+  out="$(env $ARM LEMNISCATE_DEPLOYMENTS_SRC="$T/tndep" DEPLOY_SH_TEST_ROOT="$T/tnroot" DEPLOY_SH_TEST_SERVER="$T/argserver" bash "$DEPLOY" --local --repo "$T/queue.git" --ref "$GSHA" 2>&1)"; rc=$?
+  check "testnet profile: --local reads NETWORK=testnet and deploys" [ "$rc" == 0 ]
+  check "  ... the server script is told the network (testnet)" grep -Eq "server args: .* deploy [0-9TZ]+-[0-9a-f]{12} $GSHA testnet" <<<"$out"
+  check "  ... and the release holds 46630.json" bash -c 'ls "$1"/opt/lemniscate/releases/*/app/deployments/46630.json >/dev/null' _ "$T/tnroot"
+  out="$(env $ARM LEMNISCATE_DEPLOYMENTS_SRC="$T/dep" DEPLOY_SH_TEST_ROOT="$T/tnroot" DEPLOY_SH_TEST_SERVER="$T/argserver" bash "$DEPLOY" --local --repo "$T/queue.git" --ref "$GSHA" 2>&1)"; rc=$?
+  check "testnet profile without 46630.json: exit 75, nothing switched" [ "$rc" == 75 ]
+  check "  ... names the missing testnet file" grep -q "no testnet deployment" <<<"$out"
+  printf '{"chainId": 4663, "network": "mainnet"}\n' >"$T/tndep2.json"; mkdir -p "$T/tndep2"; cp "$T/tndep2.json" "$T/tndep2/46630.json"
+  out="$(env $ARM LEMNISCATE_DEPLOYMENTS_SRC="$T/tndep2" DEPLOY_SH_TEST_ROOT="$T/tnroot" DEPLOY_SH_TEST_SERVER="$T/argserver" bash "$DEPLOY" --local --repo "$T/queue.git" --ref "$GSHA" 2>&1)"; rc=$?
+  check "testnet profile refuses a mainnet file named 46630.json: exit 75" [ "$rc" == 75 ]
+  printf 'NETWORK=moon\n' >"$T/tnroot/etc/lemniscate/lemniscate.env"
+  out="$(env $ARM LEMNISCATE_DEPLOYMENTS_SRC="$T/tndep" DEPLOY_SH_TEST_ROOT="$T/tnroot" DEPLOY_SH_TEST_SERVER="$T/argserver" bash "$DEPLOY" --local --repo "$T/queue.git" --ref "$GSHA" 2>&1)"; rc=$?
+  check "an unknown NETWORK is refused before anything: exit 75" [ "$rc" == 75 ]
+  rm -f "$T/tnroot/etc/lemniscate/lemniscate.env"
+  out="$(env $ARM LEMNISCATE_DEPLOYMENTS_SRC="$T/dep" DEPLOY_SH_TEST_ROOT="$T/tnroot" DEPLOY_SH_TEST_SERVER="$T/argserver" bash "$DEPLOY" --local --repo "$T/queue.git" --ref "$GSHA" 2>&1)"; rc=$?
+  check "no lemniscate.env: mainnet profile (4663.json)" bash -c '[ "$1" == 0 ] && grep -q " mainnet$" <<<"$2"' _ "$rc" "$out"
+fi
+check "the server script: hedger only in the mainnet profile" bash -c 'DEPLOY_SH_SOURCE_ONLY=1; . "$1"; out="$(remote_script)"; grep -q "mainnet) NET=mainnet; CHAIN=4663; CORE=(indexer api keeper hedger vol-engine)" <<<"$out" && grep -q "testnet) CHAIN=46630; CORE=(indexer api keeper vol-engine)" <<<"$out"' _ "$DEPLOY"
+check "the server script refuses a network the caller did not ask for" bash -c 'grep -q "this deploy was started for \$want_net" "$1"' _ "$DEPLOY"
+
 # ---- review MUST-FIX 6: only .healthy releases are rolled back to or kept; failed / half-built ones are removed
 B="$T/rel"; mkdir -p "$B/releases"
 for r in 20261101T000000Z-aaaa 20261102T000000Z-bbbb 20261103T000000Z-cccc 20261104T000000Z-dddd 20261105T000000Z-eeee \

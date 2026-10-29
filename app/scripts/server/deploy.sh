@@ -19,10 +19,11 @@
 #
 # A deploy:
 #   1. ships the committed tree at <ref> (git archive of app/ and vol-engine/: uncommitted changes are never shipped) plus
-#      the mainnet deployment file app/deployments/4663.json (from LEMNISCATE_DEPLOYMENTS_SRC, usually gitignored) to a
-#      new /opt/lemniscate/releases/<time>-<sha>;
-#   2. checks /etc/lemniscate/lemniscate.env: no CHANGE_ME left, NETWORK=mainnet and CHAIN_ID=4663, the RPC answers chain
-#      id 4663, the oracle address matches 4663.json, no raw key in any env file, and every keystore / password file in
+#      the deployment file app/deployments/<chain id>.json (4663.json on mainnet; from LEMNISCATE_DEPLOYMENTS_SRC, usually
+#      gitignored) to a new /opt/lemniscate/releases/<time>-<sha>;
+#   2. checks /etc/lemniscate/lemniscate.env: no CHANGE_ME left, NETWORK and CHAIN_ID agree (mainnet 4663, or the testnet
+#      profile below), the RPC answers that chain id, the oracle address matches the deployment file, no raw key in any env
+#      file, and every keystore / password file in
 #      /etc/lemniscate/keys is readable by the one service user that signs with it and by no other service user (only
 #      tested for access, never read);
 #   3. refreshes the systemd units, runs bun install --frozen-lockfile as lemniscate, builds the vol-engine virtualenv;
@@ -33,6 +34,13 @@
 #      the deploy exits 1 (migrations are not reversed: see README.md, "Roll back");
 #   6. prints the API's view: head, indexer lag, each keeper job's coarse status.
 # The last 5 releases are kept; README.md says how to roll back by hand.
+#
+# Network profile: NETWORK in /etc/lemniscate/lemniscate.env picks it (mainnet unless it says otherwise). mainnet = chain
+# 4663, 4663.json, services indexer, api, keeper, hedger, vol-engine (keeper, hedger and vol-signer keystores required).
+# testnet = Robinhood Chain testnet 46630, 46630.json, the same services without the hedger (the testnet has no Uniswap
+# v3 to hedge on: docs, testnet run), keeper and vol-signer keystores required. A remote deploy (not --local) cannot read
+# the server's env file before the upload, so it takes the profile from LEMNISCATE_NETWORK (default mainnet); the server
+# script refuses when the two disagree.
 #
 # Files are created with umask 022 and the release dir is 0755, whatever umask the caller had (a sudo wrapper or a
 # systemd unit with UMask=0027 would otherwise make the release, node_modules and the virtualenv unreadable to the
@@ -51,7 +59,8 @@
 #
 # Env (all optional):
 #   SSH_OPTS                  extra ssh options, e.g. "-i ~/.ssh/<key> -p 22"
-#   LEMNISCATE_DEPLOYMENTS_SRC  folder holding 4663.json (default: app/deployments of this checkout)
+#   LEMNISCATE_DEPLOYMENTS_SRC  folder holding <chain id>.json (default: app/deployments of this checkout)
+#   LEMNISCATE_NETWORK        remote deploys only: mainnet (default) or testnet; --local reads NETWORK from lemniscate.env
 #   LEMNISCATE_PUBLIC_API_URL   e.g. https://api.<your-domain>: also checked from this machine after the deploy
 #   LEMNISCATE_ALLOW_REAL_DEPLOY, LEMNISCATE_ALLOW_FILE   the --local arming guard (see above)
 #   DEPLOY_RETRY_WAITS        waits between tries of a network step (default "10 30")
@@ -84,15 +93,16 @@ retry() {
   return "$rc"
 }
 
-# stage_release <git dir> <sha> <release dir> <folder with 4663.json>: the committed tree of app/ and vol-engine/ at sha
-# (git archive, so a bare repo works) plus the deployment file, in a NEW release dir that every service user can read.
+# stage_release <git dir> <sha> <release dir> <folder with the deployment file> [<file name>, default 4663.json]: the
+# committed tree of app/ and vol-engine/ at sha (git archive, so a bare repo works) plus the deployment file, in a NEW
+# release dir that every service user can read.
 stage_release() {
-  local root="$1" sha="$2" dir="$3" dep="$4"
+  local root="$1" sha="$2" dir="$3" dep="$4" name="${5:-4663.json}"
   mkdir -m 0755 "$dir" || return 1
   chmod 0755 "$dir" || return 1
   git -C "$root" archive --format=tar "$sha" app vol-engine LICENSE README.md | tar -xf - -C "$dir" --no-same-owner || return 1
   mkdir -p "$dir/app/deployments" && chmod 0755 "$dir/app/deployments" || return 1
-  cat "$dep/4663.json" >"$dir/app/deployments/4663.json" || return 1
+  cat "$dep/$name" >"$dir/app/deployments/$name" || return 1
   chmod -R go-w,a+rX "$dir"
 }
 
@@ -142,7 +152,7 @@ remote_script() {
 main() {
   set -euo pipefail
   umask 022
-  local mode="$1" rel="${2:-}" sha="${3:-}"
+  local mode="$1" rel="${2:-}" sha="${3:-}" want_net="${4:-}"
   # Any failure of a deploy before the link moves exits 75 ("nothing switched"; the running release is untouched and the
   # caller may simply try again later). From the switch on, a failure exits 1 (the link was put back; see below).
   SWITCHED=0
@@ -150,8 +160,8 @@ main() {
     trap 'rc=$?; if [[ "$rc" != 0 && "$SWITCHED" == 0 ]]; then abandon_release /opt/lemniscate "$rel"; printf "deploy (server): stopped before the switch (exit %s): nothing switched, %s/current is unchanged\n" "$rc" /opt/lemniscate >&2; exit 75; fi' EXIT
   fi
   local BASE=/opt/lemniscate ENVF=/etc/lemniscate/lemniscate.env KEYS=/etc/lemniscate/keys
-  # Start order. Required services always; mcp only when it is already enabled.
-  local CORE=(indexer api keeper hedger vol-engine)
+  # Start order. Required services always; mcp only when it is already enabled. Set by the network profile below.
+  local CORE=() NET CHAIN REQUIRED_KEYS=()
   log() { printf '[server %s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
   die() { printf 'deploy (server): %s\n' "$*" >&2; exit 1; }
   # Last assignment wins, as in systemd's EnvironmentFile.
@@ -175,6 +185,14 @@ main() {
   id lemniscate >/dev/null 2>&1 && [[ -x /usr/local/bin/bun && -f /etc/lemniscate/db.env && -f "$ENVF" ]] \
     || die "server not provisioned: run deploy.sh --provision <host> first"
   command -v jq >/dev/null || die "jq missing: re-run provision.sh"
+
+  # ---- network profile (see the header of deploy.sh): mainnet unless lemniscate.env says testnet
+  NET="$(envval NETWORK)"
+  case "${NET:-mainnet}" in
+    mainnet) NET=mainnet; CHAIN=4663; CORE=(indexer api keeper hedger vol-engine); REQUIRED_KEYS=(keeper hedger vol-signer) ;;
+    testnet) CHAIN=46630; CORE=(indexer api keeper vol-engine); REQUIRED_KEYS=(keeper vol-signer) ;;
+    *) die "NETWORK must be mainnet or testnet in $ENVF (it is '$NET')" ;;
+  esac
 
   api_url() { local p; p="$(envval API_PORT)"; printf 'http://127.0.0.1:%s/v1/health' "${p:-3101}"; }
 
@@ -256,10 +274,11 @@ main() {
   local left
   left="$(grep -oE '^[A-Z0-9_]+=(CHANGE_ME|GENERATED_BY_PROVISION)$' "$ENVF" | cut -d= -f1 | tr '\n' ' ' || true)"
   [[ -z "$left" ]] || die "fill these in /etc/lemniscate/lemniscate.env first: $left"
-  [[ "$(envval NETWORK)" == mainnet ]] || die "NETWORK must be mainnet in /etc/lemniscate/lemniscate.env"
-  [[ "$(envval CHAIN_ID)" == 4663 ]] || die "CHAIN_ID must be 4663 in /etc/lemniscate/lemniscate.env"
-  [[ "$(envval DEPLOYMENT_FILE)" == /opt/lemniscate/current/app/deployments/4663.json ]] \
-    || die "DEPLOYMENT_FILE must be /opt/lemniscate/current/app/deployments/4663.json"
+  [[ "$(envval NETWORK)" == "$NET" ]] || die "NETWORK must be set to $NET in /etc/lemniscate/lemniscate.env"
+  [[ -z "$want_net" || "$want_net" == "$NET" ]] || die "this deploy was started for $want_net but $ENVF says NETWORK=$NET: refusing"
+  [[ "$(envval CHAIN_ID)" == "$CHAIN" ]] || die "CHAIN_ID must be $CHAIN ($NET) in /etc/lemniscate/lemniscate.env"
+  [[ "$(envval DEPLOYMENT_FILE)" == "/opt/lemniscate/current/app/deployments/$CHAIN.json" ]] \
+    || die "DEPLOYMENT_FILE must be /opt/lemniscate/current/app/deployments/$CHAIN.json"
   local v f
   # No raw key anywhere: the services read keystores (KEYS dir) themselves; NODE_ENV=production refuses a raw key too.
   for f in "$ENVF" /etc/lemniscate/*.env; do
@@ -270,25 +289,25 @@ main() {
   done
   local rpc chain
   rpc="$(envval PUBLIC_RPC_URL)"
-  rpc="${rpc:-https://rpc.mainnet.chain.robinhood.com}"
+  rpc="${rpc:-https://rpc.$NET.chain.robinhood.com}"
   chain_id() { curl -fsS -m 20 -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' "$rpc" | jq -er '.result'; }
   chain="$(retry "eth_chainId" chain_id)" || die "PUBLIC_RPC_URL did not answer eth_chainId (tried 3 times)"
-  [[ -n "$chain" && "$((chain))" == 4663 ]] || die "PUBLIC_RPC_URL answered chain id ${chain:-nothing}, not Robinhood Chain mainnet 4663: refusing"
+  [[ -n "$chain" && "$((chain))" == "$CHAIN" ]] || die "PUBLIC_RPC_URL answered chain id ${chain:-nothing}, not Robinhood Chain $NET $CHAIN: refusing"
 
-  local dep="$R/app/deployments/4663.json"
-  [[ -f "$dep" ]] || die "4663.json missing from the release"
-  jq -e '.chainId == 4663 and .network == "mainnet" and (.forkProof == null)' "$dep" >/dev/null || die "4663.json is not a mainnet (4663) deployment"
+  local dep="$R/app/deployments/$CHAIN.json"
+  [[ -f "$dep" ]] || die "$CHAIN.json missing from the release"
+  jq -e --argjson c "$CHAIN" --arg n "$NET" '.chainId == $c and .network == $n and (.forkProof == null)' "$dep" >/dev/null || die "$CHAIN.json is not a $NET ($CHAIN) deployment"
   local want have
   want="$(jq -r '.contracts.volOracle // empty' "$dep")"
   have="$(envval VOL_ORACLE_ADDRESS)"
-  [[ -z "$want" || "$(lower "$want")" == "$(lower "$have")" ]] || die "VOL_ORACLE_ADDRESS in lemniscate.env is $have but 4663.json says volOracle = $want"
+  [[ -z "$want" || "$(lower "$want")" == "$(lower "$have")" ]] || die "VOL_ORACLE_ADDRESS in lemniscate.env is $have but $CHAIN.json says volOracle = $want"
 
   # One Unix user per service (PRIV-5): make sure the users, state dirs and env files exist and each keystore belongs to the
   # one service that signs with it (a server provisioned before this change gets them here).
   bash "$R/app/scripts/server/provision.sh" --service-users
-  # Keystores: the three required roles, then every file in the folder must be a readable pair.
+  # Keystores: the required roles of this network, then every file in the folder must be a readable pair.
   local role owner other
-  for role in keeper hedger vol-signer; do
+  for role in "${REQUIRED_KEYS[@]}"; do
     [[ -e "$KEYS/$role.json" && -e "$KEYS/$role.password" ]] || die "$KEYS/$role.json and $role.password are missing (copy the $role keystore and password file in)"
   done
   for f in "$KEYS"/*.json; do
@@ -322,7 +341,7 @@ main() {
     printf 'X402_SETTLER_KEYSTORE=%s\nX402_SETTLER_KEYSTORE_PASSWORD_FILE=%s\n' "$KEYS/x402-settler.json" "$KEYS/x402-settler.password" >>"$keysenv.tmp"
   fi
   chmod 0644 "$keysenv.tmp" && mv "$keysenv.tmp" "$keysenv"
-  log "preflight ok: chain 4663, deployment block $(jq -r '.deployBlock' "$dep"), keystores readable"
+  log "preflight ok: $NET chain $CHAIN, deployment block $(jq -r '.deployBlock' "$dep"), keystores readable"
 
   # ---- units, ownership, dependencies
   bash "$R/app/scripts/server/provision.sh" --units-only
@@ -520,30 +539,43 @@ if [[ "$MODE" == provision ]]; then
 fi
 
 # ---------------------------------------------------------------- deploy: local checks
+# network profile: --local reads NETWORK from this server's lemniscate.env (root-only; absent = mainnet); a remote deploy
+# takes LEMNISCATE_NETWORK (default mainnet) and the server script refuses when its env file disagrees
+if [[ "$LOCAL" == 1 ]]; then
+  NET="$( { sed -n 's/^NETWORK=//p' "$TEST_ROOT/etc/lemniscate/lemniscate.env" 2>/dev/null || true; } | tail -1)"
+else
+  NET="${LEMNISCATE_NETWORK:-}"
+fi
+case "${NET:-mainnet}" in
+  mainnet) NET=mainnet; CHAIN=4663 ;;
+  testnet) CHAIN=46630 ;;
+  *) die_unswitched "unknown network '$NET' (mainnet or testnet)" ;;
+esac
+DEP_NAME="$CHAIN.json"
 DEP_SRC="${LEMNISCATE_DEPLOYMENTS_SRC:-$APP/deployments}"
-if [[ "$LOCAL" == 1 ]]; then [[ -n "${LEMNISCATE_DEPLOYMENTS_SRC:-}" ]] || die_unswitched "--local needs LEMNISCATE_DEPLOYMENTS_SRC (the folder that holds 4663.json)"; fi
-[[ -f "$DEP_SRC/4663.json" ]] || die_unswitched "no mainnet deployment in $DEP_SRC (4663.json): set LEMNISCATE_DEPLOYMENTS_SRC to the folder that has it"
-grep -Eq '"chainId"[[:space:]]*:[[:space:]]*4663([^0-9]|$)' "$DEP_SRC/4663.json" || die_unswitched "$DEP_SRC/4663.json is not for chain 4663"
-grep -Eq '"network"[[:space:]]*:[[:space:]]*"mainnet"' "$DEP_SRC/4663.json" || die_unswitched "$DEP_SRC/4663.json is not a mainnet deployment (network must be mainnet)"
-if grep -Eq '"forkProof"' "$DEP_SRC/4663.json"; then die_unswitched "$DEP_SRC/4663.json comes from a fork run (it has forkProof)"; fi
+if [[ "$LOCAL" == 1 ]]; then [[ -n "${LEMNISCATE_DEPLOYMENTS_SRC:-}" ]] || die_unswitched "--local needs LEMNISCATE_DEPLOYMENTS_SRC (the folder that holds $DEP_NAME)"; fi
+[[ -f "$DEP_SRC/$DEP_NAME" ]] || die_unswitched "no $NET deployment in $DEP_SRC ($DEP_NAME): set LEMNISCATE_DEPLOYMENTS_SRC to the folder that has it"
+grep -Eq "\"chainId\"[[:space:]]*:[[:space:]]*$CHAIN([^0-9]|\$)" "$DEP_SRC/$DEP_NAME" || die_unswitched "$DEP_SRC/$DEP_NAME is not for chain $CHAIN"
+grep -Eq "\"network\"[[:space:]]*:[[:space:]]*\"$NET\"" "$DEP_SRC/$DEP_NAME" || die_unswitched "$DEP_SRC/$DEP_NAME is not a $NET deployment (network must be $NET)"
+if grep -Eq '"forkProof"' "$DEP_SRC/$DEP_NAME"; then die_unswitched "$DEP_SRC/$DEP_NAME comes from a fork run (it has forkProof)"; fi
 
 # ---------------------------------------------------------------- deploy: upload, then run on the server
 REL="$(date -u +%Y%m%dT%H%M%SZ)-${SHA:0:12}"
 if [[ "$LOCAL" == 1 ]]; then
   log "deploying ${SHA:0:12} on this server as release $REL"
   [[ -d "$BASE_DIR/releases" ]] || die_unswitched "not provisioned: $BASE_DIR/releases is missing"
-  stage_release "$ROOT" "$SHA" "$BASE_DIR/releases/$REL" "$DEP_SRC" || { abandon_release "$BASE_DIR" "$REL"; die_unswitched "could not write the release dir $BASE_DIR/releases/$REL"; }
+  stage_release "$ROOT" "$SHA" "$BASE_DIR/releases/$REL" "$DEP_SRC" "$DEP_NAME" || { abandon_release "$BASE_DIR" "$REL"; die_unswitched "could not write the release dir $BASE_DIR/releases/$REL"; }
 else
   log "deploying ${SHA:0:12} to $HOST as release $REL"
   git -C "$ROOT" archive --format=tar "$SHA" app vol-engine LICENSE README.md | gzip -c \
     | ssh_ "set -e; umask 022; test -d /opt/lemniscate/releases || { echo 'not provisioned: run deploy.sh --provision first' >&2; exit 1; }; mkdir -m 0755 /opt/lemniscate/releases/$REL; tar -xzf - -C /opt/lemniscate/releases/$REL --no-same-owner" \
     || die_unswitched "upload to $HOST failed"
   ssh_ "umask 022; mkdir -p /opt/lemniscate/releases/$REL/app/deployments"
-  ssh_ "cat >/opt/lemniscate/releases/$REL/app/deployments/4663.json" <"$DEP_SRC/4663.json"
+  ssh_ "cat >/opt/lemniscate/releases/$REL/app/deployments/$DEP_NAME" <"$DEP_SRC/$DEP_NAME"
 fi
-log "uploaded code and 4663.json"
+log "uploaded code and $DEP_NAME ($NET)"
 
-run_remote deploy "$REL" "$SHA"
+run_remote deploy "$REL" "$SHA" "$NET"
 
 # ---------------------------------------------------------------- optional public checks from this machine
 if [[ -n "${LEMNISCATE_PUBLIC_API_URL:-}" ]]; then
