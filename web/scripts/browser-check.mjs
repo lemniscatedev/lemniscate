@@ -645,7 +645,7 @@ await section('Z',async()=>{
  await w.page.waitForSelector('[data-writers-rewards]',{timeout:10_000}).catch(()=>{});
  await w.page.fill('#lm-writers-address','0x00000000000000000000000000000000000a11ce');
  await w.page.click('[data-writers-check] button[type="submit"]');
- await w.page.waitForFunction(()=>/Estimated share/.test(document.querySelector('[data-writers-you]')?.innerText||''),null,{timeout:10_000}).catch(()=>{});
+ await w.page.waitForFunction(()=>/Illustrative share/.test(document.querySelector('[data-writers-you]')?.innerText||''),null,{timeout:10_000}).catch(()=>{});
  body=await text(w.page);
  ok('Z /writers 390px',(await width(w.page))===WIDTH,`scrollWidth ${await width(w.page)}`);
  ok('Z /writers explains what the pool does',/sells the options and receives what buyers pay/.test(body),'');
@@ -655,7 +655,8 @@ await section('Z',async()=>{
  ok('Z /writers before the token: rewards start when $LMNS launches',/Rewards start when \$LMNS launches/.test(body),'');
  ok('Z /writers region rules',/United Kingdom, Canada or Switzerland/.test(body),'');
  ok('Z /writers no dollar value for LMNS and no yield words',!/LMNS[^.]{0,40}\$\d|\$\d[^.]{0,20}LMNS|\b(APY|APR|yield|income|guaranteed)\b/i.test(body),'');
- ok('Z /writers the connected wallet sees its own points',/Estimated share: 100,000 LMNS \(at the per-wallet cap\)/.test(body),'');
+ ok('Z /writers a wallet sees its own points, labelled illustrative before rewards start',/Illustrative share: 100,000 LMNS \(at the per-wallet cap\)/.test(body)&&/illustrative: the last 7 days/.test(body),'');
+ ok('Z /writers says the cap is per wallet with no identity check',/no identity check/.test(body),'');
  ok('Z /writers footer and menu link',(await w.page.locator('#lm-footer a[href="/writers"]').count())>=1,'');
  ok('Z /writers console clean',w.errors.length===0&&w.network.length===0,[...w.errors,...w.network].join(' | ').slice(0,300));
  await w.context.close();

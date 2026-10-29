@@ -87,7 +87,7 @@ export function startMockApi({port=4190,overrides={},seed=false}={}){
  function writerRewards(url){
   const a=(url.searchParams.get('address')||'').toLowerCase();
   const program={status:'awaiting_token',message:'Rewards start when $LMNS launches. Until then the numbers here are a preview of the last 7 days.',tokenSymbol:'LMNS',tokenAddress:null,weeklyPoolTokens:'1000000',weeklyPoolPctOfSupply:0.1,tokenTotalSupply:'1000000000',weeks:8,startAt:null,perWalletCapPct:10,minTimeWeightedUsdg:1000,overCapPaidToOthers:false,rules:[]};
-  const week={number:null,preview:true,start:new Date(Date.now()-7*86400e3).toISOString(),end:new Date().toISOString(),final:false,eligibleWallets:2,totalPointsUsdgDays:'30500.00',allocatedTokens:'200000',unallocatedTokens:'800000',digest:'0'.repeat(64)};
+  const week={number:null,preview:true,basis:'illustrative',start:new Date(Date.now()-7*86400e3).toISOString(),end:new Date().toISOString(),final:false,eligibleWallets:2,totalPointsUsdgDays:'30500.00',allocatedTokens:'200000',unallocatedTokens:'800000',digest:'0'.repeat(64)};
   const you=a?{address:a,excluded:false,eligible:true,reason:'',depositHeldUsdg:'2000.000000',timeWeightedUsdg:'1857.142857',pointsUsdgDays:'13000.00',tokens:'100000',capped:true}:null;
   return {program,week,you,notes:[]};
  }

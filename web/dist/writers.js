@@ -48,7 +48,8 @@ export function render({rules,pool,rewards,regions}){
     <li>Each week, ${weekly} ${symbol} (${pct}% of the ${supply} total supply) is shared between qualifying writers, for ${weeks} weeks. Then the program is reviewed.</li>
     <li>Points are the USDG you deposited that is still in the pool, multiplied by the days it stayed there that week. Only on-chain Writer Pool deposits count.</li>
     <li>To qualify, your deposits still in the pool must average at least ${min} USDG over the whole week.</li>
-    <li>Your share is your points divided by all qualifying points, and at most ${cap}% of the week’s ${symbol}. Anything above that cap is ${r.overCapPaidToOthers?'shared among the other qualifying wallets':'not paid out'}.</li>
+    <li>Your share is your points divided by all qualifying points, and at most ${cap}% of the week’s ${symbol} per wallet. Anything above that cap is ${r.overCapPaidToOthers?'shared among the other qualifying wallets':'not paid out; it stays with the owner'}.</li>
+    <li>The cap is per wallet and there is no identity check, so one person can split deposits across several wallets and receive more than the cap in total. This is a known, accepted limit of the program.</li>
     <li>Asking to withdraw stops points for those shares at once. Shares received by transfer do not count.</li>
     <li>Team and operator wallets, Lemniscate contracts, the zero address and contract wallets are excluded.</li>
     <li>The owner pays each week from a list anyone can recompute from the chain. ${symbol} rewards have no cash value and are not a promise of any amount; amounts and dates are announced in the official channels.</li>
@@ -62,11 +63,12 @@ export function render({rules,pool,rewards,regions}){
 
 export function youText(body){
  const you=body?.you;if(!you)return 'No reading for that address right now.';
- const preview=body.week?.preview?' (preview of the last 7 days; nothing is paid for previews)':'';
+ const basis=body.week?.basis||(body.week?.preview?'illustrative':'projected');
+ const preview=basis==='illustrative'?' (illustrative: the last 7 days, before rewards start; nothing is paid for it)':basis==='projected'?' (projected if you stay in until the week ends)':' (final for this week)';
  if(you.excluded)return `This wallet is excluded from rewards: ${you.reason.replace(/^excluded: /,'')}.`;
  const base=`Deposit still in the pool: ${money(num(you.depositHeldUsdg))}. Time-weighted this week: ${money(num(you.timeWeightedUsdg))}. Points: ${fmt(num(you.pointsUsdgDays))} USDG-days${preview}.`;
  if(!you.eligible)return `${base} Not qualifying: ${you.reason}.`;
- return `${base} Estimated share: ${whole(num(you.tokens))} ${esc(body.program?.tokenSymbol||'LMNS')}${you.capped?' (at the per-wallet cap)':''}.`;
+ return `${base} ${basis==='illustrative'?'Illustrative share':basis==='projected'?'Projected share':'Share'}: ${whole(num(you.tokens))} ${esc(body.program?.tokenSymbol||'LMNS')}${you.capped?' (at the per-wallet cap)':''}.`;
 }
 
 export async function mountWriters(root){
