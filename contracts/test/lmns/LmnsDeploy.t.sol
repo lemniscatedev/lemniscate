@@ -16,6 +16,10 @@ contract DeployLmnsHarness is DeployLmns {
     function deploy(LmnsParams memory p) external returns (LmnsStaking, LmnsBuyBurn) {
         return _deployLmns(p);
     }
+
+    function checkAdmin(uint8 profile, address admin, address timelock) external view {
+        checkLmnsAdmin(profile, admin, timelock);
+    }
 }
 
 /// @notice Todo 20 timers (todo 10 R8 style): the 14-day unstake is a deploy-time timer with a hard minimum; fork and
@@ -60,6 +64,23 @@ contract LmnsDeployTest is Test {
         h.deploy(_p(1, 10 minutes, 4 minutes, 2 minutes));
         vm.expectRevert(ILmnsStaking.InvalidParams.selector);
         h.deploy(_p(1, 10 minutes, 15 minutes, 30 seconds));
+    }
+
+    /// @notice Skeptic follow-up: fork and mainnet refuse any LMNS_ADMIN but the deployment's timelock (an owner EOA or
+    /// the deployer would administer $LMNS without the 48h delay); testnet keeps its owner.
+    function test_LMNS_ADMIN_mustBeTheTimelockOnForkAndMainnet() public {
+        address timelock = address(new MockUSDG()); // any contract stands in for the timelock
+        address ownerEoa = makeAddr("owner-eoa");
+        for (uint8 profile; profile < 3; profile += 2) {
+            h.checkAdmin(profile, timelock, timelock);
+            vm.expectRevert(bytes("DeployLmns: LMNS_ADMIN must be the deployment's timelock on fork and mainnet"));
+            h.checkAdmin(profile, ownerEoa, timelock);
+            vm.expectRevert(bytes("DeployLmns: LMNS_ADMIN must be the deployment's timelock on fork and mainnet"));
+            h.checkAdmin(profile, address(0), address(0)); // no timelock in the deployment file
+            vm.expectRevert(bytes("DeployLmns: LMNS_ADMIN must be the deployment's timelock on fork and mainnet"));
+            h.checkAdmin(profile, ownerEoa, ownerEoa); // a "timelock" with no code
+        }
+        h.checkAdmin(1, ownerEoa, address(0)); // testnet: the owner administers directly
     }
 
     function test_R1_noTokenNoDeploy() public {

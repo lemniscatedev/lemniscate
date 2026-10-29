@@ -41,6 +41,11 @@ contract DeployLmns is Script, SystemConfig {
         p.profile = profileOf(vm.envString("LMNS_PROFILE"));
         require(block.chainid == chainOf(p.profile), "DeployLmns: profile does not match the RPC chain");
         p.admin = vm.envAddress("LMNS_ADMIN");
+        string memory file = vm.envOr("DEPLOYMENT_FILE", string.concat("deployments/", vm.envString("LMNS_PROFILE"), ".json"));
+        if (p.profile != PROFILE_TESTNET) {
+            require(vm.exists(file), "DeployLmns: fork/mainnet need the deployment file (its timelock is the admin)");
+            checkLmnsAdmin(p.profile, p.admin, vm.parseJsonAddress(vm.readFile(file), ".contracts.timelock"));
+        }
         p.token = vm.envAddress("LMNS_TOKEN");
         p.usdg = vm.envAddress("LMNS_USDG");
         p.pool = vm.envAddress("LMNS_POOL");
@@ -56,7 +61,6 @@ contract DeployLmns is Script, SystemConfig {
         vm.startBroadcast();
         (staking, burn) = _deployLmns(p);
         vm.stopBroadcast();
-        string memory file = vm.envOr("DEPLOYMENT_FILE", string.concat("deployments/", vm.envString("LMNS_PROFILE"), ".json"));
         if (vm.exists(file)) {
             recordInDeployment(file, address(staking), address(burn));
             console2.log("  deployment file updated", file);
@@ -118,6 +122,16 @@ contract DeployLmns is Script, SystemConfig {
     }
 
     /// @notice The timers a profile deploys: full on fork and mainnet (overrides refused), as given on testnet.
+    /// @notice Skeptic follow-up: on fork and mainnet the $LMNS modules are administered by the system's 48h timelock and
+    /// nothing else (never the owner EOA directly, never the deployer). Testnet: the owner, as for the rest of testnet.
+    function checkLmnsAdmin(uint8 profile, address admin, address timelock) internal view {
+        if (profile == PROFILE_TESTNET) return;
+        require(
+            timelock != address(0) && timelock.code.length != 0 && admin == timelock,
+            "DeployLmns: LMNS_ADMIN must be the deployment's timelock on fork and mainnet"
+        );
+    }
+
     function lmnsTimers(LmnsParams memory p) internal pure returns (uint256 unstake, uint256 stream, uint256 claimAge) {
         if (p.profile == PROFILE_TESTNET) return (p.unstakeDelay, p.rewardDuration, p.minClaimAge);
         require(

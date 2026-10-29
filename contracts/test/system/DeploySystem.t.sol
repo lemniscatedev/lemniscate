@@ -1132,6 +1132,32 @@ contract DeploySystemTest is Test, SystemChecks {
         _expectFail(c, d, "DEPLOYER_HOLDS_TIMELOCK_ROLE");
     }
 
+    function test_EOA_postDeployCheckFailsOnDeployerExecutorOrCanceller() public {
+        for (uint256 k; k < 2; ++k) {
+            (Config memory c,) = _eoaOwned(true);
+            Deployed memory d = _deploy(c);
+            TimelockController tl = TimelockController(payable(d.timelock));
+            bytes32 role = k == 0 ? tl.EXECUTOR_ROLE() : tl.CANCELLER_ROLE();
+            vm.prank(d.timelock);
+            tl.grantRole(role, deployer);
+            _expectFail(c, d, "DEPLOYER_HOLDS_TIMELOCK_ROLE");
+        }
+    }
+
+    function test_EOA_ownerCannotBeTheGuardian() public {
+        (Config memory c,) = _eoaOwned(true);
+        c.roles.safe = guardian;
+        vm.expectRevert(bytes("SystemConfig: the timelock owner must not be the guardian"));
+        this.doDeploy(c);
+    }
+
+    function test_EOA_postDeployCheckFlagsOwnerAsGuardian() public {
+        (Config memory c, address eoa) = _eoaOwned(true);
+        Deployed memory d = _deploy(c);
+        c.roles.guardian = eoa; // a config that names the owner as guardian after the fact
+        _expectFail(c, d, "OWNER_IS_GUARDIAN");
+    }
+
     function test_EOA_postDeployCheckFailsOnOwnerMismatch() public {
         (Config memory c,) = _eoaOwned(true);
         Deployed memory d = _deploy(c);

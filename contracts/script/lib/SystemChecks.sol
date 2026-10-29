@@ -156,6 +156,7 @@ abstract contract SystemChecks is SystemDeployer {
         _failIf(c.roles.safe != address(0) && safe != c.roles.safe, "TIMELOCK_OWNER_MISMATCH");
         Roles memory r = c.roles;
         _failIf(safe == r.keeper || safe == r.hedger || safe == r.volSigner, "OWNER_IS_BOT");
+        _failIf(safe == r.guardian, "OWNER_IS_GUARDIAN");
         _failIf(
             !tl.hasRole(tl.PROPOSER_ROLE(), safe) || !tl.hasRole(tl.EXECUTOR_ROLE(), safe)
                 || !tl.hasRole(tl.CANCELLER_ROLE(), safe),

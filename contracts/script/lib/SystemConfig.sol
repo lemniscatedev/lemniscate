@@ -297,6 +297,8 @@ abstract contract SystemConfig is CommonBase {
                 r.safe != r.keeper && r.safe != r.hedger && r.safe != r.volSigner,
                 "SystemConfig: the timelock owner must not be a bot key"
             );
+            // The guardian pauses instantly; the owner acts only through the 48h timelock. One key must not do both.
+            require(r.safe != r.guardian, "SystemConfig: the timelock owner must not be the guardian");
         }
         if (c.profile == PROFILE_MAINNET) {
             require(r.safe != address(0), "SystemConfig: mainnet needs roles.timelockOwner (or roles.safe)");
