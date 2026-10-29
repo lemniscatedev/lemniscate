@@ -29,7 +29,7 @@ test('the fund step title follows sponsorship',()=>{
 });
 test('access wording matches the invite gate',()=>{
  const r='the United Kingdom, Canada or Switzerland';
- assert.match(accessLine({required:true,approved:false,regions:r}),/invite-only for the first 24 hours/);
+ assert.match(accessLine({required:true,approved:false,regions:r}),/invite-only for the first 8 hours/);
  assert.match(accessLine({required:true,approved:false,regions:r}),/everyone except residents of the United Kingdom/);
  assert.match(accessLine({required:true,approved:true,regions:r}),/approved/);
  const open=accessLine({required:false,approved:null,regions:r});

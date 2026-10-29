@@ -494,7 +494,7 @@ await section('K',async()=>{
  overrides.invites=true;
  s=await open();
  t=await s.page.locator('.dash-onboarding').innerText().catch(()=>'');
- ok('K invite-only wording: first 24 hours, then open outside UK, CA, CH',/invite-only for the first 24 hours/.test(t)&&/everyone except residents of the United Kingdom/.test(t),t.slice(0,300).replace(/\n/g,' '));
+ ok('K invite-only wording: first 8 hours, then open outside UK, CA, CH',/invite-only for the first 8 hours/.test(t)&&/everyone except residents of the United Kingdom/.test(t),t.slice(0,300).replace(/\n/g,' '));
  ok('K invite-only 390px',(await width(s.page))===WIDTH,'');
  await s.context.close();delete overrides.invites;
  // one-tap sponsorship: ETH becomes optional

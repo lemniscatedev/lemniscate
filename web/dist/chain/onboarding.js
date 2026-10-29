@@ -31,8 +31,8 @@ export const dismiss=(address,storage)=>writeWallet(address,{dismissed:true},sto
 /** Words about who may use the site. `required` is the API's invite gate (/v1/invites/status). */
 export function accessLine({required,approved,regions}){
  const where=regions||'the United Kingdom, Canada or Switzerland';
- if(required&&approved!==true)return `Lemniscate is invite-only for the first 24 hours after launch. Enter your invite code to start buying; selling is always open. After that it opens to everyone except residents of ${where}.`;
- if(required)return `Your wallet is approved. Lemniscate is invite-only for the first 24 hours after launch and then opens to everyone except residents of ${where}.`;
+ if(required&&approved!==true)return `Lemniscate is invite-only for the first 8 hours after launch. Invite codes are posted in the Lemniscate Telegram group. Enter your invite code to start buying; selling is always open. After that it opens to everyone except residents of ${where}.`;
+ if(required)return `Your wallet is approved. Lemniscate is invite-only for the first 8 hours after launch and then opens to everyone except residents of ${where}.`;
  return `Lemniscate is not offered to residents of ${where}.`;
 }
 
