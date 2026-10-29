@@ -18,4 +18,5 @@ if [ "$CALLS" -lt "$MIN_CALLS" ]; then
   echo "deep-invariants: deep profile makes only $CALLS calls per invariant (need >= $MIN_CALLS)" >&2; exit 1
 fi
 echo "deep-invariants: $RUNS runs x $DEPTH depth = $CALLS calls per invariant"
-FOUNDRY_PROFILE=deep forge test --match-test 'invariant_' -vv
+# Fixed seed so a public run is reproducible (FOUNDRY_FUZZ_SEED=<n> tries another).
+FOUNDRY_FUZZ_SEED="${FOUNDRY_FUZZ_SEED:-0x5eed}" FOUNDRY_PROFILE=deep forge test --match-test 'invariant_' -vv

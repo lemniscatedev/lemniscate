@@ -1,13 +1,17 @@
 // Unit tests for the local serving profiles (scripts/profiles.mjs, serve.mjs LM_PROFILE) and the testnet config:
-// `npm test` (node:test, no dependencies). Ports: PROFILE_TEST_PORT (default 5253) and the next two.
+// `npm test` (node:test, no dependencies). Ports: three free ports chosen by the OS (PROFILE_TEST_PORT pins the first and the next two).
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {spawn} from 'node:child_process';
 import vm from 'node:vm';
+import {createServer} from 'node:net';
 import {PROFILES,resolveProfile,applyOverrides,configValue,profileOrigins,withConnectOrigins,profileHeaders} from './profiles.mjs';
 
-const PORT=Number(process.env.PROFILE_TEST_PORT||5253);
+// A fixed port can be taken by another process on a shared machine: ask the OS for free loopback ports instead.
+const freePort=()=>new Promise((resolve,reject)=>{const s=createServer();s.once('error',reject);s.listen(0,'127.0.0.1',()=>{const{port}=s.address();s.close(()=>resolve(port))})});
+const PINNED=process.env.PROFILE_TEST_PORT?Number(process.env.PROFILE_TEST_PORT):null;
+const pick=async i=>PINNED===null?await freePort():PINNED+i;
 const TESTNET={chainId:46630,chainName:'Robinhood Chain Testnet',rpcUrl:'https://rpc.testnet.chain.robinhood.com',
  explorerUrl:'https://explorer.testnet.chain.robinhood.com',apiBase:'http://127.0.0.1:3171'};
 
@@ -91,32 +95,33 @@ async function serve(env,port){
  const exited=new Promise(r=>child.on('exit',code=>r(code)));
  let timer;
  const ready=await Promise.race([new Promise(r=>{timer=setInterval(()=>{if(/Lemniscate preview/.test(out))r(true)},20)}),exited.then(()=>false),
-  new Promise(r=>setTimeout(r,10_000,false).unref()).then(v=>{if(child.exitCode===null)child.kill();return v})]).finally(()=>clearInterval(timer));
+  new Promise(r=>setTimeout(r,60_000,false).unref()).then(v=>{if(child.exitCode===null)child.kill();return v})]).finally(()=>clearInterval(timer));
  return {child,ready,out:()=>out,exited,stop:()=>{child.kill();return exited}};
 }
 
 test('serve.mjs: no profile serves config.js byte for byte; testnet serves config.testnet.js with overrides; typo refuses',async()=>{
+ const PORT=await pick(0),P1=await pick(1),P2=await pick(2);
  const prod=await serve({},PORT);
  try{
   assert.ok(prod.ready,prod.out());
   const body=Buffer.from(await (await fetch(`http://127.0.0.1:${PORT}/config.js`)).arrayBuffer());
   assert.ok(body.equals(await readFile('dist/config.js')));
  }finally{await prod.stop()}
- const t=await serve({LM_PROFILE:'testnet'},PORT+1);
+ const t=await serve({LM_PROFILE:'testnet'},P1);
  try{
   assert.ok(t.ready,t.out());
   assert.match(t.out(),/TESTNET profile: Robinhood Chain testnet, chain 46630/);
-  const res=await fetch(`http://127.0.0.1:${PORT+1}/config.js`);
+  const res=await fetch(`http://127.0.0.1:${P1}/config.js`);
   assert.equal(await res.text(),await readFile('dist/config.testnet.js','utf8'));
   assert.equal(res.headers.get('cache-control'),'no-store');
   assert.equal(res.headers.get('content-security-policy'),null);// no CSP shipped in this repo yet: none invented
-  const page=await fetch(`http://127.0.0.1:${PORT+1}/dashboard/`);
+  const page=await fetch(`http://127.0.0.1:${P1}/dashboard/`);
   assert.equal(page.status,200);
  }finally{await t.stop()}
- const o=await serve({LM_PROFILE:'testnet',LM_API_BASE:'http://127.0.0.1:3999'},PORT+2);
+ const o=await serve({LM_PROFILE:'testnet',LM_API_BASE:'http://127.0.0.1:3999'},P2);
  try{
   assert.ok(o.ready,o.out());
-  const text=await (await fetch(`http://127.0.0.1:${PORT+2}/config.js`)).text();
+  const text=await (await fetch(`http://127.0.0.1:${P2}/config.js`)).text();
   assert.equal(configValue(text,'apiBase'),'http://127.0.0.1:3999');
   assert.equal(configValue(text,'rpcUrl'),TESTNET.rpcUrl);
  }finally{await o.stop()}

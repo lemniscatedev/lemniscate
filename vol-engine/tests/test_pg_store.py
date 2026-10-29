@@ -83,7 +83,9 @@ def test_reader_connection_is_read_only(dsn):
 def test_full_cycle_against_postgres(dsn):
     import psycopg
 
-    now = datetime.now(timezone.utc)
+    # A fixed planning instant (Wednesday 11:00 New York, after the synthetic history): the test must not change with the
+    # weekday or hour it runs at, and nothing here reads the database clock.
+    now = datetime(2026, 10, 14, 15, 0, tzinfo=timezone.utc)
     stock = STOCKS["TSLA"]
     ticks, _, _ = synthetic_ticks(weekdays(date(2026, 9, 14), 21), seed=2, bar_vol=0.0012)
     ticks.append(Tick(now.timestamp() - 30, ticks[-1].spot, "REGULAR", True))
@@ -96,7 +98,8 @@ def test_full_cycle_against_postgres(dsn):
         today = now.date().isoformat()
         w.execute("INSERT INTO earnings (symbol, report_date, session, source) VALUES ('TSLA', %s, 'post', %s), ('TSLA', %s, 'post', %s)",
                   (today, SOURCE_A, today, SOURCE_B))
-        w.execute("INSERT INTO vol_posts VALUES ('0xabc', 0, 5, now() - interval '1 hour', %s, 'TSLA', 'DAILY', 5000, 12, 0, NULL, NULL, now(), 41, NULL)", (stock,))
+        w.execute("INSERT INTO vol_posts VALUES ('0xabc', 0, 5, to_timestamp(%s), %s, 'TSLA', 'DAILY', 5000, 12, 0, NULL, NULL, to_timestamp(%s), 41, NULL)",
+                  (now.timestamp() - 3600, stock, now.timestamp()))
 
     store = PgStore(dsn)
     try:
@@ -122,10 +125,10 @@ def test_full_cycle_against_postgres(dsn):
             assert c.execute("SELECT count(*) FROM vol_post_intents WHERE speed='DAILY' AND nonce=42").fetchone()[0] == 1
         # recent_sent: only status 'sent' intents, newest first (dry_run row above is excluded).
         assert store.recent_sent(stock, "DAILY", now.timestamp()) == []
-        store.write_intent(Intent(stock, "TSLA", "DAILY", 4321, 1, 0, 0, 0, 1, 90, "0x", "0x", "pending"))
+        store.write_intent(Intent(stock, "TSLA", "DAILY", 4321, 1, 0, 0, 0, 1, 90, "0x", "0x", "pending", created_at=now.timestamp()))
         store.mark_intent(stock, "DAILY", 90, "sent", "0x" + "11" * 32)
         rows = store.recent_sent(stock, "DAILY", now.timestamp())
-        assert len(rows) == 1 and rows[0][1] == 4321 and abs(rows[0][0] - now.timestamp()) < 120
+        assert len(rows) == 1 and rows[0][1] == 4321 and rows[0][0] == pytest.approx(now.timestamp(), abs=1e-3)
     finally:
         store.close()
 

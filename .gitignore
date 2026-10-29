@@ -58,3 +58,7 @@ lcov.info
 
 # Local anvil mainnet-fork stack (state, rpc cache, logs, env files with anvil dev keys, database cluster).
 .fork/
+# scripts/ci-local.sh logs and virtualenv
+.ci-local/
+contracts/coverage-summary.txt
+contracts/lcov.info

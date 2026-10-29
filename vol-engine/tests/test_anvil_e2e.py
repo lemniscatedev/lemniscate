@@ -41,6 +41,9 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+CHAIN_START = int(datetime(2026, 10, 14, 15, 0, tzinfo=timezone.utc).timestamp())
+
+
 def cast(*args: str) -> str:
     return subprocess.run([CAST, *args], capture_output=True, text=True, check=True).stdout.strip()
 
@@ -48,7 +51,9 @@ def cast(*args: str) -> str:
 @pytest.fixture()
 def chain():
     port = free_port()
-    proc = subprocess.Popen([ANVIL, "--port", str(port), "--chain-id", "31337", "--silent"])
+    # The chain starts at a fixed instant (Wednesday 11:00 New York, after the synthetic history) and the test plans with
+    # the chain's own clock, so nothing here depends on the weekday or hour the suite runs at.
+    proc = subprocess.Popen([ANVIL, "--port", str(port), "--chain-id", "31337", "--timestamp", str(CHAIN_START), "--silent"])
     url = f"http://127.0.0.1:{port}"
     for _ in range(50):
         try:
@@ -69,7 +74,7 @@ def test_engine_posts_are_accepted_by_the_real_contract(chain):
     out = cast("send", "--rpc-url", chain, "--private-key", ANVIL_KEY, "--create", code + args[2:], "--json")
     oracle = json.loads(out)["contractAddress"]
 
-    now = datetime.now(timezone.utc)
+    now = datetime.fromtimestamp(int(cast("block", "--rpc-url", chain, "--field", "timestamp")), timezone.utc)
     st = MemoryStore()
     ticks, _, _ = synthetic_ticks(weekdays(date(2026, 9, 14), 21), seed=5, bar_vol=0.0010)
     ticks.append(Tick(now.timestamp() - 30, ticks[-1].spot, "REGULAR", True))

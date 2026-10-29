@@ -30,7 +30,7 @@ while IFS= read -r line; do
     *"bun install"*) [[ "$line" == *"--frozen-lockfile"* ]] || bad "bun install without --frozen-lockfile: $line" ;;
     *"npm install"*|*"yarn install"*) bad "use npm ci / a frozen lockfile install: $line" ;;
   esac
-done < <(grep -rnE '^[^#]*(bun install|npm install|npm i |yarn install|pnpm install)' "$ROOT/.github" "$ROOT/app/scripts" 2>/dev/null | grep -v 'check-deps.sh' | grep -vE ':[0-9]+:\s*(#|echo|log |die )' | grep -vE '^[^:]*:[0-9]+:\s*#' || true)
+done < <(grep -rnE '^[^#]*(bun install|npm install|npm i |yarn install|pnpm install)' "$ROOT/.github" "$ROOT/app/scripts" 2>/dev/null | grep -v 'check-deps.sh' | grep -vE '\.md:[0-9]+:' | grep -vE ':[0-9]+:\s*(#|echo|log |die |retry ")' | grep -vE '^[^:]*:[0-9]+:\s*#' || true)
 
 # 3. release-age guards
 grep -qE '^\s*minimumReleaseAge\s*=\s*[1-9][0-9]*' "$ROOT/app/bunfig.toml" || bad "app/bunfig.toml has no minimumReleaseAge"

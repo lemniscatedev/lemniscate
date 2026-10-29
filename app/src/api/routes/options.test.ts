@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setSystemTime, test } from "bun:test";
 import { fundingStep } from "../../pricing";
 import { decodeFunctionData } from "viem";
 import { join } from "node:path";
@@ -62,6 +62,9 @@ const post = (path: string, body: unknown) =>
 
 suite("option API over indexed data", () => {
   beforeAll(async () => {
+    // The clock is frozen at NOW (the fixture's own "now") and only moves when a test moves it, so no assertion depends
+    // on how long a request took on a busy machine. Tests that want time to pass call setSystemTime.
+    setSystemTime(new Date(NOW));
     db = (await createTestDatabase("optionapi"))!;
     await applyMigrations(db);
     for (const row of GRID) {
@@ -100,7 +103,10 @@ suite("option API over indexed data", () => {
       (${id(2)}, ${at(-3_600_000)}, '0xn2', 0, 195, 0.9, 5.4, 0, 'REGULAR')`;
     fresh();
   });
-  afterAll(async () => db.close());
+  afterAll(async () => {
+    setSystemTime();
+    await db.close();
+  });
 
   test("GET /v1/chains/NVDA: ordered strike grid per speed with bid, ask, daily cost, breakeven and Greeks (R1, R6)", async () => {
     await setTick("REGULAR");
@@ -206,7 +212,7 @@ suite("option API over indexed data", () => {
     const decoded = decodeFunctionData({ abi: OptionEngineAbi, data: body.data });
     expect(decoded.functionName).toBe("buy");
     expect(lower(decoded.args)).toEqual([id(2), 10n * 10n ** 18n, BigInt(body.maxCostUsdg), BigInt(body.deadline), ALICE]);
-    expect(Math.abs(body.deadline - (Math.floor(Date.now() / 1000) + 120))).toBeLessThanOrEqual(3);
+    expect(body.deadline).toBe(Math.floor(NOW / 1000) + 120); // the frozen clock plus the 120 s default, exactly
     // R02 (decision 54): a buy cannot be gifted (the engine reverts NotOwnBuy); the API refuses it up front
     const gift = await post("/v1/intent/buy", { series: id(2), units: "1", account: ALICE, recipient: ADDR.bob });
     expect(gift.status).toBe(422);
@@ -269,7 +275,7 @@ suite("option API over indexed data", () => {
     const projected = Number(9n * 10n ** 36n / tokens) / 1e18;
     const V = Number(BigInt(body.quote.vMarkWad)) / 1e18;
     const expected = fundingStep(0.9, V, 0, 3600, 604_800);
-    expect(Math.abs(projected - expected) / expected).toBeLessThan(1e-5); // a few ms of extra funding since the fixture
+    expect(Math.abs(projected - expected) / expected).toBeLessThan(1e-5); // the clock is frozen: exactly 3600 s since the fixture
     expect(BigInt(body.minProceedsUsdg)).toBe((BigInt(body.quote.usdg) * 9_950n) / 10_000n);
     const decoded = decodeFunctionData({ abi: OptionEngineAbi, data: body.data });
     expect(decoded.functionName).toBe("sell");
@@ -347,7 +353,7 @@ suite("option API over indexed data", () => {
   test("selling everything the positions view shows never burns more tokens than the wallet holds (todo 23 fork bug)", async () => {
     const before = await (await get(`/v1/accounts/${ALICE}/positions`)).json() as any;
     const position = before.positions[0];
-    await Bun.sleep(150); // funding keeps running between the two requests, as it does between a page load and a click
+    setSystemTime(new Date(NOW + 150)); // funding keeps running between the two requests, as it does between a page load and a click
     const sell = await (await post("/v1/intent/sell", { series: position.seriesId, units: position.units, account: ALICE })).json() as any;
     expect(BigInt(sell.tokens)).toBeLessThanOrEqual(40n * 10n ** 18n);
     expect(BigInt(sell.tokens)).toBeGreaterThan(39n * 10n ** 18n);

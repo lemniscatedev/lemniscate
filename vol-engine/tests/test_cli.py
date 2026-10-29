@@ -32,5 +32,10 @@ def test_chain_clock_uses_the_latest_block_time_on_a_warped_fork():
     assert calls == [("eth_getBlockByNumber", ["latest", False])]
     wall = Settings.from_env({})
     assert wall.clock == "wall"
-    assert abs((cycle_now(wall, transport) - datetime.now(timezone.utc)).total_seconds()) < 5
+    # Bracket the call between two readings of the clock instead of allowing a number of seconds of slack: the result
+    # must be a wall-clock reading taken during the call, however slow the machine is.
+    before = datetime.now(timezone.utc)
+    got = cycle_now(wall, transport)
+    after = datetime.now(timezone.utc)
+    assert before <= got <= after
     assert len(calls) == 1

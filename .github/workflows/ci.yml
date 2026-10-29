@@ -1,9 +1,13 @@
 name: ci
 
+# Free CI only: every job is skipped on a private repository (a skipped job needs no runner, so it costs nothing and
+# shows no red X). On the public repository everything runs on GitHub's free hosted runners. The private-side CI is
+# scripts/ci-local.sh, which runs these same jobs on a local machine or the VPS.
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,6 +18,7 @@ concurrency:
 
 jobs:
   contracts:
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -31,8 +36,11 @@ jobs:
         run: python3 script/ci/code-size.py
       - name: Storage layouts of the upgradeable contracts are unchanged (contracts/layout/)
         run: script/ci/storage-layout.sh check
+      # Fixed fuzz seed so a public run is reproducible; a random-seed run is `FOUNDRY_FUZZ_SEED=<n> forge test`.
       - name: Test
         run: forge test -vv
+        env:
+          FOUNDRY_FUZZ_SEED: "0x5eed"
       - name: Privileged functions are all listed (PRIV-1/2)
         run: python3 script/ci/privileged-functions.py check
       - name: Deployment verification script (offline test)
@@ -40,7 +48,7 @@ jobs:
 
   # TEST-2: the deep stateful run (>= 100k handler calls per invariant). Slow, so it runs on every push to main, not on PRs.
   invariants-deep:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: ${{ !github.event.repository.private && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -55,6 +63,7 @@ jobs:
 
   # TEST-5: line and branch coverage of contracts/src. --ir-minimum avoids stack-too-deep under coverage instrumentation.
   coverage:
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     defaults:
@@ -83,6 +92,7 @@ jobs:
           retention-days: 30
 
   slither:
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -95,6 +105,7 @@ jobs:
         run: contracts/script/ci/slither.sh
 
   app:
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -124,14 +135,24 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.2
+      # The ABI-drift test (app/src/abi) compares the committed ABI modules with contracts/out; without a build it
+      # returns early and checks nothing.
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: v1.8.1
+      - name: Build contracts (ABI-drift test input)
+        working-directory: contracts
+        run: forge build
       - name: Install (frozen lockfile)
         run: bun install --frozen-lockfile
       - name: Typecheck
         run: bunx tsc --noEmit
+      # --timeout on the command line: Bun 1.4 ignores a preload's setDefaultTimeout for the first test file.
       - name: Test (against TimescaleDB)
-        run: bun test
+        run: bun test --timeout 30000
 
   vol-engine:
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -158,6 +179,7 @@ jobs:
         run: python -m pytest -q
 
   copy-lint:
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -173,7 +195,26 @@ jobs:
         working-directory: app
         run: bun run lint:copy
 
+  web:
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # No install step: these three need no packages (node:test, fs, path only).
+      - name: Unit tests (serving profiles, lane proof)
+        run: npm test
+      - name: Verify the built site
+        run: node scripts/verify-site.mjs
+      - name: Copy lint (website)
+        run: npm run lint:copy
+
   deps:
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -183,6 +224,7 @@ jobs:
         run: .github/scripts/check-deps.sh
 
   docs:
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -194,6 +236,7 @@ jobs:
           .github/scripts/check-readme-deployment.py
 
   semgrep:
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -208,6 +251,7 @@ jobs:
           --severity WARNING --severity ERROR --error --metrics off
 
   gitleaks:
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -219,3 +263,4 @@ jobs:
           docker run --rm -v "$PWD:/repo" -w /repo
           ghcr.io/gitleaks/gitleaks@sha256:cdbb7c955abce02001a9f6c9f602fb195b7fadc1e812065883f695d1eeaba854
           git --no-banner --redact --config .githooks/gitleaks.toml .
+

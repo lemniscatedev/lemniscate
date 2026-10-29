@@ -17,6 +17,8 @@ contract ForkSafe {
     function exec(address target, uint256 value, bytes calldata data) external payable returns (bytes memory out) {
         if (msg.sender != owner) revert NotOwner();
         bool ok;
+        // Arbitrary target on purpose (a Safe executes any call), and only the single owner above can reach it.
+        // nosemgrep: solidity.security.arbitrary-low-level-call.arbitrary-low-level-call
         (ok, out) = target.call{value: value}(data);
         if (!ok) revert CallFailed(out);
     }

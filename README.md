@@ -191,7 +191,17 @@ bun run lint:copy
 bun run smoke [API_URL]
 ```
 
-CI (`.github/workflows/ci.yml`) runs the contract build and tests with contract sizes, Slither, the app typecheck and tests against TimescaleDB, the vol-engine tests, Semgrep, Gitleaks and the copy lint on every push and pull request. Actions are pinned by commit SHA and no job needs a secret.
+CI (`.github/workflows/ci.yml`) runs the contract build and tests with contract sizes, Slither, the app typecheck and tests against TimescaleDB, the vol-engine tests, the website tests, Semgrep, Gitleaks and the copy lint on every push and pull request, and on demand (`workflow_dispatch`). Actions are pinned by commit SHA and no job needs a secret. Every job skips itself in a private repository, so the workflow only does work where GitHub's hosted runners are free. No test reads a live chain or depends on how fast the machine is.
+
+`scripts/ci-local.sh` runs the same jobs with the same commands on your own machine, and is the CI to use anywhere GitHub Actions does not run. It exits non-zero if any job fails.
+
+```sh
+scripts/ci-local.sh                    # every job
+scripts/ci-local.sh --only app,web     # some jobs
+scripts/ci-local.sh --deep --strict    # also the slow deep invariants; a skipped job (missing tool) counts as a failure
+```
+
+It needs Foundry, Bun, Node, Python 3 and a Postgres install; Semgrep and Gitleaks run from Docker or from a local install, and Slither runs on Linux only. Logs are written under `.ci-local/`.
 
 ## License
 

@@ -5,3 +5,13 @@ useDefault = true
 [allowlist]
 description = "Vendored upstream libraries"
 paths = ['''^contracts/lib/''']
+# Exact non-secrets the generic-api-key rule matches in history (each checked by hand 2026-10-28): Anvil's public
+# account-0 development key, the x402 test passphrase, browser storage key names, env var names. By value, so a real
+# key added to the same files is still caught.
+regexes = [
+  '''^0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80$''', # // test-key (Anvil account 0, public)
+  '''^a-long-internal-secret-0123456789$''',
+  '''^lemniscate\.(policies|prefs|receipts)\.v2$''',
+  '''^lemniscate\.(region|wallet)\.v1$''',
+  '''^v\.X402_(NONCE_SECRET|SETTLER_KEY)$''',
+]
