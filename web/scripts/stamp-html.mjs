@@ -17,6 +17,7 @@ const TITLES={
  '/markets/writer-pool':'Write with collateral - Lemniscate',
  '/contracts':'Contracts | Lemniscate',
  '/roadmap':'Roadmap | Lemniscate',
+ '/writers':'Become a Writer | Lemniscate',
  '/learn/stock-token-pricing':'One Stock Token. One consistent value. - Lemniscate',
 };
 const esc=s=>s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');

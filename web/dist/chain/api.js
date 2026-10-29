@@ -55,6 +55,7 @@ export function createApi(base){
   series:id=>request('/v1/series/'+encodeURIComponent(id)+'?history=0'),
   vol:name=>request('/v1/vol/'+encodeURIComponent(name)),
   pool:()=>request('/v1/pool'),
+  writerRewards:({week,address}={})=>{const q=new URLSearchParams();if(week)q.set('week',String(week));if(address)q.set('address',address);const t=q.toString();return request('/v1/writers/rewards'+(t?'?'+t:''))},
   corporateActions:name=>request('/v1/corporate-actions?symbol='+encodeURIComponent(name)),
   positions:address=>request('/v1/accounts/'+encodeURIComponent(address)+'/positions'),
   activity:(address,{cursor='',limit=20}={})=>request('/v1/accounts/'+encodeURIComponent(address)+'/activity?limit='+limit+(cursor?'&cursor='+encodeURIComponent(cursor):'')),
@@ -92,6 +93,8 @@ export const BLOCK_REASON={
  VOL_STALE:'New purchases are paused until volatility inputs are refreshed.',
  EARNINGS_BLOCK:'New purchases are paused around this company’s earnings report. Sells stay open.',
  NO_PRICE:'No price is available for this name yet.',
+ POOL_FILLING:'The pool is filling. Trading opens as writers deposit into the Writer Pool. Selling is never blocked.',
+ CAP_REACHED:'This option is at its size limit for now: each buy is capped at a share of the pool’s NAV. Try a smaller amount. Selling is never blocked.',
  NONCE_LANE:'Gas is sponsored only on the account’s main lane. Your account pays the gas for this one.',
 };
 /** Why a one-tap operation came back unsponsored (sponsorship.reason, backend sponsorship.ts). The operation still works; the account pays gas. */

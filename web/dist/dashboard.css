@@ -68,3 +68,13 @@ html[data-lm-dashboard="true"] body{background:#edf0f0!important}.lm-dashboard{m
 .dash-ticket-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-top:1px solid rgba(22,35,61,.1)}
 .dash-ticket-row>div{min-width:0}
 .dash-ticket-row small{display:block;color:#505d73;overflow-wrap:anywhere}
+/* zero-seed launch: the pool fills from the public */
+.dash-filling{padding:24px;margin-bottom:22px;display:grid;grid-template-columns:1.3fr 1fr;gap:24px;align-items:start}
+.dash-filling h2{font-size:24px;font-weight:500;letter-spacing:-.03em;margin:10px 0 10px}
+.dash-filling p{color:#505d73;line-height:1.6;margin:0}
+.dash-filling-actions{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-top:16px}
+.dash-filling-list{list-style:none;margin:8px 0 10px;padding:0;display:grid;gap:6px}
+.dash-filling-list li{display:flex;justify-content:space-between;gap:12px;padding:8px 12px;border-radius:12px;background:#ffffff99;font-size:14px}
+.dash-filling-list span{color:#505d73;text-align:right}
+.dash-filling small{display:block;line-height:1.5}
+@media(max-width:809px){.dash-filling{grid-template-columns:1fr;padding:18px}.dash-filling h2{font-size:21px}}

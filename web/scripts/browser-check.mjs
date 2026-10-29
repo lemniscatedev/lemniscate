@@ -605,6 +605,70 @@ await section('M',async()=>{
  }
 });
 
+// ---- Z. zero-seed launch: the Writer Pool starts empty and fills from the public; /writers explains it (390 px)
+await section('Z',async()=>{
+ overrides.session='REGULAR';overrides.invites=false;overrides.pool='empty';
+ const {page,context,errors,network}=await newPage({apiBase:`http://127.0.0.1:${API_PORT}`,wallet:true});
+ await page.goto(`${base}/dashboard?tab=trade`,{waitUntil:'load'});await settle(page);
+ await page.waitForSelector('.dash-filling',{timeout:10_000}).catch(()=>{});
+ let body=await text(page);
+ ok('Z empty pool: the chain says the pool is filling',/The pool is filling\. Trading opens as writers deposit\./.test(body)&&/the team does not seed it/.test(body),body.replace(/\n/g,' ').slice(0,300));
+ ok('Z empty pool: room per stock shown as not yet',(await page.locator('.dash-filling-list li').count())>=5&&/NVDA\s*not yet/.test(await page.locator('.dash-filling-list').innerText()),'');
+ ok('Z empty pool: Become a Writer link',(await page.locator('.dash-filling a[href="/writers"]').count())===1,'');
+ await page.waitForFunction(()=>/filling/.test(document.querySelector('#quote-summary')?.innerText||''),null,{timeout:10_000}).catch(()=>{});
+ const ticket=await page.locator('#quote-summary').innerText().catch(()=>'');
+ ok('Z empty pool: buy shows POOL_FILLING in plain words, no revert text',/The pool is filling\. Trading opens as writers deposit into the Writer Pool\. Selling is never blocked\./.test(ticket)&&!/revert|0x[0-9a-f]{8}|CapExceeded/i.test(ticket),ticket.replace(/\n/g,' ').slice(0,300));
+ ok('Z empty pool: buy button disabled',await page.locator('[data-action="review"]').isDisabled(),'');
+ ok('Z empty pool: ticket points to Become a Writer',/Become a Writer to add room, or check back later/.test(ticket),'');
+ ok('Z empty pool trade 390px',(await width(page))===WIDTH,`scrollWidth ${await width(page)}`);
+ const sell=await page.evaluate(async api=>{const c=await (await fetch(api+'/v1/chains/NVDA')).json();const id=c.speeds[0].strikes[0].call.id;const r=await fetch(api+'/v1/intent/sell',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({series:id,units:'1',account:'0x00000000000000000000000000000000000a11ce'})});return r.status},`http://127.0.0.1:${API_PORT}`);
+ ok('Z empty pool: sells are never blocked',sell===200,String(sell));
+ for(const t of ['overview','shield','pool']){
+  await page.goto(`${base}/dashboard?tab=${t}`,{waitUntil:'load'});await settle(page);
+  await page.waitForSelector('.dash-filling',{timeout:10_000}).catch(()=>{});
+  ok(`Z empty pool ${t}: filling panel and 390px`,(await page.locator('.dash-filling').count())===1&&(await width(page))===WIDTH,`scrollWidth ${await width(page)}`);
+ }
+ ok('Z pool tab links to /writers',(await page.locator('.dash-heading a[href="/writers"]').count())===1,'');
+ overrides.pool='filling';
+ await page.goto(`${base}/dashboard?tab=trade`,{waitUntil:'load'});await settle(page);
+ await page.waitForSelector('.dash-filling',{timeout:10_000}).catch(()=>{});
+ body=await page.locator('.dash-filling').innerText().catch(()=>'');
+ ok('Z small pool: small trades open, room per stock from the cap math',/small trades are open/.test(body)&&/up to about \$200\.00 per buy/.test(body),body.replace(/\n/g,' ').slice(0,300));
+ ok('Z dashboard console clean',errors.length===0&&network.length===0,[...errors,...network].join(' | ').slice(0,300));
+ await context.close();
+
+ // /writers with the API: live NAV, the filling state, the rules with Kal's numbers, the wallet's own points
+ overrides.pool='empty';
+ const w=await newPage({apiBase:`http://127.0.0.1:${API_PORT}`,wallet:true});
+ await w.page.goto(`${base}/writers`,{waitUntil:'load'});await settle(w.page);
+ await w.page.waitForSelector('[data-writers-rewards]',{timeout:10_000}).catch(()=>{});
+ await w.page.fill('#lm-writers-address','0x00000000000000000000000000000000000a11ce');
+ await w.page.click('[data-writers-check] button[type="submit"]');
+ await w.page.waitForFunction(()=>/Estimated share/.test(document.querySelector('[data-writers-you]')?.innerText||''),null,{timeout:10_000}).catch(()=>{});
+ body=await text(w.page);
+ ok('Z /writers 390px',(await width(w.page))===WIDTH,`scrollWidth ${await width(w.page)}`);
+ ok('Z /writers explains what the pool does',/sells the options and receives what buyers pay/.test(body),'');
+ ok('Z /writers states the risks: NAV can fall, replay worst cases, 3-day queue, 24 h lock',/NAV can fall/.test(body)&&/0\.78/.test(body)&&/3-day withdrawal queue/.test(body)&&/locked for 24 hours/.test(body),'');
+ ok('Z /writers live pool numbers and the filling state',/Pool NAV/i.test(body)&&/NAV per share/i.test(body)&&/Total deposited/i.test(body)&&/by 0 wallets/.test(body)&&/The pool is filling/.test(body),body.replace(/\n/g,' ').slice(0,300));
+ ok('Z /writers reward rules: 1,000,000 LMNS a week, 8 weeks, 10% cap, 1,000 USDG minimum',/1,000,000 LMNS a week, for 8 weeks/.test(body)&&/at most 10%/.test(body)&&/at least 1,000 USDG/.test(body)&&/not paid out/.test(body),'');
+ ok('Z /writers before the token: rewards start when $LMNS launches',/Rewards start when \$LMNS launches/.test(body),'');
+ ok('Z /writers region rules',/United Kingdom, Canada or Switzerland/.test(body),'');
+ ok('Z /writers no dollar value for LMNS and no yield words',!/LMNS[^.]{0,40}\$\d|\$\d[^.]{0,20}LMNS|\b(APY|APR|yield|income|guaranteed)\b/i.test(body),'');
+ ok('Z /writers the connected wallet sees its own points',/Estimated share: 100,000 LMNS \(at the per-wallet cap\)/.test(body),'');
+ ok('Z /writers footer and menu link',(await w.page.locator('#lm-footer a[href="/writers"]').count())>=1,'');
+ ok('Z /writers console clean',w.errors.length===0&&w.network.length===0,[...w.errors,...w.network].join(' | ').slice(0,300));
+ await w.context.close();
+
+ // /writers with no API (the shipped config): rules still readable, no live numbers
+ const n=await newPage();
+ await n.page.goto(`${base}/writers`,{waitUntil:'load'});await settle(n.page);
+ await n.page.waitForSelector('[data-writers-rewards]',{timeout:10_000}).catch(()=>{});
+ body=await text(n.page);
+ ok('Z /writers without the API: rules from writer-rewards.json, live numbers explained',/1,000,000 LMNS a week/.test(body)&&/appear here when the site is connected/.test(body)&&(await width(n.page))===WIDTH,'');
+ await n.context.close();
+ delete overrides.pool;
+});
+
 await browser.close();await mock.close();site.close();
 console.log(`\n${results.filter(r=>r.startsWith('PASS')).length} passed, ${failures} failed.`);
 process.exitCode=failures?1:0;

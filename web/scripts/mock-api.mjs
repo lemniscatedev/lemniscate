@@ -1,7 +1,8 @@
 // Local mock of the Lemniscate API for website tests (todo 18). Same routes and response shapes as the backend
 // (app/src/api, OpenAPI at /v1/openapi.json there), data from dist/chain/demo.js. Never used in production.
 // Run: node scripts/mock-api.mjs [port]   (env MOCK_SESSION=REGULAR|EXTENDED|CLOSED|UNKNOWN|HALTED, MOCK_EARNINGS=TSLA,
-// MOCK_SPLIT=AAPL, MOCK_NO_ROUTER=1, MOCK_INVITES=1 turns the invite gate on; the one valid code is ABCD-EFGH-2345)
+// MOCK_SPLIT=AAPL, MOCK_NO_ROUTER=1, MOCK_INVITES=1 turns the invite gate on; the one valid code is ABCD-EFGH-2345,
+// MOCK_POOL=empty|filling: the zero-seed launch states of the Writer Pool)
 import http from 'node:http';
 import {createDemoMarket} from '../dist/chain/demo.js';
 
@@ -34,6 +35,7 @@ export function startMockApi({port=4190,overrides={},seed=false}={}){
    const row=c.speeds.find(s=>s.speed==='WEEKLY').strikes.filter(r=>r.put?.buyable).sort((a,b)=>Math.abs(a.strike-target)-Math.abs(b.strike-target))[0];
    if(!row)return [409,{error:'NO_SHIELD_SERIES',message:'No Weekly Down option is open for purchase on this name.'}];id=row.put.id;units=Number(body.tokenUnits)}
   const side=kind==='sell'?'sell':'buy',q=market.quote(id,units,side);if(!q)return [404,{error:'NOT_FOUND',message:'Unknown series.'}];
+  if(side==='buy'&&(overrides.pool||'open')==='empty')return [409,{error:'BUY_BLOCKED',message:'The pool is filling. Trading opens as writers deposit into the Writer Pool. Sells stay open.',reason:'POOL_FILLING',capacity:{maxBuyUsdg:'0.000000',poolFilling:true}}];
   if(side==='buy'&&q.blockReason)return [409,{error:'BUY_BLOCKED',message:'New purchases are paused.',reason:q.blockReason}];
   const raw=BigInt(q.quote.usdg),slip=BigInt(body.slippageBps??50);
   const maxCost=(raw*(10_000n+slip)+9_999n)/10_000n,minProceeds=q.sellQueued?0n:raw*(10_000n-slip)/10_000n;
@@ -71,6 +73,24 @@ export function startMockApi({port=4190,overrides={},seed=false}={}){
   ]);
  }
  const ADDR=/^0x[0-9a-fA-F]{40}$/;
+ // Zero-seed launch (overrides.pool = 'empty' | 'filling'): the pool starts empty and fills from the public.
+ function pool(){
+  const base=market.pool(),stage=overrides.pool||'open';
+  const nav=stage==='empty'?0:stage==='filling'?10_000:Number(base.nav);
+  // open: some option value is already outstanding on each stock, so the room is a little under the 2% series cap
+  const room=()=>Math.max(0,Math.min(40_000,nav*0.02)-(stage==='open'?250:0));
+  return {...base,...(stage==='open'?{}:{nav:nav.toFixed(6),usdg:nav.toFixed(6),optionLiability:'0',navPerShare:'1',fundingReceived:{...base.fundingReceived,usdg:'0.000000'}}),
+   capacity:{stage,fillingBelowNavUsdg:'25000',minTradeUsdg:'1',names:cfg.names.map(name=>({name,session:overrides.session||'REGULAR',maxBuyUsdg:room().toFixed(6),canBuyMinimum:room()>=1}))},
+   writers:stage==='empty'?{depositedUsdg:'0',claimedUsdg:'0',wallets:0}:{depositedUsdg:stage==='filling'?'10000':'1250000',claimedUsdg:'0',wallets:stage==='filling'?3:41}};
+ }
+ const capacityQuote=(q,side)=>{if(!q||side==='sell')return q;const p=pool(),filling=p.capacity.stage==='empty';const out={...q,capacity:{maxBuyUsdg:p.capacity.names[0].maxBuyUsdg,poolFilling:filling}};if(filling)out.blockReason='POOL_FILLING';return out};
+ function writerRewards(url){
+  const a=(url.searchParams.get('address')||'').toLowerCase();
+  const program={status:'awaiting_token',message:'Rewards start when $LMNS launches. Until then the numbers here are a preview of the last 7 days.',tokenSymbol:'LMNS',tokenAddress:null,weeklyPoolTokens:'1000000',weeklyPoolPctOfSupply:0.1,tokenTotalSupply:'1000000000',weeks:8,startAt:null,perWalletCapPct:10,minTimeWeightedUsdg:1000,overCapPaidToOthers:false,rules:[]};
+  const week={number:null,preview:true,start:new Date(Date.now()-7*86400e3).toISOString(),end:new Date().toISOString(),final:false,eligibleWallets:2,totalPointsUsdgDays:'30500.00',allocatedTokens:'200000',unallocatedTokens:'800000',digest:'0'.repeat(64)};
+  const you=a?{address:a,excluded:false,eligible:true,reason:'',depositHeldUsdg:'2000.000000',timeWeightedUsdg:'1857.142857',pointsUsdgDays:'13000.00',tokens:'100000',capped:true}:null;
+  return {program,week,you,notes:[]};
+ }
  function activityPage(account,url){
   const limit=Math.min(200,Math.max(1,Number(url.searchParams.get('limit')||50)));
   const all=[...(feed.get(account)||[])].sort((a,b)=>Date.parse(b.ts)-Date.parse(a.ts)||b.block-a.block);
@@ -97,7 +117,8 @@ export function startMockApi({port=4190,overrides={},seed=false}={}){
    if((m=p.match(/^\/v1\/accounts\/(0x[0-9a-fA-F]{40})\/activity$/))){const [st,out]=activityPage(m[1].toLowerCase(),url);return send(res,st,out)}
    if((m=p.match(/^\/v1\/accounts\/(0x[0-9a-fA-F]{40})\/agents$/)))return send(res,200,{account:m[1].toLowerCase(),asOf:new Date().toISOString(),agents:agentBook.get(m[1].toLowerCase())||[]});
    if((m=p.match(/^\/v1\/accounts\/(0x[0-9a-fA-F]{40})\/smart-account$/))){const [st,out]=smartAccount(m[1].toLowerCase(),url);return send(res,st,out)}
-   if(p==='/v1/pool')return send(res,200,market.pool());
+   if(p==='/v1/pool')return send(res,200,pool());
+   if(p==='/v1/writers/rewards')return send(res,200,writerRewards(url));
    if(p==='/v1/corporate-actions')return send(res,200,market.corporateActions((url.searchParams.get('symbol')||'').toUpperCase()));
    if((m=p.match(/^\/v1\/accounts\/(0x[0-9a-fA-F]{40})\/positions$/)))return send(res,200,positions(m[1].toLowerCase()));
    if((m=p.match(/^\/v1\/series\/(0x[0-9a-f]{64})$/))){const s=market.series.get(m[1]);return s?send(res,200,{...s,strike:String(s.strike)}):send(res,404,{error:'NOT_FOUND',message:'Unknown series.'})}
@@ -106,7 +127,7 @@ export function startMockApi({port=4190,overrides={},seed=false}={}){
   }
   if(req.method==='POST'){
    const body=await readBody(req);
-   if(p==='/v1/quote'){const q=body&&market.quote(body.series,Number(body.units),body.side);
+   if(p==='/v1/quote'){const q=capacityQuote(body&&market.quote(body.series,Number(body.units),body.side),body?.side);
     // R02: a sell inside the seller's 30-minute hold carries the hold view (overrides.hold), as the API does for an account
     if(q&&body.side==='sell'&&body.account&&overrides.hold)q.hold={...overrides.hold};
     return q?send(res,200,q):send(res,404,{error:'NOT_FOUND',message:'Unknown series.'})}
@@ -132,6 +153,6 @@ export function startMockApi({port=4190,overrides={},seed=false}={}){
 
 if(import.meta.url===`file://${process.argv[1]}`){
  const env=process.env,split=v=>v?v.split(',').map(x=>x.trim().toUpperCase()):[];
- const {port}=await startMockApi({port:Number(process.argv[2]||4190),seed:!!env.MOCK_SEED,overrides:{session:env.MOCK_SESSION,earnings:split(env.MOCK_EARNINGS),splitPause:split(env.MOCK_SPLIT),agentRouter:env.MOCK_NO_ROUTER?false:undefined,invites:!!env.MOCK_INVITES}});
+ const {port}=await startMockApi({port:Number(process.argv[2]||4190),seed:!!env.MOCK_SEED,overrides:{session:env.MOCK_SESSION,earnings:split(env.MOCK_EARNINGS),splitPause:split(env.MOCK_SPLIT),agentRouter:env.MOCK_NO_ROUTER?false:undefined,invites:!!env.MOCK_INVITES,pool:env.MOCK_POOL||undefined}});
  console.log(`Lemniscate mock API: http://127.0.0.1:${port}`);
 }
