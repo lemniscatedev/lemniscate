@@ -2,7 +2,8 @@
 # DEP-1: source verification of every contract a deployment created, on Blockscout and Sourcify (both free, no API key).
 #
 #   script/verify-deployment.sh submit   resume the broadcast with --verify (constructor arguments and linked libraries
-#                                        come from the broadcast file) on Blockscout, then on Sourcify
+#                                        come from the broadcast file) on Blockscout, then send each contract's build
+#                                        metadata.json and sources to Sourcify /v2/verify/metadata (exact_match)
 #   script/verify-deployment.sh check    ask both explorers about every address in the deployment file; exit 1 unless
 #                                        each one of ours is verified on at least one of them (default mode)
 #
@@ -40,8 +41,11 @@ case "$MODE" in
     # `check` is the judge.
     forge script script/DeploySystem.s.sol --rpc-url "$RPC_URL" --resume --broadcast --verify \
       --verifier blockscout --verifier-url "${BLOCKSCOUT_URL%/}/api/" || echo "verify-deployment: Blockscout submit reported errors" >&2
-    forge script script/DeploySystem.s.sol --rpc-url "$RPC_URL" --resume --broadcast --verify \
-      --verifier sourcify --verifier-url "${SOURCIFY_URL%/}/" || echo "verify-deployment: Sourcify submit reported errors" >&2
+    # Sourcify gets the build's metadata.json plus every source file (/v2/verify/metadata), not forge's own Sourcify
+    # path: the testnet run reached only "match" that way, metadata gives exact_match on the first try.
+    forge build >/dev/null
+    python3 script/ci/sourcify-metadata.py "$DEPLOYMENT_FILE" "$CHAIN_ID" "$SOURCIFY_URL" --out out --root . \
+      || echo "verify-deployment: Sourcify metadata submit reported errors" >&2
     exec "$0" check
     ;;
   check)
@@ -69,7 +73,7 @@ def on_blockscout(address):
 
 def on_sourcify(address):
     data = get(f"{sourcify.rstrip('/')}/v2/contract/{chain}/{address}")
-    return bool(data and data.get("match") in ("match", "exact_match", "perfect", "partial"))
+    return (data or {}).get("match") if (data or {}).get("match") in ("match", "exact_match", "perfect", "partial") else None
 
 failed = []
 print(f"{'contract':<18} {'address':<44} blockscout sourcify")
@@ -78,9 +82,11 @@ for key in ours:
     if address.lower() == ZERO:
         continue
     b, s = on_blockscout(address), on_sourcify(address)
-    print(f"{key:<18} {address:<44} {'yes' if b else 'NO':<10} {'yes' if s else 'NO'}")
+    print(f"{key:<18} {address:<44} {'yes' if b else 'NO':<10} {s or 'NO'}")
     if not (b or s):
         failed.append(key)
+    elif s and s != "exact_match":
+        print(f"verify-deployment: note: {key} is '{s}' on Sourcify, not exact_match", file=sys.stderr)
 if failed:
     print("verify-deployment: NOT VERIFIED anywhere: " + ", ".join(failed), file=sys.stderr)
     sys.exit(1)

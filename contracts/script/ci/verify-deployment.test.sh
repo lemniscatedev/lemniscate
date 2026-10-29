@@ -22,6 +22,11 @@ rm "$T/site/api/v2/smart-contracts/$A"
 if run >/dev/null 2>&1; then echo "FAIL: expected failure when a contract is unverified everywhere" >&2; exit 1; fi
 # Forge 1.x refuses `--resume` without `--broadcast` ("required arguments were not provided"): both submit commands
 # must carry it, or the Sourcify/Blockscout submission never starts (found in the todo 26 testnet dry run).
-[[ "$(grep -c -- '--resume --broadcast --verify' "$ROOT/script/verify-deployment.sh")" == 2 ]] \
-  || { echo "FAIL: verify-deployment.sh submit must run forge script --resume --broadcast --verify (twice)" >&2; exit 1; }
+[[ "$(grep -c -- '--resume --broadcast --verify' "$ROOT/script/verify-deployment.sh")" == 1 ]] \
+  || { echo "FAIL: verify-deployment.sh submit must run forge script --resume --broadcast --verify for Blockscout" >&2; exit 1; }
+# Sourcify must get the build metadata (exact_match on the first try), not forge's own --verifier sourcify path.
+grep -q 'script/ci/sourcify-metadata.py' "$ROOT/script/verify-deployment.sh" \
+  || { echo "FAIL: verify-deployment.sh submit must call sourcify-metadata.py" >&2; exit 1; }
+if grep -q -- '--verifier sourcify' "$ROOT/script/verify-deployment.sh"; then echo "FAIL: forge's sourcify verifier must not be used" >&2; exit 1; fi
+script/ci/sourcify-metadata.test.sh
 echo "verify-deployment.test: ok"
