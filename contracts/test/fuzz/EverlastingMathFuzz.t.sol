@@ -27,6 +27,20 @@ contract EverlastingMathFuzzTest is Test {
         return bound(uint256(keccak256(abi.encode(seed))), base, top);
     }
 
+    /// @dev (z / 1e18)^n * 1e18 by repeated multiplication, carried at 1e36 and floored to WAD once at the end.
+    /// A WAD-scale product floors at every step and loses up to n wei: at z = 0.5, n = 30 the result is ~9.3e8 wei,
+    /// so 30 truncations reach ~3e-8 relative and the reference, not powWad, fails the 1e-9 check (CI seed 0x5eed,
+    /// z = 500655158423888891, n = 30: WAD product 968636557, exact 968636558.67, powWad 968636558). At 1e36 each step
+    /// loses < 1e-36 absolute on a value >= 9.3e26, so the reference is the exact floor up to ~3e-26 relative.
+    function _repeatedProduct(uint256 z, uint256 n) internal pure returns (uint256) {
+        uint256 p36 = 1e36;
+        uint256 z36 = z * WAD;
+        for (uint256 i = 0; i < n; ++i) {
+            p36 = Math.mulDiv(p36, z36, 1e36); // p36 <= 2^30 * 1e36: mulDiv keeps the 512-bit product exact
+        }
+        return p36 / WAD;
+    }
+
     function _relClose(uint256 got, uint256 want, uint256 rel) internal pure returns (bool) {
         uint256 d = got > want ? got - want : want - got;
         return d <= Math.mulDiv(rel, want, WAD); // no overflow for results up to e^135
@@ -73,18 +87,35 @@ contract EverlastingMathFuzzTest is Test {
         // The raw product x * y (<= 1e72, exact) read as a WAD is xy * 1e18, so its ln is ln x + ln y + ln 1e18.
         assertApproxEqAbs(h.lnWad(x * y), h.lnWad(x) + h.lnWad(y) + 41446531673892822312, 2, "ln(xy)");
 
-        // pow(z, n) = z * z * ... * z (repeated WAD multiplication, error ~ n wei) for z in [0.5, 2], n in 1..30.
+        // pow(z, n) = z * z * ... * z for z in [0.5, 2], n in 1..30.
         uint256 z = bound(xSeed, 0.5e18, 2e18);
         uint256 n = bound(nRaw, 1, 30);
-        uint256 prod = WAD;
-        for (uint256 i = 0; i < n; ++i) {
-            prod = prod * z / WAD;
-        }
-        assertTrue(_relClose(h.powWad(z, int256(n) * 1e18), prod, REL_1E9), "pow(z, n)");
+        assertTrue(_relClose(h.powWad(z, int256(n) * 1e18), _repeatedProduct(z, n), REL_1E9), "pow(z, n)");
         // pow(x, 1/2) = sqrt(x), pow(x, -1) = 1/x.
         assertTrue(_relClose(h.powWad(x, 0.5e18), h.sqrtWad(x), REL_1E9), "pow(x, 1/2)");
         uint256 xs = _logUniform(ySeed, 1e12, 1e24); // 1/x >= 1e12 wei
         assertTrue(_relClose(h.powWad(xs, -1e18), 1e36 / xs, REL_1E9), "pow(x, -1)");
+    }
+
+    /// R1 regression, pinned to the CI counterexample (seed 0x5eed, args [717500655158423889369, 10748, -3, 15000, 28]
+    /// -> z = 500655158423888891, n = 30). Exact z^30 * 1e18 = 968636558.672 (80-digit decimal reference), so powWad's
+    /// 968636558 is the correct floor; the old per-step WAD product gave 968636557, 1.7e-9 low.
+    function test_R1_powCounterexample_seed5eed() public view {
+        uint256 z = 500655158423888891;
+        assertEq(h.powWad(z, 30e18), 968636558, "powWad = floor of exact z^30");
+        assertEq(_repeatedProduct(z, 30), 968636558, "1e36 reference = floor of exact z^30");
+        uint256 wadProd = WAD;
+        for (uint256 i = 0; i < 30; ++i) {
+            wadProd = wadProd * z / WAD;
+        }
+        assertEq(wadProd, 968636557, "per-step WAD product is 1.67 wei low (the old reference)");
+        testFuzz_R1_expLnPowAccuracy(717500655158423889369, 10748, -3, 15000, 28);
+
+        // 0.5^30 exactly: powWad floors 931322574.615 to 931322574.
+        assertEq(h.powWad(0.5e18, 30e18), 931322574, "0.5^30");
+        // The pricing path at the same point (S/K = 0.5, exponent 1/2 + u = 30): K/(2u) 0.5^30 with K = 100e18,
+        // u = 29.5 is exactly 1578512838.331 wei; timeValueU keeps x^(1/2+u) at 1e36 and floors once after K/(2u).
+        assertEq(h.timeValueU(50e18, 100e18, 29.5e18), 1578512838, "timeValueU at x = 0.5, 1/2 + u = 30");
     }
 
     // ------------------------------------------------------------------ R2
