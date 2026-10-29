@@ -3,7 +3,7 @@
 // state, the wallet picker lists browser wallets only, and pages carry no absolute og:url or canonical link.
 window.LM_CONFIG=Object.freeze({
  // Base URL of the Lemniscate API (no trailing slash), e.g. "https://api.example.org". Empty: no API calls are made.
- apiBase:'',
+ apiBase:'https://api.get-lemniscate.tech',
  // Public site origin used for og:url, canonical links and og:image (no trailing slash). Empty: none are emitted.
  // After changing it, run `npm run stamp` so the static HTML heads carry it too.
  siteUrl:'https://get-lemniscate.tech',
