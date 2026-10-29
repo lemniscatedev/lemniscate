@@ -114,7 +114,7 @@ jobs:
       # The database tests create one throwaway database per test file on this server. It is the same TimescaleDB
       # image family production uses, so the hypertable and continuous-aggregate migrations run for real.
       postgres:
-        image: timescale/timescaledb:latest-pg16
+        image: timescale/timescaledb:latest-pg16@sha256:322ae364eca3321cf2a48f1ef31213b87843413b3cf8feeebf54e999a26bb731 # pinned by digest (audit 2026-10-29)
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -165,7 +165,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: vol-engine/pyproject.toml
+          cache-dependency-path: vol-engine/requirements-dev.lock
       # The anvil end-to-end test needs anvil, cast and the VolOracle build output; without them it skips.
       - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with:
@@ -174,7 +174,9 @@ jobs:
         working-directory: contracts
         run: forge build src/VolOracle.sol
       - name: Install
-        run: python -m pip install -e '.[dev]'
+        # Hash-pinned lock (audit 2026-10-29): every dependency is checked against its recorded sha256, then the package
+        # itself is installed without resolving anything new.
+        run: python -m pip install --require-hashes -r requirements-dev.lock && python -m pip install --no-deps -e .
       - name: Test
         run: python -m pytest -q
 
