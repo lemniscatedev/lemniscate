@@ -41,8 +41,11 @@ for target in src/LemniscateEngine.sol src/WriterPool.sol src/MarketHours.sol sr
   src/SeriesRegistry.sol src/OptionTokenFactory.sol src/Reserve.sol src/FeeRouter.sol src/AgentRouter.sol \
   src/UniswapV3HedgeAdapter.sol src/UniswapV3TwapReference.sol src/OptionToken.sol; do
   echo "::group::slither $target"
-  if ! slither "$target" --solc "$SOLC" --solc-remaps "$REMAPS" --solc-args "--via-ir --optimize --evm-version cancun" \
-    --filter-paths "lib/" --exclude-informational --exclude-optimization --fail-high; then
+  out="$WORK/$(basename "$target" .sol).json"
+  slither "$target" --solc "$SOLC" --solc-remaps "$REMAPS" --solc-args "--via-ir --optimize --evm-version cancun" \
+    --filter-paths "lib/" --exclude-informational --exclude-optimization --json "$out" || true
+  # Fails on any High finding not listed, by detector + file + exact flagged expression, in slither-allow.json.
+  if ! python3 "$ROOT/script/ci/slither-high.py" "$out" "$ROOT/script/ci/slither-allow.json"; then
     status=1
   fi
   echo "::endgroup::"

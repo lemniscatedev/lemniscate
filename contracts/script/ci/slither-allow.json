@@ -1,0 +1,8 @@
+[
+ {
+  "check": "weak-prng",
+  "file": "src/PriceGuard.sol",
+  "expression": "delta < 0 && delta % span != 0",
+  "reason": "Floor rounding of a negative TWAP mean tick, the same as Uniswap's OracleLibrary. The modulo is a remainder test, not randomness. Listed here instead of an inline slither-disable so the deployed PriceGuard source stays byte-identical."
+ }
+]
