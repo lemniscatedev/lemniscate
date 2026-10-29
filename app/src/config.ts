@@ -38,6 +38,22 @@ const envSchema = z.object({
   // hedge (todo 14) is opt-in until the hedger lands. receipts and lister are new in todo 13.
   KEEPER_ENABLED_JOBS: z.string().default("sessions,lister,accrue,risk,corp-actions,receipts,reference,earnings,queued-sells,fee-distribute,settle-halted,staking-sync,kernel-register,admin-watch"),
   KEEPER_DRY_RUN: z.enum(["0", "1"]).default("0").transform((value) => value === "1"),
+  // gas-watch: ETH balance of the bot wallets, alerts to the Telegram group. OFF until launch (GAS_WATCH_ENABLED=1).
+  GAS_WATCH_ENABLED: z.enum(["0", "1"]).default("0").transform((value) => value === "1"),
+  GAS_WATCH_INTERVAL_SECONDS: z.coerce.number().int().min(60).default(600),
+  GAS_WATCH_MIN_KEEPER_ETH: z.coerce.number().positive().default(0.008),
+  GAS_WATCH_MIN_VOL_SIGNER_ETH: z.coerce.number().positive().default(0.002),
+  GAS_WATCH_MIN_OTHER_ETH: z.coerce.number().positive().default(0.0005),
+  GAS_WATCH_REALERT_HOURS: z.coerce.number().positive().default(6),
+  // Wallets to watch (the keeper signer and the deployment's owner are the defaults). Empty = skip that wallet.
+  GAS_WATCH_VOL_SIGNER_ADDRESS: z.string().regex(/^(0x[0-9a-fA-F]{40})?$/).default(""),
+  GAS_WATCH_HEDGER_ADDRESS: z.string().regex(/^(0x[0-9a-fA-F]{40})?$/).default(""),
+  GAS_WATCH_GUARDIAN_ADDRESS: z.string().regex(/^(0x[0-9a-fA-F]{40})?$/).default(""),
+  GAS_WATCH_OWNER_ADDRESS: z.string().regex(/^(0x[0-9a-fA-F]{40})?$/).default(""),
+  // A small env file holding ONLY TELEGRAM_BOT_TOKEN, TELEGRAM_COMMUNITY_CHAT_ID and TELEGRAM_OPS_CHAT_ID (the same bot and
+  // chats as the release runner), owned root:<keeper group> mode 0640 so the keeper's user can read it while the release
+  // env stays 0600. The token is never logged. Override only in tests.
+  GAS_WATCH_TELEGRAM_ENV_FILE: z.string().default("/etc/lemniscate/gas-watch.env"),
   // Accrue a series once its last accrual is this old and somebody holds it. Spec: at least hourly, so 3600 is the cap.
   KEEPER_ACCRUE_MAX_AGE_SECONDS: z.coerce.number().int().min(300).max(3600).default(3600),
   // F28: a series whose outstanding value (supply x norm x v_mark) is below this many USDG is "dust", like a series the engine retired

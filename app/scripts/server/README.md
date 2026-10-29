@@ -58,6 +58,16 @@ roles may control the same address, and it prints each role's public address so 
 The owner wallet never goes on a server. Local development can still use `KEEPER_PRIVATE_KEY` and the like with
 `NODE_ENV` unset.
 
+## Gas watch (Telegram funding alerts)
+
+The keeper job `gas-watch` (off until `GAS_WATCH_ENABLED=1`) posts a plain message to the Lemniscate Telegram group when a bot
+wallet's ETH runs low. It reads the bot token and chat ids from `GAS_WATCH_TELEGRAM_ENV_FILE`, default
+`/etc/lemniscate/gas-watch.env`: a file with ONLY `TELEGRAM_BOT_TOKEN=`, `TELEGRAM_COMMUNITY_CHAT_ID=` and optionally
+`TELEGRAM_OPS_CHAT_ID=` (the same bot and chats as the release runner). Mode: `root:<keeper group> 0640`, so the keeper's service
+user can read it; the release runner's `release.env` stays root 0600 and is never read by the keeper. The token is never logged.
+Set the wallet addresses in `lemniscate.env` (`GAS_WATCH_VOL_SIGNER_ADDRESS`, `_HEDGER_`, `_GUARDIAN_`, `_OWNER_`; the keeper
+address is its signer).
+
 ## Steps, in order
 
 1. **Server.** Create the VPS with your SSH key for root. Its address never goes into any file in this repository.
