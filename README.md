@@ -34,6 +34,8 @@ Lemniscate is an independent project. Robinhood Chain, Chainlink and Uniswap are
 
 Deployed on Robinhood Chain mainnet (4663) on 29 Oct 2026. Every admin action goes through a 48-hour timelock. Addresses: above and at get-lemniscate.tech/contracts.
 
+Security audit (29 Oct 2026): 2 Mediums and 2 Lows, all fixed in this repo with tests (see `.audit-grade/`). The fixed engine and pool implementations are deployed and the upgrade is scheduled in the 48-hour timelock, executable from 1 Nov 2026 00:10 UTC.
+
 ## Layout
 
 ```
