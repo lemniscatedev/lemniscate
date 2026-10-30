@@ -55,11 +55,14 @@ test('slots: hours after launch before a launch time, UTC dates after',()=>{
  assert.equal(slotLabel({day:1,hour:2},'2026-10-31T12:00:00Z'),'Scheduled Sat 31 Oct, 14:00 UTC');
  assert.equal(slotLabel({day:1,hour:22},'2026-10-31T12:00:00Z'),'Scheduled Sun 1 Nov, 10:00 UTC');
 });
-test('roadmap.json: all 36 updates in queue order, 12 a day, every 2 hours, nothing live before launch',async()=>{
+test('roadmap.json: every update in queue order at the planned cadence (36 every 2 hours or 72 every hour, 3 equal days), invite-only 8 h, nothing live before launch',async()=>{
  const d=JSON.parse(await read('../dist/roadmap.json'));
- assert.deepEqual(d.updates.map(u=>u.n),Array.from({length:36},(_,i)=>i+1));
- assert.deepEqual(d.updates.map(u=>u.hour),Array.from({length:36},(_,i)=>i*2));
- assert.deepEqual(groupByDay(d.updates).map(([day,us])=>[day,us.length]),[[1,12],[2,12],[3,12]]);
+ const n=d.updates.length, iv=d.intervalMinutes, per=1440/iv;
+ assert.ok((n===36&&iv===120)||(n===72&&iv===60),`planned cadence only: ${n} updates every ${iv} min`);
+ assert.deepEqual(d.updates.map(u=>u.n),Array.from({length:n},(_,i)=>i+1));
+ assert.deepEqual(d.updates.map(u=>u.hour),Array.from({length:n},(_,i)=>i*iv/60));
+ assert.deepEqual(groupByDay(d.updates).map(([day,us])=>[day,us.length]),[[1,per],[2,per],[3,per]]);
+ assert.equal(d.inviteOnlyHours,8);
  for(const u of d.updates){assert.ok(u.title&&u.line,'title and line for '+u.n);assert.doesNotMatch(u.title+u.line,/—|\bAPY\b|\byield\b|\bincome\b/i)}
  assert.equal(changelogUrl(d.publicRepo),'https://raw.githubusercontent.com/lemniscatedev/lemniscate/main/CHANGELOG.md');assert.equal(d.launchAt,null);
 });

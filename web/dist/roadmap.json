@@ -2,7 +2,8 @@
  "about": "Data for /roadmap. Updates in release order; hour = hours after launch. LIVE badges come only from the public CHANGELOG.md (raw.githubusercontent.com/lemniscatedev/<publicRepo>/main/CHANGELOG.md), never from the clock. Empty publicRepo: no fetch, no LIVE badge. launchAt (ISO UTC) only turns \"hour N after launch\" into a date; it never marks anything live.",
  "publicRepo": "lemniscate",
  "launchAt": null,
- "intervalMinutes": 120,
+ "intervalMinutes": 60,
+ "inviteOnlyHours": 8,
  "updates": [
   {
    "n": 1,
@@ -14,247 +15,499 @@
   {
    "n": 2,
    "day": 1,
-   "hour": 2,
+   "hour": 1,
    "title": "Holding cost over 7 and 30 days",
    "line": "Every option shows what it costs to hold for 7 and 30 days at today's price, labelled as an estimate."
   },
   {
    "n": 3,
    "day": 1,
-   "hour": 4,
+   "hour": 2,
    "title": "Backup RPC connection",
    "line": "A second RPC provider answers only when the official public RPC fails; traffic returns as soon as it is healthy."
   },
   {
    "n": 4,
    "day": 1,
-   "hour": 6,
+   "hour": 3,
    "title": "Earnings calendar",
    "line": "Each stock shows its next report date and exactly when new buys pause around it, in your local time."
   },
   {
    "n": 5,
    "day": 1,
-   "hour": 8,
+   "hour": 4,
    "title": "Plain-language errors",
    "line": "A failed transaction now says why in plain words, and whether your funds moved."
   },
   {
    "n": 6,
    "day": 1,
-   "hour": 10,
+   "hour": 5,
    "title": "Shield preview",
    "line": "Before you add a Shield, compare protection at 5%, 10% and 15% below today's price and what each costs."
   },
   {
    "n": 7,
    "day": 1,
-   "hour": 12,
+   "hour": 6,
    "title": "Live quote stream",
    "line": "The dashboard gets price changes pushed the moment the service sees them, with the regular refresh as a fallback."
   },
   {
    "n": 8,
    "day": 1,
-   "hour": 14,
+   "hour": 7,
    "title": "Writer Pool NAV history",
    "line": "The Writer Pool tab charts NAV and NAV per share over 7, 30, 90 days or all time, plus funding received per day."
   },
   {
    "n": 9,
    "day": 1,
-   "hour": 16,
+   "hour": 8,
    "title": "Position history chart",
    "line": "Each position has a History chart: its value and your effective units over time."
   },
   {
    "n": 10,
    "day": 1,
-   "hour": 18,
+   "hour": 9,
    "title": "API reference page",
    "line": "A readable reference for the API at /v1/docs, built from the same OpenAPI spec the service publishes."
   },
   {
    "n": 11,
    "day": 1,
-   "hour": 20,
+   "hour": 10,
    "title": "Option chain export",
    "line": "Download any listed name's whole option chain as CSV or JSON."
   },
   {
    "n": 12,
    "day": 1,
-   "hour": 22,
+   "hour": 11,
    "title": "Keeper batches sized from measured gas",
    "line": "The keeper measures gas per option series and sends a smaller batch when 45 would not fit comfortably."
   },
   {
    "n": 13,
-   "day": 2,
-   "hour": 24,
+   "day": 1,
+   "hour": 12,
    "title": "Faster indexer catch-up",
    "line": "After an interruption the indexer reads several chain ranges at once and applies them strictly in order."
   },
   {
    "n": 14,
-   "day": 2,
-   "hour": 26,
+   "day": 1,
+   "hour": 13,
    "title": "Activity filters and search",
    "line": "Search and filter the Activity tab by name, kind, ticket, transaction and date range."
   },
   {
    "n": 15,
-   "day": 2,
-   "hour": 28,
+   "day": 1,
+   "hour": 14,
    "title": "Receipts lookup",
    "line": "Paste a transaction hash and your browser checks the trade against the hourly Merkle root the API publishes."
   },
   {
    "n": 16,
-   "day": 2,
-   "hour": 30,
+   "day": 1,
+   "hour": 15,
    "title": "Volatility page",
    "line": "Charts of the volatility input behind each stock's option prices, with the latest on-chain posts."
   },
   {
    "n": 17,
-   "day": 2,
-   "hour": 32,
+   "day": 1,
+   "hour": 16,
    "title": "Browser alerts (opt-in)",
    "line": "Optional browser notifications for holding-cost jumps, market session changes and filled queued sells."
   },
   {
    "n": 18,
-   "day": 2,
-   "hour": 34,
+   "day": 1,
+   "hour": 17,
    "title": "API caching and rate-limit headers",
    "line": "API responses show the remaining request allowance, and public reads send ETags for cheap repeat requests."
   },
   {
    "n": 19,
-   "day": 2,
-   "hour": 36,
+   "day": 1,
+   "hour": 18,
    "title": "Agent tools for volatility and receipts",
    "line": "Two read-only MCP tools for agents: volatility posts and hourly receipts."
   },
   {
    "n": 20,
-   "day": 2,
-   "hour": 38,
+   "day": 1,
+   "hour": 19,
    "title": "Accessibility pass",
    "line": "The whole site works from the keyboard and with screen readers, with easier-to-read small text."
   },
   {
    "n": 21,
-   "day": 2,
-   "hour": 40,
+   "day": 1,
+   "hour": 20,
    "title": "Breakeven on the chart",
    "line": "The option chart draws today's price, the cost, the breakeven and where the option has paid for itself."
   },
   {
    "n": 22,
-   "day": 2,
-   "hour": 42,
+   "day": 1,
+   "hour": 21,
    "title": "Reorg-safety report",
    "line": "The status page reports how the indexer handles chain reorganisations: how many, the deepest, and the last check."
   },
   {
    "n": 23,
-   "day": 2,
-   "hour": 44,
+   "day": 1,
+   "hour": 22,
    "title": "Dark mode",
    "line": "Dark mode follows your device, with a toggle in the header remembered only in your browser."
   },
   {
    "n": 24,
-   "day": 2,
-   "hour": 46,
+   "day": 1,
+   "hour": 23,
    "title": "Monthly statements",
    "line": "Pick a month and download your trades, deposits and month-end holdings as CSV, or print to PDF."
   },
   {
    "n": 25,
-   "day": 3,
-   "hour": 48,
+   "day": 2,
+   "hour": 24,
    "title": "TypeScript SDK",
    "line": "A typed TypeScript library for the API, in the sdk/ folder of the public repo (not on npm)."
   },
   {
    "n": 26,
-   "day": 3,
-   "hour": 50,
+   "day": 2,
+   "hour": 25,
    "title": "Faster first load on phones",
    "line": "The first screen waits only for what you can see; the home page needs about 1.0 MB instead of 2.1 MB to be ready."
   },
   {
    "n": 27,
-   "day": 3,
-   "hour": 52,
+   "day": 2,
+   "hour": 26,
    "title": "Stricter security headers",
    "line": "Stricter security headers and a content security policy on the site and the API."
   },
   {
    "n": 28,
-   "day": 3,
-   "hour": 54,
+   "day": 2,
+   "hour": 27,
    "title": "Hedge transparency",
    "line": "A Hedges page: what the Writer Pool holds per stock, the target, and a log of hedge fills."
   },
   {
    "n": 29,
-   "day": 3,
-   "hour": 56,
+   "day": 2,
+   "hour": 28,
    "title": "Leaner accrual keeper",
    "line": "The keeper stops re-reading strikes nobody holds for up to 30 minutes; any trade is noticed at once."
   },
   {
    "n": 30,
-   "day": 3,
-   "hour": 58,
+   "day": 2,
+   "hour": 29,
    "title": "Agent activity page",
    "line": "A public page of every agent trade through the AgentRouter and every active agent policy."
   },
   {
    "n": 31,
-   "day": 3,
-   "hour": 60,
+   "day": 2,
+   "hour": 30,
    "title": "Your options, on every device",
    "line": "The Activity tab lists every option your wallet bought, sold or holds, read from the chain, on any device."
   },
   {
    "n": 32,
-   "day": 3,
-   "hour": 62,
+   "day": 2,
+   "hour": 31,
    "title": "Public stats page",
    "line": "Daily volume, trades, wallets and open interest, each figure with its on-chain source and time."
   },
   {
    "n": 33,
-   "day": 3,
-   "hour": 64,
+   "day": 2,
+   "hour": 32,
    "title": "Daily vs Weekly compare",
    "line": "Daily and Weekly side by side for the same strike: price, sell price and holding cost over 7 and 30 days."
   },
   {
    "n": 34,
-   "day": 3,
-   "hour": 66,
+   "day": 2,
+   "hour": 33,
    "title": "Holding-cost history",
    "line": "Per option and per day: the share of units funding took and its USDG value, from on-chain accruals."
   },
   {
    "n": 35,
-   "day": 3,
-   "hour": 68,
+   "day": 2,
+   "hour": 34,
    "title": "Writer Pool depositor view",
    "line": "Depositors see their shares, value at the latest NAV per share, totals, a daily NAV chart and claim tickets."
   },
   {
    "n": 36,
-   "day": 3,
-   "hour": 70,
+   "day": 2,
+   "hour": 35,
    "title": "Open interest by strike",
    "line": "For each stock, how many call and put units holders hold at every strike, with the latest price marked."
+  },
+  {
+   "n": 37,
+   "day": 2,
+   "hour": 36,
+   "title": "Stock listings",
+   "line": "What trades today and which Stock Tokens could be next, read on chain."
+  },
+  {
+   "n": 38,
+   "day": 2,
+   "hour": 37,
+   "title": "New stocks switch on by themselves",
+   "line": "AMZN, MSFT, GOOGL, MSTR and META are queued and switch on once listed on chain."
+  },
+  {
+   "n": 39,
+   "day": 2,
+   "hour": 38,
+   "title": "Price feed history",
+   "line": "When each stock's Chainlink feed last updated, the gaps and each move."
+  },
+  {
+   "n": 40,
+   "day": 2,
+   "hour": 39,
+   "title": "The buy check, in public",
+   "line": "Feed price against the Uniswap 30-minute average, the gap and pass or fail."
+  },
+  {
+   "n": 41,
+   "day": 2,
+   "hour": 40,
+   "title": "Funding rates board",
+   "line": "What staying open cost over 24 hours on every option, like a perps funding board."
+  },
+  {
+   "n": 42,
+   "day": 2,
+   "hour": 41,
+   "title": "Exposure per option",
+   "line": "Stock exposure per USDG of premium, leverage-equivalent, and the move to double."
+  },
+  {
+   "n": 43,
+   "day": 2,
+   "hour": 42,
+   "title": "Large trades feed",
+   "line": "Every buy and sell above your size in the last 1 to 168 hours."
+  },
+  {
+   "n": 44,
+   "day": 2,
+   "hour": 43,
+   "title": "Most traded options",
+   "line": "The top options by USDG volume over 24 hours or 7 days."
+  },
+  {
+   "n": 45,
+   "day": 2,
+   "hour": 44,
+   "title": "Portfolio Greeks",
+   "line": "Delta, gamma, vega and daily funding per position, per stock and in total."
+  },
+  {
+   "n": 46,
+   "day": 2,
+   "hour": 45,
+   "title": "Market calendar",
+   "line": "The next 14 days of sessions, holidays, early closes and earnings pauses."
+  },
+  {
+   "n": 47,
+   "day": 2,
+   "hour": 46,
+   "title": "Daily digest",
+   "line": "Yesterday in one call: trades, volume, wallets, new options and the pool."
+  },
+  {
+   "n": 48,
+   "day": 2,
+   "hour": 47,
+   "title": "Realised vs posted volatility",
+   "line": "How much each stock really moved next to the volatility options are priced at."
+  },
+  {
+   "n": 49,
+   "day": 3,
+   "hour": 48,
+   "title": "Writer Pool utilisation",
+   "line": "Option liability as a share of the pool's NAV at each day's close."
+  },
+  {
+   "n": 50,
+   "day": 3,
+   "hour": 49,
+   "title": "Agent tools",
+   "line": "Three read-only MCP tools: listings, calendar and the daily digest."
+  },
+  {
+   "n": 51,
+   "day": 3,
+   "hour": 50,
+   "title": "Account summary",
+   "line": "One small call per wallet for bots: options, value, cost, P&L and pool share."
+  },
+  {
+   "n": 52,
+   "day": 3,
+   "hour": 51,
+   "title": "Network fee estimator",
+   "line": "Buy, sell, deposit and claim fees in ETH and USD at the current gas price."
+  },
+  {
+   "n": 53,
+   "day": 3,
+   "hour": 52,
+   "title": "Indexer lag history",
+   "line": "24 hours of how far the indexer was behind the chain, every 5 minutes."
+  },
+  {
+   "n": 54,
+   "day": 3,
+   "hour": 53,
+   "title": "Series search",
+   "line": "Filter every live option by stock, speed, side, strike range and buyable."
+  },
+  {
+   "n": 55,
+   "day": 3,
+   "hour": 54,
+   "title": "P&L scenario simulator",
+   "line": "Pick an option, a sale price and days held: what you pay, units left and the floor value."
+  },
+  {
+   "n": 56,
+   "day": 3,
+   "hour": 55,
+   "title": "Break-even moves",
+   "line": "For every strike, the move needed after 1, 7 or 30 days of funding, and exposure per dollar."
+  },
+  {
+   "n": 57,
+   "day": 3,
+   "hour": 56,
+   "title": "Glossary",
+   "line": "Every term the site uses in plain words, searchable, each linked to where it appears."
+  },
+  {
+   "n": 58,
+   "day": 3,
+   "hour": 57,
+   "title": "Market hours",
+   "line": "When the US market is open, in your own time zone, and the live session of every stock."
+  },
+  {
+   "n": 59,
+   "day": 3,
+   "hour": 58,
+   "title": "Command palette",
+   "line": "Ctrl+K or Cmd+K on any page to jump to every page by name."
+  },
+  {
+   "n": 60,
+   "day": 3,
+   "hour": 59,
+   "title": "Watchlist",
+   "line": "Star a stock to keep it at the top of the list, saved in this browser only."
+  },
+  {
+   "n": 61,
+   "day": 3,
+   "hour": 60,
+   "title": "Budget planner",
+   "line": "Units a USDG budget buys per strike, units left after funding and the break-even then."
+  },
+  {
+   "n": 62,
+   "day": 3,
+   "hour": 61,
+   "title": "Cost ladder",
+   "line": "Every strike at Daily and Weekly, coloured by the share of value funding takes per day."
+  },
+  {
+   "n": 63,
+   "day": 3,
+   "hour": 62,
+   "title": "Share image",
+   "line": "A clean picture of a position for X or Telegram, change in percent only."
+  },
+  {
+   "n": 64,
+   "day": 3,
+   "hour": 63,
+   "title": "Pair builder",
+   "line": "An Up call and a Down put together: total price, daily cost and both break-evens."
+  },
+  {
+   "n": 65,
+   "day": 3,
+   "hour": 64,
+   "title": "Status light in the nav",
+   "line": "Live, Delayed or Service issue on every page, checked every minute."
+  },
+  {
+   "n": 66,
+   "day": 3,
+   "hour": 65,
+   "title": "Writer Pool calculator",
+   "line": "Shares a deposit buys at today's NAV per share, your share of the pool and NAV scenarios."
+  },
+  {
+   "n": 67,
+   "day": 3,
+   "hour": 66,
+   "title": "Follow updates feed",
+   "line": "An Atom feed of every released update, linked on the roadmap."
+  },
+  {
+   "n": 68,
+   "day": 3,
+   "hour": 67,
+   "title": "How it works",
+   "line": "Lemniscate in six steps on one printable page."
+  },
+  {
+   "n": 69,
+   "day": 3,
+   "hour": 68,
+   "title": "Device clock check",
+   "line": "The app warns when your device clock is off, before a signature fails."
+  },
+  {
+   "n": 70,
+   "day": 3,
+   "hour": 69,
+   "title": "Every stock in one call",
+   "line": "A new /v1/names endpoint: price, session and series counts for every stock."
+  },
+  {
+   "n": 71,
+   "day": 3,
+   "hour": 70,
+   "title": "Sitemap and robots",
+   "line": "A sitemap and robots.txt for every page, kept in step with each build."
+  },
+  {
+   "n": 72,
+   "day": 3,
+   "hour": 71,
+   "title": "Uptime and last deploy",
+   "line": "Service uptime and the last deploy time on the status page and in /v1/health."
   }
  ]
 }
