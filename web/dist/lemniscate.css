@@ -191,7 +191,7 @@ p.framer-styles-preset-1fyq4h1{white-space:nowrap !important;width:auto !importa
 
 /* Match Understand risks to Explore options (white bg, gold text) */
 a.framer-v-ti06sp{background-color:#fff !important;}
-a.framer-v-ti06sp p,a.framer-v-ti06sp span{color:#b8873d !important;--framer-text-color:#b8873d !important;--extracted-r6o4lv:#b8873d !important;}
+a.framer-v-ti06sp p,a.framer-v-ti06sp span{color:#8a6420 !important;--framer-text-color:#8a6420 !important;--extracted-r6o4lv:#8a6420 !important;} /* deeper gold: 5.4:1 on white (WCAG AA) */
 /* Restore arrows on hero CTAs only */
 a.framer-v-ti06sp .lm-ribbon-icon,
 a.framer-v-ti06sp img[data-lm-ribbon="1"],
@@ -258,7 +258,8 @@ a.framer-v-ti06sp .framer-1jtw7me::after{
 
 .framer-9xlyn8-container{display:none !important;}
 
-.framer-1qk9xb2{display:none !important;}
+/* visually hidden, kept for screen readers so the heading order stays valid */
+.framer-1qk9xb2{position:absolute !important;width:1px !important;height:1px !important;padding:0 !important;margin:-1px !important;overflow:hidden !important;clip:rect(0 0 0 0) !important;white-space:nowrap !important;border:0 !important;}
 
 .framer-64iw7g{display:none !important;}
 
