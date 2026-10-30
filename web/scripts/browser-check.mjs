@@ -570,7 +570,8 @@ await section('L',async()=>{
  await context.close();
 });
 
-// ---- M. /roadmap (todo 32): 36 updates by day, LIVE only from the public CHANGELOG.md, never from the clock
+// ---- M. /roadmap (todo 32): every queued update by day (36 every 2 h or 72 hourly, from dist/roadmap.json), LIVE only from the public CHANGELOG.md, never from the clock
+const RM=JSON.parse(await readFile(new URL('../dist/roadmap.json',import.meta.url),'utf8')).updates.length;   // 36 or 72 queued updates
 await section('M',async()=>{
  const shipped=JSON.parse(await readFile(new URL('../dist/roadmap.json',import.meta.url),'utf8'));
  const SAMPLE='# Changelog\n\nNotes.\n\n## Fix: keep the footer link colour readable\n\n2026-11-01 (UTC) - [commit 0123456789](https://example.invalid)\n\nx\n\n## Update 2: Holding-cost calculator on every option\n\n2026-11-01 (UTC) - [commit abcdef0123](https://example.invalid)\n\ny\n\n## Update 1: Status page\n\n2026-10-31 (UTC) - [commit fedcba9876](https://example.invalid)\n\nz\n';
@@ -587,7 +588,7 @@ await section('M',async()=>{
  {
   const {page,context,errors,network}=await open(undefined);
   const items=await page.locator('.lm-roadmap-day:not(.lm-roadmap-extras):not(.lm-roadmap-soon) .lm-roadmap-item').count();
-  ok('M /roadmap lists all 36 updates',items===36,'items='+items);
+  ok('M /roadmap lists every queued update (36 or 72)',(RM===36||RM===72)&&items===RM,'items='+items+' of '+RM);
   ok('M three days of 12',(await page.locator('.lm-roadmap-day').count())===4&&/Day one[\s\S]*Day two[\s\S]*Day three[\s\S]*Coming soon/i.test(await text(page)),'');
   ok('M before launch nothing is LIVE',(await page.locator('.lm-roadmap-live').count())===0,'');
   ok('M slots read "hour N after launch"',/Day 3, hour 70 after launch/.test(await text(page)),'');
@@ -610,7 +611,7 @@ await section('M',async()=>{
  {
   const {page,context,errors}=await open(null);
   const items=await page.locator('.lm-roadmap-item').count();
-  ok('M failed changelog fetch: full timeline, no LIVE badge',items===36&&(await page.locator('.lm-roadmap-live').count())===0,'items='+items);
+  ok('M failed changelog fetch: full timeline, no LIVE badge',items===RM&&(await page.locator('.lm-roadmap-live').count())===0,'items='+items);
   ok('M failed fetch no page errors',errors.length===0,errors.join(' | ').slice(0,300));
   await context.close();
  }
