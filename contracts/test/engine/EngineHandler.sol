@@ -130,11 +130,16 @@ contract EngineHandler is Test {
             ghostCosts += cost;
             paidBy[who] += cost;
             uint256 tb = engine.ticketCount();
+            IERC20 token = IERC20(registry.seriesOf(id).token);
+            uint256 held = token.balanceOf(who);
             try engine.sell(id, uint128(tokens), 0, uint64(vm.getBlockTimestamp()), who) returns (uint256 got) {
                 ghostProceeds += got;
                 receivedBy[who] += got;
+                // The engine sells the whole balance when the remainder would be dust (EngineCore.sellSize), so a
+                // round trip can sell tokens bought earlier: compare per token, not totals (public CI 40979185970).
+                uint256 sold = held - token.balanceOf(who);
                 if (engine.ticketCount() > tb) openTickets.push(engine.ticketCount());
-                else if (got > cost) roundTripProfit = true;
+                else if (got * tokens > cost * sold) roundTripProfit = true;
             } catch (bytes memory err) {
                 _check(err);
             }

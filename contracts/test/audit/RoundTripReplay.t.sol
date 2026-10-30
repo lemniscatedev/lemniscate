@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
+
+import {EngineInvariantTest} from "../engine/EngineInvariant.t.sol";
+
+/// @notice Replays public CI run 40979185970's failing invariant_noRoundTripProfit sequence (deep profile).
+contract RoundTripReplayTest is EngineInvariantTest {
+    function test_replay_ci_40979185970() public {
+        handler.buy(1764, 17230, 5001);
+        handler.movePrice(10604, int256(-84000000000000000000000000000000000000));
+        handler.warp(15563);
+        handler.warp(100000);
+        handler.accrueAll();
+        handler.warp(2315);
+        handler.warp(30);
+        handler.buy(11, 3330, 57896044618658097711785492504343953926634992332820282019728792003956564819967);
+        handler.buy(20000000000000000000, 10800, 4550);
+        handler.movePrice(3330, int256(-84000000000000000000000000000000000000));
+        handler.movePrice(82294241615064822527240383691757963540092531618112453178302709385731241394188, int256(16398));
+        handler.movePrice(600, int256(-300));
+        handler.warp(8445);
+        handler.transfer(9242, 897, 200000000000000000000000, 1414213562373095048801688724209698079);
+        handler.movePrice(6536, int256(57896044618658097711785492504343953926634992332820282019728792003956564819967));
+        handler.transfer(300000, 2576790292, 9000, 60000000);
+        handler.movePrice(13290, int256(-84000000000000000000000000000000000000));
+        handler.movePrice(12194, int256(57896044618658097711785492504343953926634992332820282019728792003956564819967));
+        handler.movePrice(37630528418380570628811946068410396302052, int256(671031379325113321510046567740303));
+        handler.transfer(6000, 137, 100000000000000000, 340010263488231146823593991679159461443);
+        handler.movePrice(2838823652, int256(15984));
+        handler.warp(1625557929470162324230395643039771774101817638121);
+        handler.warp(85886361201893267545739195085699245319825157983305883);
+        handler.warp(11237);
+        handler.roundTrip(7542, 50000, 2000000000000000000);
+        assertFalse(handler.roundTripProfit(), "round trip profit");
+    }
+}
