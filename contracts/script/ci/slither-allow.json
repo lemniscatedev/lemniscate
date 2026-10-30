@@ -4,5 +4,11 @@
   "file": "src/PriceGuard.sol",
   "expression": "delta < 0 && delta % span != 0",
   "reason": "Floor rounding of a negative TWAP mean tick, the same as Uniswap's OracleLibrary. The modulo is a remainder test, not randomness. Listed here instead of an inline slither-disable so the deployed PriceGuard source stays byte-identical."
+ },
+ {
+  "check": "weak-prng",
+  "file": "src/PriceGuard.sol",
+  "expression": "next = (uint256(index) + 1) % card",
+  "reason": "Ring-buffer index of the Uniswap observation after the current one (audit 2026-10-29 M-2 longest-window fallback). The modulo wraps the index into the pool's cardinality; it is not randomness and no value depends on block data."
  }
 ]
