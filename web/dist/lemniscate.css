@@ -215,7 +215,7 @@ a.framer-v-ti06sp .framer-1jtw7me::after{
 
 .framer-ucfxi8 h1{white-space:normal !important;}
 
-.framer-1fow1ot{display:none !important;}
+/* kept visible: the four steps include the exit rule during a halt or stale feed */
 
 .framer-oqpv42{gap:12px !important;justify-content:flex-start !important;}
 
@@ -225,7 +225,7 @@ a.framer-v-ti06sp .framer-1jtw7me::after{
 .framer-oqpv42 .framer-aautqu-container,
 .framer-oqpv42 .framer-oFcbk{height:auto !important;}
 
-.framer-aautqu-container{display:none !important;}
+/* kept visible: "Transparent by design" states model prices, market gaps and off-hours spreads */
 
 .framer-wa503z p{white-space:nowrap !important;}
 .framer-wa503z{margin-left:auto !important;margin-right:auto !important;width:auto !important;max-width:none !important;}
@@ -241,15 +241,15 @@ a.framer-v-ti06sp .framer-1jtw7me::after{
 
 .framer-1xpcbiz-container{display:none !important;}
 
-.framer-qmoc1r{display:none !important;}
+/* kept visible: answers state the maximum buyer loss and the daily cost */
 
-.lm-section-head p{white-space:nowrap !important;width:auto !important;max-width:none !important;}
+@media(min-width:810px){.lm-section-head p{white-space:nowrap !important;width:auto !important;max-width:none !important;}}
 
 .framer-1b59zuu{display:none !important;}
 
-.framer-1h2fupl{display:none !important;}
+/* kept visible: answers state that the quoted cost changes with price and volatility */
 
-.lm-footer-bottom p{white-space:nowrap !important;max-width:none !important;}
+@media(min-width:1200px){.lm-footer-bottom p{white-space:nowrap !important;max-width:none !important;}}
 
 .framer-1hclltt-container a.framer-V4nfA .framer-1jtw7me{display:none !important;}
 .framer-1hclltt-container a.framer-V4nfA .framer-tkg2yt{margin:0 auto !important;}
@@ -278,7 +278,9 @@ a.framer-v-ti06sp .framer-1jtw7me::after{
 
 .framer-12zf5us h1{white-space:nowrap !important;}
 
-.lm-writers-foot{display:none !important;}
+/* risk line kept visible, restyled as quiet small print under the deposit area */
+.lm-writers-foot{display:block !important;max-width:640px;margin:18px 0 0 !important;font-size:12px !important;line-height:1.6 !important;color:#8a93a6 !important;letter-spacing:.01em}
+@media(max-width:809px){.lm-writers-foot{font-size:11.5px !important;margin-top:14px !important}}
 
 /* Table-style layout for mechanics block */
 .framer-kj3qbv{
