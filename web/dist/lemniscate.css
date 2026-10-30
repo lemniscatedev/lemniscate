@@ -186,8 +186,8 @@ p.framer-styles-preset-1fyq4h1{white-space:nowrap !important;width:auto !importa
 
 .framer-pik6kh{display:none !important;}
 
-.framer-upak23{flex-wrap:nowrap !important;width:auto !important;max-width:none !important;}
-.framer-upak23 > div{flex-shrink:0 !important;}
+@media(min-width:810px){.framer-upak23{flex-wrap:nowrap !important;width:auto !important;max-width:none !important;}
+.framer-upak23 > div{flex-shrink:0 !important;}}
 
 /* Match Understand risks to Explore options (white bg, gold text) */
 a.framer-v-ti06sp{background-color:#fff !important;}
