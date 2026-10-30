@@ -2,7 +2,7 @@
 
 | Date | Commit | Auditor | Grade | Report | Status |
 |---|---|---|---|---|---|
-| 2026-10-29 | `841251a` (deployed) | AI pre-audit, rubric v2 | 7.0 / 10 (weighted 8.3, capped: live deployment not yet compared) | [2026-10-29-audit.md](2026-10-29-audit.md) | M-1, M-2, L-1, L-2 fixed on the fix commit; upgrade through the 48 h timelock; live bytecode check 25/25 match ([output](live-bytecode-check-2026-10-29.txt)); mutation score 21/21 killed ([mutation-2026-10-29.md](mutation-2026-10-29.md)) |
+| 2026-10-29 | `841251a` (deployed) | AI pre-audit, rubric v2 | 7.0 / 10 (weighted 8.3, capped: live deployment not yet compared) | [2026-10-29-audit.md](2026-10-29-audit.md) | M-1, M-2, L-1, L-2 fixed on the fix commit; upgrade through the 48 h timelock; live bytecode check 25/25 match ([output](live-bytecode-check-2026-10-29.txt)); mutation score 21/21 killed ([mutation-2026-10-29.md](mutation-2026-10-29.md)); Halmos: 2 properties proved ([halmos-2026-10-29.md](halmos-2026-10-29.md)) |
 
 Tags on the public repo: `audit-2026-10-29-deployed` = the audited, deployed commit; `audit-2026-10-29-fixes` = the
 commit with the fixes. PriceGuard's fixed source differs from the deployed PriceGuard until the timelocked upgrade
