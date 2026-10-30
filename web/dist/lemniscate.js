@@ -83,3 +83,79 @@ addEventListener('popstate',e=>{const target=location.pathname.replace(/\/$/,'')
 document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelector('.lm-nav-menu')?.remove()});if(location.pathname.startsWith('/dashboard')){openDashboard(location.href,{push:false,initial:true});return}if(infoPages())return;apply();}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',startup);else startup();
 })();
+
+/* Replace underlying logo images with ticker-only text */
+(function(){
+  function tickerFromAlt(alt){
+    if(!alt) return '';
+    const parts = alt.split('·').map(s=>s.trim());
+    return parts[parts.length-1] || alt.trim();
+  }
+  function swap(img){
+    if(img.dataset.tickerSwapped) return;
+    const t = tickerFromAlt(img.getAttribute('alt'));
+    if(!t) return;
+    const span = document.createElement('span');
+    span.textContent = t;
+    span.className = 'lm-ticker-only';
+    span.style.cssText = 'display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-weight:700;font-size:28px;color:#b8873d;letter-spacing:0.02em;';
+    img.dataset.tickerSwapped = '1';
+    img.replaceWith(span);
+  }
+  function run(){document.querySelectorAll('img.lm-underlying-logo').forEach(swap);}
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',run); else run();
+  new MutationObserver(run).observe(document.documentElement,{childList:true,subtree:true});
+})();
+
+/* Move "Time on your side" block from left (under photo) to top of right column */
+(function(){
+  function run(){
+    const left=document.querySelector('.framer-1x5e79v');
+    const right=document.querySelector('.framer-oqpv42');
+    if(!left||!right) return;
+    const title=left.querySelector('.framer-uu9zm2-container');
+    if(!title||title.dataset.movedToRight) return;
+    title.dataset.movedToRight='1';
+    right.prepend(title);
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',run); else run();
+  new MutationObserver(run).observe(document.documentElement,{childList:true,subtree:true});
+})();
+
+/* Fade "A clearer way to hold" smoothly as user scrolls past */
+(function(){
+  let el=null;let startY=0;let fadeDistance=300;
+  function update(){
+    if(!el){el=document.querySelector('.framer-ucfxi8');if(!el)return;
+      const r=el.getBoundingClientRect();startY=r.top+window.scrollY;
+      el.style.willChange='opacity,transform';el.style.transition='opacity .15s linear, transform .15s linear';}
+    const scrolled=window.scrollY-(startY-window.innerHeight*0.55);
+    const t=Math.max(0,Math.min(1,scrolled/fadeDistance));
+    el.style.opacity=String(1-t);
+    el.style.transform=`translateY(${-t*40}px)`;
+  }
+  function init(){update();window.addEventListener('scroll',update,{passive:true});window.addEventListener('resize',()=>{el=null;update();},{passive:true});}
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init); else init();
+})();
+
+/* Replace nav-menu social icons with minimalist versions */
+(function(){
+  const ICONS = {
+    x:        '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path d="M18.244 2H21.5l-7.49 8.56L23 22h-6.937l-5.428-7.093L4.4 22H1.142l8.009-9.154L1 2h7.113l4.907 6.49L18.244 2zm-1.22 18h1.802L7.07 3.9H5.137L17.024 20z"/></svg>',
+    github:   '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path d="M12 2C6.48 2 2 6.58 2 12.22c0 4.52 2.87 8.35 6.84 9.7.5.1.68-.22.68-.49v-1.73c-2.78.62-3.37-1.35-3.37-1.35-.45-1.17-1.11-1.48-1.11-1.48-.91-.63.07-.62.07-.62 1 .07 1.53 1.05 1.53 1.05.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.7 0 0 .84-.27 2.75 1.05A9.37 9.37 0 0 1 12 7.14c.85 0 1.71.12 2.5.34 1.91-1.32 2.75-1.05 2.75-1.05.55 1.4.2 2.44.1 2.7.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.06.36.32.68.94.68 1.9v2.82c0 .27.18.6.69.49A10.02 10.02 0 0 0 22 12.22C22 6.58 17.52 2 12 2z"/></svg>',
+    telegram: '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path d="M21.73 3.33c-.3-.26-.74-.3-1.09-.1L2.64 11.4c-.4.19-.65.6-.63 1.04.02.44.3.82.72.95l4.42 1.38 1.95 5.72c.1.3.34.52.64.6.3.1.63.02.86-.19l2.53-2.3 4.3 3.14c.22.17.5.24.76.19.27-.05.5-.22.65-.46L22 4.33c.18-.35.1-.78-.27-1zM9.3 14.84l-3.14-.98L17.1 8.3 9.3 14.84zm1.1 4.63L9.4 16l7.43-6.3-6.43 9.77zM13.9 18l-3-2.2 7.44-8.95L13.9 18z"/></svg>'
+  };
+  function run(){
+    document.querySelectorAll('#lm-nav-menu .lm-social [data-social]').forEach(btn=>{
+      if(btn.dataset.minimalized) return;
+      const key=btn.getAttribute('data-social');
+      if(!ICONS[key]) return;
+      btn.dataset.minimalized='1';
+      btn.innerHTML=ICONS[key];
+      const svg=btn.querySelector('svg');
+      if(svg){svg.classList.add('lm-social-mark','lm-social-mark-min');svg.setAttribute('aria-hidden','true');}
+    });
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',run); else run();
+  new MutationObserver(run).observe(document.documentElement,{childList:true,subtree:true});
+})();

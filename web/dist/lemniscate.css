@@ -176,3 +176,159 @@ html[data-lm-loading-mode="prepared"]::view-transition-new(root){animation:lm-vt
 .lm-roadmap-soon-card p{margin:0;line-height:1.7;color:#fdf5e5}
 @media(max-width:809px){.lm-roadmap{padding:0 0 60px}.lm-roadmap-item{gap:12px;padding:16px}.lm-roadmap-num{width:38px;height:38px;border-radius:12px;font-size:12px}.lm-roadmap-dayhead h2{font-size:24px}}
 .lm-roadmap>.lm-roadmap-note{margin:0 0 48px}
+
+/* Hide ribbon arrows/icons */
+.lm-ribbon-icon,img.lm-native-icon[data-lm-ribbon],img[data-lm-ribbon="1"]{display:none !important;}
+
+p.framer-styles-preset-1fyq4h1{white-space:nowrap !important;width:auto !important;max-width:none !important;}
+
+.framer-y5b61j{width:auto !important;max-width:none !important;}
+
+.framer-pik6kh{display:none !important;}
+
+.framer-upak23{flex-wrap:nowrap !important;width:auto !important;max-width:none !important;}
+.framer-upak23 > div{flex-shrink:0 !important;}
+
+/* Match Understand risks to Explore options (white bg, gold text) */
+a.framer-v-ti06sp{background-color:#fff !important;}
+a.framer-v-ti06sp p,a.framer-v-ti06sp span{color:#b8873d !important;--framer-text-color:#b8873d !important;--extracted-r6o4lv:#b8873d !important;}
+/* Restore arrows on hero CTAs only */
+a.framer-v-ti06sp .lm-ribbon-icon,
+a.framer-v-ti06sp img[data-lm-ribbon="1"],
+a.framer-v-1uydh3v .lm-ribbon-icon,
+a.framer-v-1uydh3v img[data-lm-ribbon="1"]{display:inline-block !important;}
+
+/* Replace ribbon arrow on Understand risks with simple gold arrow matching Explore options */
+a.framer-v-ti06sp img.lm-native-icon{display:none !important;}
+a.framer-v-ti06sp .framer-1jtw7me::after{
+  content:'';
+  display:block;
+  width:24px;height:24px;
+  background:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none' stroke='%23b8873d' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'><path d='M6 25L24 7 M7 7h17v17'/></svg>") center/contain no-repeat;
+}
+
+/* ticker-only replacement handled in JS */
+
+#lm-nav{position:static !important;margin:18px auto 0 !important;left:auto !important;right:auto !important;max-width:1380px !important;width:calc(100% - 60px) !important;}
+
+.framer-1rgkea5{display:none !important;}
+
+.framer-ucfxi8 h1{white-space:normal !important;}
+
+.framer-1fow1ot{display:none !important;}
+
+.framer-oqpv42{gap:12px !important;justify-content:flex-start !important;}
+
+/* Tighten right-column text block heights (icon slot removed) */
+.framer-oqpv42 .framer-uu9zm2-container,
+.framer-oqpv42 .framer-189vtxo-container,
+.framer-oqpv42 .framer-aautqu-container,
+.framer-oqpv42 .framer-oFcbk{height:auto !important;}
+
+.framer-aautqu-container{display:none !important;}
+
+.framer-wa503z p{white-space:nowrap !important;}
+.framer-wa503z{margin-left:auto !important;margin-right:auto !important;width:auto !important;max-width:none !important;}
+
+.framer-ucfxi8{width:auto !important;max-width:none !important;flex:none !important;}
+.framer-ucfxi8 h1{white-space:nowrap !important;}
+
+.framer-grso10{display:none !important;}
+
+.framer-h0gbet,[data-framer-name="Testimonial"]{display:none !important;}
+
+/* (reverted) Explore options buttons restored on product rows */
+
+.framer-1xpcbiz-container{display:none !important;}
+
+.framer-qmoc1r{display:none !important;}
+
+.lm-section-head p{white-space:nowrap !important;width:auto !important;max-width:none !important;}
+
+.framer-1b59zuu{display:none !important;}
+
+.framer-1h2fupl{display:none !important;}
+
+.lm-footer-bottom p{white-space:nowrap !important;max-width:none !important;}
+
+.framer-1hclltt-container a.framer-V4nfA .framer-1jtw7me{display:none !important;}
+.framer-1hclltt-container a.framer-V4nfA .framer-tkg2yt{margin:0 auto !important;}
+
+.framer-t25728 h1{white-space:nowrap !important;font-size:48px !important;}
+
+.framer-9xlyn8-container{display:none !important;}
+
+.framer-1qk9xb2{display:none !important;}
+
+.framer-64iw7g{display:none !important;}
+
+.framer-us49i4{display:none !important;}
+
+.framer-axsg7r{display:none !important;}
+
+.framer-19o1jp9{display:none !important;}
+
+.framer-9or0ih{display:none !important;}
+
+.framer-7lz9o5{display:none !important;}
+
+.framer-1c2ec7k{display:none !important;}
+
+#lm-protocol-chapter .lm-bento-card p[style*="margin-top:25px"]{white-space:nowrap !important;max-width:none !important;width:auto !important;}
+
+.framer-12zf5us h1{white-space:nowrap !important;}
+
+.lm-writers-foot{display:none !important;}
+
+/* Table-style layout for mechanics block */
+.framer-kj3qbv{
+  display:grid !important;
+  grid-template-columns:220px 1fr !important;
+  flex-direction:unset !important;
+  border:1px solid rgba(169,145,108,.3) !important;
+  border-radius:16px !important;
+  overflow:hidden !important;
+  background:#fffdf6 !important;
+  gap:0 !important;
+  margin-top:20px !important;
+}
+.framer-kj3qbv h3{
+  padding:18px 20px !important;
+  background:rgba(184,135,61,.08) !important;
+  border-bottom:1px solid rgba(169,145,108,.2) !important;
+  font-size:16px !important;
+  margin:0 !important;
+}
+.framer-kj3qbv p{
+  padding:18px 24px !important;
+  border-bottom:1px solid rgba(169,145,108,.2) !important;
+  color:#28324c !important;
+  font-size:14px !important;
+  line-height:1.55 !important;
+  margin:0 !important;
+}
+.framer-kj3qbv > h3:nth-last-of-type(1),
+.framer-kj3qbv > p:nth-last-of-type(1){border-bottom:0 !important;}
+
+/* Polish nav-menu social icons */
+#lm-nav-menu .lm-social{gap:12px !important;align-items:center !important;}
+#lm-nav-menu .lm-social .lm-icon-button{
+  width:44px !important;height:44px !important;
+  border-radius:50% !important;
+  background:linear-gradient(135deg,#fff8e8,#f4dfb7) !important;
+  border:1px solid rgba(184,135,61,.35) !important;
+  box-shadow:0 2px 8px rgba(184,135,61,.12),inset 0 1px 0 rgba(255,255,255,.6) !important;
+  transition:transform .25s cubic-bezier(.2,.8,.2,1.2),box-shadow .25s,background .25s !important;
+}
+#lm-nav-menu .lm-social .lm-icon-button:hover{
+  transform:translateY(-3px) scale(1.06) !important;
+  background:linear-gradient(135deg,#b8873d,#cfa35b) !important;
+  box-shadow:0 10px 22px rgba(184,135,61,.3),inset 0 1px 0 rgba(255,255,255,.4) !important;
+}
+#lm-nav-menu .lm-social .lm-icon-button svg{width:20px !important;height:20px !important;}
+#lm-nav-menu .lm-social .lm-icon-button:hover svg path{stroke:#fff8e8 !important;}
+
+/* Minimalist social icon styling */
+#lm-nav-menu .lm-social .lm-icon-button{color:#b8873d !important;}
+#lm-nav-menu .lm-social .lm-icon-button:hover{color:#fff8e8 !important;}
+#lm-nav-menu .lm-social .lm-social-mark-min{width:18px !important;height:18px !important;display:block;}
