@@ -20,8 +20,8 @@ Deployed 29 Oct 2026. Source verified on Sourcify (exact match, contracts and li
 | Hedge Adapter | `0xFAc940243D21618853669585175373af8A98dd11` | [explorer](https://robinhoodchain.blockscout.com/address/0xFAc940243D21618853669585175373af8A98dd11) |
 | Price Reference | `0x337BFE1710373889869F270277ea8dDfbA4EE4C0` | [explorer](https://robinhoodchain.blockscout.com/address/0x337BFE1710373889869F270277ea8dDfbA4EE4C0) |
 | Timelock (48 h, admin) | `0x58C276f4A75602fCf722b0119Dc774466884A94E` | [explorer](https://robinhoodchain.blockscout.com/address/0x58C276f4A75602fCf722b0119Dc774466884A94E) |
-| Engine implementation | `0x65699d7b586B31976C10EC9e990Ae2a881D46af5` | [explorer](https://robinhoodchain.blockscout.com/address/0x65699d7b586B31976C10EC9e990Ae2a881D46af5) |
-| Pool implementation | `0xF69F0Be7599e02DCf8B4494c6841845FC54994aC` | [explorer](https://robinhoodchain.blockscout.com/address/0xF69F0Be7599e02DCf8B4494c6841845FC54994aC) |
+| Engine implementation | `0x4cd274aA506E45616B1607c212696D01dBd825cF` | [explorer](https://robinhoodchain.blockscout.com/address/0x4cd274aA506E45616B1607c212696D01dBd825cF) |
+| Pool implementation | `0x5983AB790ABa75c37AA7b8862686ad92BA16eF97` | [explorer](https://robinhoodchain.blockscout.com/address/0x5983AB790ABa75c37AA7b8862686ad92BA16eF97) |
 | Market Hours implementation | `0x754F85456867AC60F072C4bcE186e262C3215B0B` | [explorer](https://robinhoodchain.blockscout.com/address/0x754F85456867AC60F072C4bcE186e262C3215B0B) |
 
 Smart contracts and backend services for Lemniscate: everlasting call and put options on Stock Tokens, settled in USDG, on Robinhood Chain (chain ID `4663`).
@@ -34,7 +34,7 @@ Lemniscate is an independent project. Robinhood Chain, Chainlink and Uniswap are
 
 Deployed on Robinhood Chain mainnet (4663) on 29 Oct 2026. Every admin action goes through a 48-hour timelock. Addresses: above and at get-lemniscate.tech/contracts.
 
-Security audit (29 Oct 2026): 2 Mediums and 2 Lows, all fixed in this repo with tests (see `.audit-grade/`). The fixed engine and pool implementations are deployed and the upgrade is scheduled in the 48-hour timelock, executable from 1 Nov 2026 00:10 UTC.
+Security audit (29 Oct 2026): 2 Mediums and 2 Lows, all fixed in this repo with tests (see `.audit-grade/`). The fixed engine and pool implementations went live through the 48-hour timelock on 1 Nov 2026 (block [103734846](https://robinhoodchain.blockscout.com/block/103734846)), verified on Sourcify.
 
 ## Layout
 
@@ -90,8 +90,8 @@ Network: mainnet (Robinhood Chain, chain ID 4663). Deployment block: 101047770. 
 | `hedgeAdapter` | [`0xFAc940243D21618853669585175373af8A98dd11`](https://robinhoodchain.blockscout.com/address/0xFAc940243D21618853669585175373af8A98dd11) |
 | `priceReference` | [`0x337BFE1710373889869F270277ea8dDfbA4EE4C0`](https://robinhoodchain.blockscout.com/address/0x337BFE1710373889869F270277ea8dDfbA4EE4C0) |
 | `swapRouter` | [`0xCaf681a66D020601342297493863E78C959E5cb2`](https://robinhoodchain.blockscout.com/address/0xCaf681a66D020601342297493863E78C959E5cb2) |
-| `engineImpl` | [`0x65699d7b586B31976C10EC9e990Ae2a881D46af5`](https://robinhoodchain.blockscout.com/address/0x65699d7b586B31976C10EC9e990Ae2a881D46af5) |
-| `poolImpl` | [`0xF69F0Be7599e02DCf8B4494c6841845FC54994aC`](https://robinhoodchain.blockscout.com/address/0xF69F0Be7599e02DCf8B4494c6841845FC54994aC) |
+| `engineImpl` | [`0x4cd274aA506E45616B1607c212696D01dBd825cF`](https://robinhoodchain.blockscout.com/address/0x4cd274aA506E45616B1607c212696D01dBd825cF) |
+| `poolImpl` | [`0x5983AB790ABa75c37AA7b8862686ad92BA16eF97`](https://robinhoodchain.blockscout.com/address/0x5983AB790ABa75c37AA7b8862686ad92BA16eF97) |
 | `marketHoursImpl` | [`0x754F85456867AC60F072C4bcE186e262C3215B0B`](https://robinhoodchain.blockscout.com/address/0x754F85456867AC60F072C4bcE186e262C3215B0B) |
 | `timelock` | [`0x58C276f4A75602fCf722b0119Dc774466884A94E`](https://robinhoodchain.blockscout.com/address/0x58C276f4A75602fCf722b0119Dc774466884A94E) |
 
